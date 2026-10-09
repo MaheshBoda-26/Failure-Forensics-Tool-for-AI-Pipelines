@@ -85,14 +85,14 @@ Follow these rules throughout. They are non-negotiable.
 
 <builder_context>
 <!-- FILL THESE IN BEFORE SENDING. If you leave a field blank, Opus will state a default assumption. -->
-- Team size and hours per day available: [e.g., solo, 4-6 h/day]
-- Comfort level: Python [ ], async/FastAPI [ ], React/TypeScript [ ], OpenTelemetry [ ]
-- Total LLM spend budget for the whole project (USD): [e.g., 30] — plan against OpenRouter's per-model pricing, plus its credit-based minimum top-up. State the minimum top-up required to start and flag that OpenRouter bills per-request overhead beyond the published token price.
-- Hard deadline / demo date: [e.g., 14 calendar days from start]
-- Is the project graded? On what? [e.g., working demo + report + viva]
-- Dev machine OS (macOS/Linux/Windows): [ ]
-- Where you will host the demo (free-tier limits, available disk, custom domain or not): [ ]
-- Any constraint on which models the judge may use (e.g., must be a different provider family than the pipeline model): [e.g., none]
+- Team size and hours per day available: solo, 6 h/day
+- Comfort level: Python [x], async/FastAPI [x], React/TypeScript [x], OpenTelemetry [ ]
+- Total LLM spend budget for the whole project (USD): 30 — plan against OpenRouter's per-model pricing, plus its credit-based minimum top-up ($10). State the minimum top-up required to start and flag that OpenRouter bills per-request overhead beyond the published token price.
+- Hard deadline / demo date: 14 calendar days from start
+- Is the project graded? On what? Ungraded portfolio piece; may be shown in interviews
+- Dev machine OS (macOS/Linux/Windows): macOS
+- Where you will host the demo (free-tier limits, available disk, custom domain or not): Render free tier with persistent disk (512 MB), no custom domain
+- Any constraint on which models the judge may use (e.g., must be a different provider family than the pipeline model): none
 </builder_context>
 
 <provider_constraint_openrouter>
