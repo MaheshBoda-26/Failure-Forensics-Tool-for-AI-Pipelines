@@ -14,6 +14,10 @@ repos:
       - id: check-yaml
       - id: check-toml
       - id: check-added-large-files
-      # Secrets must never reach git. See PROMPT.md C13.
+
+  # Secrets must never reach git. See PROMPT.md C13.
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
       - id: detect-secrets
         args: ["--baseline", ".secrets.baseline"]

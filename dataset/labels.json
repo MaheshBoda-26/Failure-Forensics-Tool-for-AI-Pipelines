@@ -1,0 +1,5 @@
+{
+  "$comment": "Ground truth for the demo dataset. Every document declares whether it should fail, and if so at which step, with which category. The analyzer is scored against this file — it is the only source of free ground truth in the project. Schema is specified in PROMPT.md D8; this is the empty starting shape.",
+  "schema_version": 1,
+  "documents": []
+}
