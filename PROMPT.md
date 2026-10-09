@@ -43,7 +43,7 @@ Follow these rules throughout. They are non-negotiable.
 |---|---|
 | Language | Python 3.11+ |
 | Pipeline framework | Custom chain or LangChain |
-| LLM provider | OpenAI API |
+| LLM provider | OpenRouter API (OpenAI-compatible `/chat/completions`, one key for many models) |
 | Tracing | OpenTelemetry + custom spans |
 | Storage | SQLite + JSON trace files |
 | Visualization | React frontend or Streamlit (interactive trace explorer) |
@@ -87,13 +87,26 @@ Follow these rules throughout. They are non-negotiable.
 <!-- FILL THESE IN BEFORE SENDING. If you leave a field blank, Opus will state a default assumption. -->
 - Team size and hours per day available: [e.g., solo, 4-6 h/day]
 - Comfort level: Python [ ], async/FastAPI [ ], React/TypeScript [ ], OpenTelemetry [ ]
-- OpenAI budget for the whole project (USD): [e.g., 30]
+- Total LLM spend budget for the whole project (USD): [e.g., 30] — plan against OpenRouter's per-model pricing, plus its credit-based minimum top-up. State the minimum top-up required to start and flag that OpenRouter bills per-request overhead beyond the published token price.
 - Hard deadline / demo date: [e.g., 14 calendar days from start]
 - Is the project graded? On what? [e.g., working demo + report + viva]
 - Dev machine OS (macOS/Linux/Windows): [ ]
 - Where you will host the demo (free-tier limits, available disk, custom domain or not): [ ]
-- Any constraint on using non-OpenAI models for the judge: [e.g., none / only OpenAI]
+- Any constraint on which models the judge may use (e.g., must be a different provider family than the pipeline model): [e.g., none]
 </builder_context>
+
+<provider_constraint_openrouter>
+The LLM provider is **OpenRouter**, not the OpenAI API directly. This is a deliberate choice and the plan must design around it rather than pretending it is OpenAI. Address each of these explicitly:
+
+1. **Model selection is configuration, not code.** OpenRouter model identifiers are `provider/model` slugs that change as providers are added and retired. Every model name — pipeline models, judge model, cheap model for pre-checks, summarizer — must come from environment variables with a documented default. Never hardcode a slug. Mark current slugs, context windows, and pricing `VERIFY BEFORE USE` and pin them in a `.env.example` with a comment explaining that slugs are validated at startup (fail fast with a clear message rather than a 404 mid-pipeline).
+2. **Provider routing must be pinned for reproducibility.** By default OpenRouter may route a slug to different upstream providers across calls, which silently breaks determinism and replay. Decide and record an ADR: pin an explicit `provider` routing object (with fallback order) per model so a given model name resolves to the same upstream provider for the life of a run, or accept nondeterminism and say so. If you pin, state that a pinned provider can be rate-limited more often and design a fallback for it.
+3. **Structured output is not uniformly supported.** Not every OpenRouter model supports OpenAI-style `response_format` with a JSON schema, and support varies by upstream provider. Design one `LLMClient` method for structured calls with a three-tier fallback: (a) native structured output / JSON mode where the selected model supports it, (b) explicit schema-in-prompt plus tolerant parsing, (c) a repair round-trip that feeds the validation error back once. Decide and record how the client discovers a model's capabilities (a pinned allowlist in config, versus querying OpenRouter's model metadata endpoint at startup — `VERIFY BEFORE USE` whether that endpoint is stable and authenticated). Extraction and classification must still get typed Pydantic output in all three tiers; if a model cannot be trusted to conform, it must be rejected at config time rather than failing mid-run.
+4. **Reasoning models break naive response parsing.** Some models return a separate reasoning field alongside content. The client must extract content correctly for both shapes, and the plan must state what happens to reasoning content in trace storage (recommend: store it, do not show it by default).
+5. **This is a strength for judge independence — use it.** The weakness that a judge is biased toward its own family's outputs becomes cheap to solve here: pick the pipeline models and the judge model from *different provider families* via separate env vars, and state this as the mitigation. Record it as an ADR and make it a config assertion rather than a convention, so a misconfiguration that puts pipeline and judge in the same family fails loudly.
+6. **Cost control must be OpenRouter-shaped.** Spend caps, per-model price tables, and a worked cost estimate driven by env-var-configured prices rather than hardcoded numbers. Note that reasoning models bill reasoning tokens, which can dominate cost, and that some models are priced per-request rather than per-token. Prefer non-reasoning models for the pipeline; if a reasoning model is used for the judge, budget for it explicitly.
+7. **Caching and replay still belong to us.** OpenRouter does not make the project's caching layer unnecessary: the project-level response cache keyed by a hash of (model, provider routing, prompt version, input) is what makes record/replay and the deterministic test suite possible, and it is also what keeps the demo reproducible. Plan a single cache layer in our code; do not rely on provider-side prompt caching.
+8. **Secrets and telemetry.** Only the OpenRouter API key is a secret. Include a note that requests to OpenRouter transmit document text to third-party providers, which reinforces the PII policy: the dataset must contain no real personal data, because every document is forwarded to whichever upstream provider serves the request.
+</provider_constraint_openrouter>
 
 <known_weaknesses_you_must_address>
 Treat these as design inputs. They are the difference between a toy and a credible system. Your plan must resolve each one explicitly.
@@ -114,17 +127,17 @@ Make each decision, justify it in 2-5 sentences with the trade-offs, and record 
 | # | Decision | Leaning default |
 |---|---|---|
 | 1 | Custom chain vs LangChain | Custom, thin typed chain. Tracing clarity and testability matter more than framework features. Mention an optional adapter only as a non-goal. |
-| 2 | LLM access layer | One small `LLMClient` wrapper. This is justified because the tracing layer must capture prompt, raw response, tokens, latency, and retries in one place. Use structured outputs bound to Pydantic schemas. |
+| 2 | LLM access layer | One small `LLMClient` wrapper over the OpenRouter chat-completions endpoint. This is justified because the tracing layer must capture prompt, raw response, tokens, latency, provider routing, and retries in one place, and because OpenRouter's uneven per-model feature support (structured output, reasoning fields) must be normalized in exactly one place rather than leaking into every step. Use Pydantic-bound structured output with the three-tier fallback from `provider_constraint_openrouter`. Justify the HTTP client choice (raw `httpx`, the official `openai` SDK pointed at a custom base URL, or `openrouter` SDK) and record it as an ADR. |
 | 3 | OpenTelemetry usage | Use the OTel SDK for span creation and context propagation, with a custom `SpanProcessor`/exporter that writes our JSON + SQLite. Use OTel GenAI semantic-convention attribute names where they exist (`VERIFY BEFORE USE` the current names). Do not require a collector or backend. |
 | 4 | Where payloads live | Full span payloads in per-trace JSON files (git-friendly, inspectable); SQLite holds the index plus relational tables for flags, diagnoses, eval cases, and eval runs. State why this split and what the migration path would be. |
 | 5 | Backend framework | FastAPI (the REST feedback API is required anyway; reuse it for the UI). |
 | 6 | Frontend | Decide between Streamlit and React (Vite + TypeScript + React Flow). Score both against: build time, quality of the node graph and diff view, effort to add flag/confirm/override interactions, fit with `builder_context`. State a primary choice, and a fallback you can switch to on Day 9 if behind. |
-| 7 | Judge model strategy | Separate, stronger judge model from the pipeline model, configured by env var. Deterministic checks first, then rubric-based LLM judgment with structured output. Include judge self-consistency (for example, 2-3 samples on borderline scores) only if the budget allows, and justify it. |
+| 7 | Judge model strategy | Separate, stronger judge model from the pipeline model, configured by env var, and — because the provider is OpenRouter — from a **different provider family** so the judge cannot share the pipeline model's self-preference bias. Enforce the family separation as a startup assertion, not a convention. Deterministic checks first, then rubric-based LLM judgment with structured output. Include judge self-consistency (for example, 2-3 samples on borderline scores) only if the budget allows, and justify it. Note that model upgrades can silently change judge behavior, so pin the judge's model id in config and record it on every diagnosis. |
 | 8 | Analyzer algorithm | Score every step on local and global fidelity (not just stop at the first drop), then derive the root cause from the causal ordering. Explain why this beats a naive "walk back and stop at the first drop". |
 | 9 | Eval scoring per step type | Specify the metric for each of the four steps. |
 | 10 | Test strategy | pytest with a record/replay layer for LLM calls, golden trace fixtures, and a small number of live smoke tests gated behind a flag. |
 | 11 | Dataset construction | Mix of LLM-synthesized and hand-written documents, with a `labels.json` ground-truth file. Specify count, type mix, and failure-type quotas (see Deliverable D8). |
-| 12 | Cost control | Per-run and global spend caps, cheaper model for the pipeline, caching, and a dry-run mode. |
+| 12 | Cost control | Per-run and global spend caps enforced in our own client, cheaper model for the pipeline steps, cheaper still for pre-checks, our own response cache, and a dry-run mode. All prices and model ids come from config; the caps must work across heterogeneous per-model and per-request pricing from OpenRouter. |
 </decisions_to_make>
 
 <deliverables>
@@ -147,10 +160,10 @@ Produce the following sections, in this order, using the headings below. Be dens
 - **B5. Architecture Decision Records** for all items in `<decisions_to_make>`.
 
 ### Part C: Technical Requirements (TRD)
-- **C1. Environment and tooling.** Python version, dependency manager, linting and typing tools, pre-commit, `.env` handling, Makefile or task runner targets.
-- **C2. Domain models.** Pydantic skeletons for: `Document`, `IntakeOutput`, `ExtractionOutput` (entities with value, type, and a source span or offset where possible), `ClassificationOutput`, `SummaryOutput`, `Span`, `Trace`, `StepScore`, `Diagnosis` (root-cause step, category, evidence chain, confidence, analyzer version), `Flag`, `EvalCase`, `EvalRun`, `EvalResult`. Include versioning fields (`pipeline_version`, `prompt_version`, `schema_version`).
+- **C1. Environment and tooling.** Python version, dependency manager, linting and typing tools, pre-commit, `.env` handling, Makefile or task runner targets. Include a `.env.example` listing every model slug and price with a comment marking each as `VERIFY BEFORE USE`, plus a startup config validation step that fails fast on a bad model id.
+- **C2. Domain models.** Pydantic skeletons for: `Document`, `IntakeOutput`, `ExtractionOutput` (entities with value, type, and a source span or offset where possible), `ClassificationOutput`, `SummaryOutput`, `Span`, `Trace`, `StepScore`, `Diagnosis` (root-cause step, category, evidence chain, confidence, analyzer version), `Flag`, `EvalCase`, `EvalRun`, `EvalResult`. Include versioning fields (`pipeline_version`, `prompt_version`, `schema_version`). `Span` and `Diagnosis` must additionally record the model id and pinned provider routing used, since OpenRouter makes the exact upstream model part of a result's identity.
 - **C3. Pipeline contracts.** Exact function signatures for the four steps, the `@traced_step` decorator contract, and how one instrumented step is added in one line.
-- **C4. LLM client contract.** Retries and backoff, timeouts, token accounting, structured output handling and validation failures, caching and replay modes, spend caps.
+- **C4. LLM client contract.** The single OpenRouter-facing entry point: base URL, auth header, and request/response shapes marked `VERIFY BEFORE USE`. Retries and backoff, timeouts, token accounting (including reasoning tokens and per-request-priced models), structured output handling with the three-tier fallback from `provider_constraint_openrouter`, validation-failure repair, provider routing pin, capability discovery and rejection of unsupported models at startup, caching and replay modes, and spend caps. Specify exactly which failure classes are retried (transport errors, 429, 5xx) versus surfaced immediately (401/403 auth, 404 unknown model, schema-exhaustion), and what a `PipelineError` carries into the span when a step ultimately fails.
 - **C5. Tracing design.** Span lifecycle, attributes captured per span, how errors and partial failures are represented, how trace status (success / failure / degraded) is computed, and how the confidence score is requested and stored.
 - **C6. Storage design.** Full SQLite DDL (tables, keys, indexes), JSON trace file layout and naming, atomic write strategy, and the consistency story between the file and the index.
 - **C7. Analyzer design.** The algorithm in pseudocode; the per-step rubrics; the deterministic checks per step; the judge prompt templates (full text, with injection-hygiene delimiters); the output schema; the decision table for failure categories (including the Propagation definition from `known_weaknesses_you_must_address` item 4); and how the evidence chain is assembled from real input/output pairs.
@@ -158,8 +171,8 @@ Produce the following sections, in this order, using the headings below. Be dens
 - **C9. Frontend specification.** Screens, component tree, state management, the node-graph color rules (green / yellow / red with exact thresholds), the diff view data contract, and the flag/confirm/override flow.
 - **C10. Eval and regression engine.** Case schema, per-step-type scoring and the definition of "fixed", run scheduling (manual trigger plus a simple scheduled option), result storage, and the trend-line computation.
 - **C11. Analytics.** The exact queries or aggregations for: failure types, failing step frequency, failure rate over time, average time to root cause.
-- **C12. Non-functional requirements.** Latency budget per pipeline run and per diagnosis, cost budget with a worked estimate (tokens times price assumptions, flagged as assumptions), reliability, determinism, and observability of the tool itself (logging).
-- **C13. Security, privacy, and safety.** Secrets, PII policy for the dataset, prompt-injection hygiene, and dependency pinning.
+- **C12. Non-functional requirements.** Latency budget per pipeline run and per diagnosis, cost budget with a worked estimate (tokens times config-driven price assumptions, flagged as assumptions, including the OpenRouter minimum top-up), reliability, determinism (including what pinned provider routing does and does not guarantee), and observability of the tool itself (logging, plus a per-request log of model id, provider, tokens, latency, and cache hit so a run's cost is auditable after the fact).
+- **C13. Security, privacy, and safety.** Secrets (the OpenRouter API key is the only one; note that the standard OpenAI SDK pointed at a custom base URL still expects an `OPENAI_API_KEY`-style env var, so decide and document the variable name rather than letting it be confusing), PII policy for the dataset (no real personal data, because every document is forwarded to a third-party upstream provider chosen by OpenRouter routing), prompt-injection hygiene, and dependency pinning. Also cover what to do if the API key is ever committed: rotation procedure and a pre-commit secret scan.
 - **C14. Testing strategy.** Test pyramid with concrete examples: unit tests for steps and the decorator, contract tests for schemas, golden-trace tests for the analyzer, fault-injection tests, API tests, one end-to-end smoke test, and the LLM record/replay approach. State coverage expectations realistically.
 - **C15. Deployment and packaging.** No Docker. Plan instead: (a) a local dev/run story — dependency manager (`uv` preferred, else `poetry`/`venv`), a `Makefile` or `justfile` with `install` / `dev` / `test` / `run-api` / `run-ui` / `eval` / `seed` targets, and how to run API and UI together without a container runtime; (b) Render deployment — service type, build/start commands, runtime and Python version, environment variables and secrets, and **persistent disk** mounted for the SQLite database file and the JSON trace directory, including the disk mount path and how the app resolves it via config; (c) health checks and graceful handling of Render's spin-down and cold starts; (d) the one-command local run and the one-command deploy; (e) a static-export or read-only demo mode as a fallback if a persistent disk is unavailable on the chosen plan, so the public demo degrades gracefully instead of losing data. State clearly what data survives a redeploy and what a restart with a fresh disk loses.
 
@@ -204,7 +217,7 @@ Then provide:
 ### Part G: Open Items
 - **G1. Assumptions made** (numbered, each with the alternative).
 - **G2. Questions I must answer**, limited to those that truly block a decision, each with the default you assumed.
-- **G3. Items marked `VERIFY BEFORE USE`** collected in one list (library APIs, model names, pricing, OTel attribute names).
+- **G3. Items marked `VERIFY BEFORE USE`** collected in one list, grouped by source, covering at minimum: OpenRouter API specifics (base URL, auth header name, request/response shapes, whether a model-metadata endpoint exists and is stable, how provider routing is pinned, minimum credit top-up, whether per-request pricing applies to any candidate model, reasoning-field response shape), candidate model slugs and their context windows and pricing, OTel GenAI attribute names, and any library API whose behavior you are assuming.
 </deliverables>
 
 <output_rules>
@@ -225,7 +238,8 @@ Before you finish, silently verify and then fix any failures:
 4. The plan measures its own claims: analyzer accuracy, confidence usefulness, judge agreement, and time to root cause versus a manual baseline.
 5. Nothing in the plan requires infrastructure beyond a laptop and a single free-tier Render service with a persistent disk. No Docker, no Kubernetes, no message queues, no external database.
 6. Every `[ADDED]` item is justified and the total scope fits 14 days at the stated hours, with a cut list if it does not.
-7. No invented model names, prices, or library APIs are stated as fact.
+7. No invented model names, prices, or library APIs are stated as fact. No OpenRouter slug, price, or API shape appears anywhere in the plan without being marked `VERIFY BEFORE USE` and sourced from config.
+8. The provider-independence mitigation is real: the pipeline model and the judge model are configured from different provider families, and misconfiguration fails loudly rather than silently producing a biased judge.
 Then output the document.
 </final_self_check>
 
