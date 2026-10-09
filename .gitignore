@@ -1,0 +1,27 @@
+# Runtime data — SQLite index, per-trace JSON payloads
+data/*.db
+data/*.db-*
+data/traces/*.json
+
+# Secrets
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
