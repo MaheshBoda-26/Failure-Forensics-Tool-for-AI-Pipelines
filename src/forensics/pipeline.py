@@ -7,7 +7,7 @@ tracing is meaningless.
 
 from pathlib import Path
 
-from forensics.llm import LLMClient, create_llm_client
+from forensics.llm import LLMClient, create_llm_client, using_llm_client
 from forensics.models import (
     ClassificationOutput,
     Document,
@@ -72,8 +72,6 @@ class Pipeline:
 
 async def run_pipeline(document: Document, cache_dir: Path | None = None) -> PipelineOutput:
     """Convenience function to run the pipeline with default settings."""
-    pipeline = await Pipeline.create(cache_dir=cache_dir)
-    try:
+    async with using_llm_client(cache_dir=cache_dir) as client:
+        pipeline = Pipeline(client=client)
         return await pipeline.run(document)
-    finally:
-        await pipeline.client.close()

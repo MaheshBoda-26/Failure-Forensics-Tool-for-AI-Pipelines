@@ -23,7 +23,20 @@ from forensics.storage import Storage
 
 app = FastAPI(title="Failure Forensics API", version="0.1.0")
 
-storage = Storage()
+_storage: Storage | None = None
+
+
+def get_storage() -> Storage:
+    """Return the process-wide Storage, creating it on first use.
+
+    Constructing Storage at import time opened (and created) the SQLite file as
+    a side effect of `import forensics.api`, which broke test isolation and made
+    the module unimportable without a writable data directory.
+    """
+    global _storage
+    if _storage is None:
+        _storage = Storage()
+    return _storage
 
 
 class FlagRequest(BaseModel):
@@ -48,12 +61,12 @@ def health() -> dict[str, str]:
 def list_traces(
     status: TraceStatus | None = None, limit: int = 100, offset: int = 0
 ) -> list[Trace]:
-    return storage.list_traces(status=status, limit=limit, offset=offset)
+    return get_storage().list_traces(status=status, limit=limit, offset=offset)
 
 
 @app.get("/traces/{trace_id}", response_model=Trace)
 def get_trace(trace_id: str) -> Trace:
-    trace = storage.get_trace(trace_id)
+    trace = get_storage().get_trace(trace_id)
     if not trace:
         raise HTTPException(status_code=404, detail="Trace not found")
     return trace
@@ -61,17 +74,17 @@ def get_trace(trace_id: str) -> Trace:
 
 @app.post("/traces/{trace_id}/flag", response_model=Flag)
 def create_flag(trace_id: str, request: FlagRequest) -> Flag:
-    trace = storage.get_trace(trace_id)
+    trace = get_storage().get_trace(trace_id)
     if not trace:
         raise HTTPException(status_code=404, detail="Trace not found")
 
     flag = Flag(trace_id=trace_id, user_id=request.user_id, note=request.note)
-    return storage.create_flag(flag)
+    return get_storage().create_flag(flag)
 
 
 @app.post("/traces/{trace_id}/diagnose", response_model=Diagnosis)
 def diagnose_trace(trace_id: str) -> Diagnosis:
-    trace = storage.get_trace(trace_id)
+    trace = get_storage().get_trace(trace_id)
     if not trace:
         raise HTTPException(status_code=404, detail="Trace not found")
 
@@ -86,17 +99,17 @@ def diagnose_trace(trace_id: str) -> Diagnosis:
     diagnosis = analyze_trace(trace, doc_text)
 
     # Save diagnosis
-    storage.create_diagnosis(diagnosis)
+    get_storage().create_diagnosis(diagnosis)
     return diagnosis
 
 
 @app.post("/diagnoses/{diagnosis_id}/confirm")
 def confirm_diagnosis(diagnosis_id: str, request: ConfirmDiagnosisRequest) -> Diagnosis:
-    diagnosis = storage.get_diagnosis(diagnosis_id)
+    diagnosis = get_storage().get_diagnosis(diagnosis_id)
     if not diagnosis:
         raise HTTPException(status_code=404, detail="Diagnosis not found")
 
-    storage.update_diagnosis_confirmation(
+    get_storage().update_diagnosis_confirmation(
         diagnosis_id,
         request.confirmed,
         overridden=bool(request.override_category),
@@ -107,12 +120,12 @@ def confirm_diagnosis(diagnosis_id: str, request: ConfirmDiagnosisRequest) -> Di
     # If confirmed, create eval case
     if request.confirmed:
         # Find flag for this trace
-        flags = storage.list_flags_for_trace(diagnosis.trace_id)
+        flags = get_storage().list_flags_for_trace(diagnosis.trace_id)
         if flags:
             # In a real app, we'd link the flag to the diagnosis
             pass
 
-    updated_diagnosis = storage.get_diagnosis(diagnosis_id)
+    updated_diagnosis = get_storage().get_diagnosis(diagnosis_id)
     if not updated_diagnosis:
         raise HTTPException(status_code=404, detail="Diagnosis not found after update")
     return updated_diagnosis
@@ -120,7 +133,7 @@ def confirm_diagnosis(diagnosis_id: str, request: ConfirmDiagnosisRequest) -> Di
 
 @app.get("/eval/cases")
 def list_eval_cases(limit: int = 100, offset: int = 0) -> list[EvalCase]:
-    return storage.list_eval_cases(limit=limit, offset=offset)
+    return get_storage().list_eval_cases(limit=limit, offset=offset)
 
 
 @app.get("/eval/runs")
@@ -132,7 +145,7 @@ def list_eval_runs() -> list[EvalRun]:
 @app.get("/analytics")
 def get_analytics() -> AnalyticsSnapshot:
     """Get aggregated analytics for dashboard."""
-    traces = storage.list_traces(limit=10000)
+    traces = get_storage().list_traces(limit=10000)
 
     total_traces = len(traces)
     failure_traces = [t for t in traces if t.status == TraceStatus.FAILURE]
@@ -143,7 +156,7 @@ def get_analytics() -> AnalyticsSnapshot:
     failures_by_step: dict[str, int] = {}
 
     for trace in failure_traces:
-        diagnosis = storage.get_diagnosis_for_trace(trace.trace_id)
+        diagnosis = get_storage().get_diagnosis_for_trace(trace.trace_id)
         if diagnosis:
             cat = diagnosis.category
             failures_by_category[cat] = failures_by_category.get(cat, 0) + 1

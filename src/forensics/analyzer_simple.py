@@ -8,9 +8,11 @@ Runs deterministic checks per span:
 First span with ANY failed check = root cause.
 """
 
+import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from forensics.models import (
     Diagnosis,
@@ -34,6 +36,21 @@ class CheckResult:
     step_name: str
 
 
+def _parse_span_output(span: Span) -> dict[str, Any]:
+    """Parse a span's serialized output as JSON data.
+
+    Never use eval()/exec() here: output_json is LLM-controlled text, so
+    evaluating it is arbitrary code execution triggered by model output or by
+    anyone able to write a trace file.
+    """
+    if not span.output_json:
+        return {}
+    parsed = json.loads(span.output_json)
+    if not isinstance(parsed, dict):
+        raise ValueError(f"span {span.span_id} output is {type(parsed).__name__}, expected object")
+    return parsed
+
+
 def check_entity_grounding(span: Span, document_text: str) -> list[CheckResult]:
     """Check that all extracted entities appear in the source document."""
     results: list[CheckResult] = []
@@ -42,9 +59,9 @@ def check_entity_grounding(span: Span, document_text: str) -> list[CheckResult]:
         return results
 
     try:
-        output_data = eval(span.output_json) if span.output_json else {}
+        output_data = _parse_span_output(span)
         entities_data = output_data.get("entities", [])
-    except Exception:
+    except (ValueError, TypeError):
         msg = "Failed to parse extraction output"
         return [CheckResult("entity_grounding", False, msg, span.step_name)]
 
@@ -77,9 +94,9 @@ def check_label_enum(span: Span) -> list[CheckResult]:
         return results
 
     try:
-        output_data = eval(span.output_json) if span.output_json else {}
+        output_data = _parse_span_output(span)
         doc_type = output_data.get("document_type", "")
-    except Exception:
+    except (ValueError, TypeError):
         msg = "Failed to parse classification output"
         return [CheckResult("label_enum", False, msg, span.step_name)]
 
@@ -107,9 +124,9 @@ def check_date_regex(span: Span) -> list[CheckResult]:
         return results
 
     try:
-        output_data = eval(span.output_json) if span.output_json else {}
+        output_data = _parse_span_output(span)
         entities_data = output_data.get("entities", [])
-    except Exception:
+    except (ValueError, TypeError):
         msg = "Failed to parse extraction output"
         return [CheckResult("date_regex", False, msg, span.step_name)]
 

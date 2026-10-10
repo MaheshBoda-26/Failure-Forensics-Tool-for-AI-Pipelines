@@ -6,6 +6,7 @@ degraded) and how the self-reported confidence score is requested and stored.
 """
 
 import contextvars
+import inspect
 import json
 import os
 import sqlite3
@@ -108,6 +109,18 @@ def get_current_span() -> Span | None:
     return _current_span.get()
 
 
+def _span_payload(args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Build the serializable input payload for a span.
+
+    `self` is dropped deliberately. On a method, args[0] is the pipeline object,
+    which transitively holds the API key; serializing it would write a secret
+    into every trace file on disk. Steps that want their instance state in the
+    span must pass it explicitly as an argument.
+    """
+    positional = list(args[1:]) if args else []
+    return {"args": positional, "kwargs": kwargs}
+
+
 def traced_step(step_name: str) -> Callable[[F], F]:
     """Decorator to trace a pipeline step.
 
@@ -123,47 +136,64 @@ def traced_step(step_name: str) -> Callable[[F], F]:
                 return func(*args, **kwargs)
 
             start_time = time.perf_counter()
-            input_data = {"args": args, "kwargs": kwargs}
+            input_data = _span_payload(args, kwargs)
 
-            # Run the function
-            try:
-                result = func(*args, **kwargs)
-                error = None
-                status = "success"
-            except Exception as e:
-                error = str(e)
-                status = "failure"
-                raise
-            finally:
-                elapsed_ms = int((time.perf_counter() - start_time) * 1000)
-
-                # Create span
+            def record(elapsed_ms: int, result: Any, error: str | None) -> None:
+                status = "failure" if error else "success"
+                output_json = json.dumps(result, default=str) if result is not None else "{}"
                 span = Span(
                     span_id=_new_id(),
                     trace_id=trace.trace_id,
                     step_name=step_name,
                     input_json=json.dumps(input_data, default=str),
-                    output_json=json.dumps(result, default=str) if "result" in locals() else "{}",
+                    output_json=output_json,
                     model_id="fake-model",
                     provider="fake",
                     prompt=f"Step: {step_name}",
-                    raw_response=json.dumps(result, default=str) if "result" in locals() else "",
+                    raw_response=output_json,
                     latency_ms=elapsed_ms,
                     status=status,  # type: ignore[arg-type]
                     error=error,
                     started_at=_utc_now(),
                     ended_at=_utc_now(),
                 )
-
-                # Add to trace
                 trace.spans.append(span)
                 _current_span.set(span)
 
+            # Fast path: an async step is detected BEFORE running it, so the
+            # span brackets the awaited work instead of the coroutine creation.
+            if inspect.iscoroutinefunction(func):
+                return _await_and_record(func(*args, **kwargs), trace, record, input_data)
+
+            try:
+                result = func(*args, **kwargs)
+            except Exception as e:
+                record(int((time.perf_counter() - start_time) * 1000), None, str(e))
+                raise
+            record(int((time.perf_counter() - start_time) * 1000), result, None)
             return result
 
         return wrapper  # type: ignore[return-value]
 
     return decorator
+
+
+async def _await_and_record(
+    awaitable: Any,
+    trace: Trace,
+    record: Callable[[int, Any, str | None], None],
+    input_data: dict[str, Any],
+) -> Any:
+    """Await an async traced step and record exactly one span for it."""
+    del input_data
+    start_time = time.perf_counter()
+    try:
+        result = await awaitable
+    except Exception as e:
+        record(int((time.perf_counter() - start_time) * 1000), None, str(e))
+        raise
+    record(int((time.perf_counter() - start_time) * 1000), result, None)
+    return result
 
 
 def write_trace_json(trace: Trace, traces_dir: Path) -> Path:
