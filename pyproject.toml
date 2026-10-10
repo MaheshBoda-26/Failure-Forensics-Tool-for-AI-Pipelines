@@ -12,6 +12,7 @@ dependencies = [
     "opentelemetry-api>=1.27",
     "opentelemetry-sdk>=1.27",
     "typer>=0.27",
+    "streamlit>=1.38",
 ]
 
 [project.optional-dependencies]

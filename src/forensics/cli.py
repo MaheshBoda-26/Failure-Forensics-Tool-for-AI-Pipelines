@@ -205,16 +205,21 @@ def demo() -> None:
 def eval() -> None:
     """Re-run the accumulated eval dataset."""
     _setup()
-    typer.secho("Eval engine not yet implemented (Phase 5)", fg=typer.colors.YELLOW)
-    raise typer.Exit(code=1)
+    from forensics.eval_simple import print_eval_results, run_eval
+
+    run = run_eval()
+    if run:
+        print_eval_results(run.run_id)
 
 
 @app.command()
 def analytics() -> None:
     """Show analytics dashboard."""
     _setup()
-    typer.secho("Analytics not yet implemented (Phase 5)", fg=typer.colors.YELLOW)
-    raise typer.Exit(code=1)
+    from forensics.api import get_analytics
+
+    analytics = get_analytics()
+    typer.echo(json.dumps(analytics.model_dump(), indent=2, default=str))
 
 
 @app.command()
