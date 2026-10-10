@@ -7,7 +7,7 @@ tracing is meaningless.
 
 from pathlib import Path
 
-from forensics.fake_llm import FakeLLMClient, create_fake_client
+from forensics.llm import LLMClient, create_llm_client
 from forensics.models import (
     ClassificationOutput,
     Document,
@@ -20,76 +20,47 @@ from forensics.tracing import traced_step
 
 
 class Pipeline:
-    """Four-step document processing pipeline with fake LLM."""
+    """Four-step document processing pipeline with real LLM client."""
 
-    def __init__(
-        self,
-        client: FakeLLMClient | None = None,
-        cache_dir: Path | None = None,
-    ):
-        self.client = client or create_fake_client(cache_dir or Path("data/cache"))
+    def __init__(self, client: LLMClient):
+        self.client = client
         self.pipeline_version = "0.1.0"
 
+    @classmethod
+    async def create(cls, cache_dir: Path | None = None) -> "Pipeline":
+        """Create a new Pipeline with initialized LLM client."""
+        client = await create_llm_client(cache_dir=cache_dir or Path("data/cache"))
+        return cls(client=client)
+
     @traced_step("intake")
-    def intake(self, document: Document) -> IntakeOutput:
+    async def intake(self, document: Document) -> IntakeOutput:
         """Normalize and validate input document."""
-        cleaned = document.content.strip()
-        return IntakeOutput(
-            document=document,
-            cleaned_text=cleaned,
-            char_count=len(cleaned),
-            detected_encoding="utf-8",
-        )
+        return await self.client.intake(document.content)
 
     @traced_step("extraction")
-    def extraction(self, intake_output: IntakeOutput) -> ExtractionOutput:
+    async def extraction(self, intake_output: IntakeOutput) -> ExtractionOutput:
         """Extract entities from the cleaned text."""
-        response = self.client.structured(
-            model="fake",
-            prompt=f"Extract entities from: {intake_output.cleaned_text[:500]}",
-            response_model=ExtractionOutput,
-            step="extraction",
-            input_data={"text": intake_output.cleaned_text},
-        )
-        return response
+        return await self.client.extraction(intake_output)
 
     @traced_step("classification")
-    def classification(self, extraction_output: ExtractionOutput) -> ClassificationOutput:
+    async def classification(self, extraction_output: ExtractionOutput) -> ClassificationOutput:
         """Classify the document type."""
-        response = self.client.structured(
-            model="fake",
-            prompt=f"Classify document with entities: {extraction_output.entities}",
-            response_model=ClassificationOutput,
-            step="classification",
-            input_data={"entities": extraction_output.entities},
-        )
-        return response
+        return await self.client.classification(extraction_output)
 
     @traced_step("summarization")
-    def summarization(
+    async def summarization(
         self, intake_output: IntakeOutput, classification_output: ClassificationOutput
     ) -> SummaryOutput:
         """Generate a summary of the document."""
-        doc_type = classification_output.document_type.value
-        prompt = f"Summarize {doc_type} document: {intake_output.cleaned_text[:500]}"
-        response = self.client.structured(
-            model="fake",
-            prompt=prompt,
-            response_model=SummaryOutput,
-            step="summarization",
-            input_data={
-                "text": intake_output.cleaned_text,
-                "document_type": doc_type,
-            },
-        )
-        return response
+        return await self.client.summarization(intake_output, classification_output)
 
-    def run(self, document: Document) -> PipelineOutput:
+    async def run(self, document: Document) -> PipelineOutput:
         """Run the full pipeline on a document."""
-        intake_out = self.intake(document)
-        extraction_out = self.extraction(intake_out)
-        classification_out = self.classification(extraction_out)
-        summarization_out = self.summarization(intake_out, classification_out)
+        with self.client.run_spend():
+            intake_out = await self.intake(document)
+            extraction_out = await self.extraction(intake_out)
+            classification_out = await self.classification(extraction_out)
+            summarization_out = await self.summarization(intake_out, classification_out)
 
         return PipelineOutput(
             intake=intake_out,
@@ -99,7 +70,10 @@ class Pipeline:
         )
 
 
-def run_pipeline(document: Document, cache_dir: Path | None = None) -> PipelineOutput:
+async def run_pipeline(document: Document, cache_dir: Path | None = None) -> PipelineOutput:
     """Convenience function to run the pipeline with default settings."""
-    pipeline = Pipeline(cache_dir=cache_dir)
-    return pipeline.run(document)
+    pipeline = await Pipeline.create(cache_dir=cache_dir)
+    try:
+        return await pipeline.run(document)
+    finally:
+        await pipeline.client.close()

@@ -91,10 +91,10 @@ def run_eval_case(case: EvalCase, pipeline: Pipeline, doc_text: str) -> EvalResu
     return eval_result
 
 
-def run_eval() -> EvalRun | None:
+async def run_eval() -> EvalRun | None:
     """Run all eval cases against current pipeline and return results."""
     storage = Storage()
-    pipeline = Pipeline()
+    pipeline = await Pipeline.create()
 
     # Get all eval cases
     cases = storage.list_eval_cases(limit=1000)

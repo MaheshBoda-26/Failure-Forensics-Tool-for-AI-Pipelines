@@ -72,23 +72,28 @@ def run(doc_path: Path) -> None:
         typer.secho(f"Document not found: {doc_path}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
+    import asyncio
+
     doc = Document(content=doc_path.read_text())
-    pipeline = Pipeline()
 
-    with trace_context(document_id=doc_path.stem) as ctx:
-        result = pipeline.run(doc)
-        storage = Storage()
-        json_path = storage.save_trace(ctx.trace)
+    async def _run() -> None:
+        pipeline = await Pipeline.create()
+        with trace_context(document_id=doc_path.stem) as ctx:
+            result = await pipeline.run(doc)
+            storage = Storage()
+            json_path = storage.save_trace(ctx.trace)
 
-    typer.secho(f"Pipeline completed: {doc_path.stem}", fg=typer.colors.GREEN)
-    typer.echo(f"Trace saved to: {json_path}")
-    typer.echo(f"Trace ID: {ctx.trace.trace_id}")
-    typer.echo(f"Intake: {result.intake.char_count} chars")
-    typer.echo(f"Extraction: {len(result.extraction.entities)} entities")
-    cls = result.classification.document_type.value
-    conf = result.classification.confidence
-    typer.echo(f"Classification: {cls} ({conf:.2f})")
-    typer.echo(f"Summary: {result.summarization.summary[:80]}...")
+        typer.secho(f"Pipeline completed: {doc_path.stem}", fg=typer.colors.GREEN)
+        typer.echo(f"Trace saved to: {json_path}")
+        typer.echo(f"Trace ID: {ctx.trace.trace_id}")
+        typer.echo(f"Intake: {result.intake.char_count} chars")
+        typer.echo(f"Extraction: {len(result.extraction.entities)} entities")
+        cls = result.classification.document_type.value
+        conf = result.classification.confidence
+        typer.echo(f"Classification: {cls} ({conf:.2f})")
+        typer.echo(f"Summary: {result.summarization.summary[:80]}...")
+
+    asyncio.run(_run())
 
 
 @app.command(name="validate-dataset")
@@ -148,66 +153,73 @@ def demo() -> None:
         typer.secho("labels.json not found", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
+    import asyncio
+
     with open(labels_path) as f:
         labels = json.load(f)
 
     storage = Storage()
-    pipeline = Pipeline()
 
-    results = []
-    for doc_info in labels.get("documents", []):
-        doc_id = doc_info["doc_id"]
-        doc_path = Path(f"dataset/documents/{doc_id}.txt")
+    async def _run_demo() -> None:
+        pipeline = await Pipeline.create()
+        results = []
+        for doc_info in labels.get("documents", []):
+            doc_id = doc_info["doc_id"]
+            doc_path = Path(f"dataset/documents/{doc_id}.txt")
 
-        if not doc_path.exists():
-            typer.secho(f"Skipping missing: {doc_id}", fg=typer.colors.YELLOW)
-            continue
+            if not doc_path.exists():
+                typer.secho(f"Skipping missing: {doc_id}", fg=typer.colors.YELLOW)
+                continue
 
-        doc = Document(content=doc_path.read_text())
-        with trace_context(document_id=doc_id) as ctx:
-            result = pipeline.run(doc)
-            storage.save_trace(ctx.trace)
+            doc = Document(content=doc_path.read_text())
+            with trace_context(document_id=doc_id) as ctx:
+                result = await pipeline.run(doc)
+                storage.save_trace(ctx.trace)
 
-        expected_type = doc_info.get("doc_type", "unknown")
-        actual_type = result.classification.document_type.value
-        match = expected_type == actual_type
+            expected_type = doc_info.get("doc_type", "unknown")
+            actual_type = result.classification.document_type.value
+            match = expected_type == actual_type
 
-        results.append(
-            {
-                "doc_id": doc_id,
-                "expected": expected_type,
-                "actual": actual_type,
-                "match": match,
-                "should_fail": doc_info.get("should_fail", False),
-                "failure_step": doc_info.get("failure_step"),
-                "failure_category": doc_info.get("failure_category"),
-            }
-        )
+            results.append(
+                {
+                    "doc_id": doc_id,
+                    "expected": expected_type,
+                    "actual": actual_type,
+                    "match": match,
+                    "should_fail": doc_info.get("should_fail", False),
+                    "failure_step": doc_info.get("failure_step"),
+                    "failure_category": doc_info.get("failure_category"),
+                }
+            )
 
-        status = "✓" if match else "✗"
-        color = typer.colors.GREEN if match else typer.colors.RED
-        msg = f"  {status} {doc_id}: expected={expected_type}, actual={actual_type}"
-        typer.secho(msg, fg=color)
+            status = "✓" if match else "✗"
+            color = typer.colors.GREEN if match else typer.colors.RED
+            msg = f"  {status} {doc_id}: expected={expected_type}, actual={actual_type}"
+            typer.secho(msg, fg=color)
 
-    # Summary
-    total = len(results)
-    correct = sum(1 for r in results if r["match"])
-    seeded_failures = sum(1 for r in results if r["should_fail"])
+        # Summary
+        total = len(results)
+        correct = sum(1 for r in results if r["match"])
+        seeded_failures = sum(1 for r in results if r["should_fail"])
 
-    typer.echo()
-    summary_color = typer.colors.GREEN if correct == total else typer.colors.YELLOW
-    typer.secho(f"SUMMARY: {correct}/{total} classifications correct", fg=summary_color)
-    typer.echo(f"Seeded failures in dataset: {seeded_failures}")
-    typer.echo(f"Traces saved: {total}")
+        typer.echo()
+        summary_color = typer.colors.GREEN if correct == total else typer.colors.YELLOW
+        typer.secho(f"SUMMARY: {correct}/{total} classifications correct", fg=summary_color)
+        typer.echo(f"Seeded failures in dataset: {seeded_failures}")
+        typer.echo(f"Traces saved: {total}")
+
+    asyncio.run(_run_demo())
 
 
 @app.command()
 def eval() -> None:
     """Re-run the accumulated eval dataset."""
     _setup()
+    import asyncio
+
     from forensics.eval_simple import print_eval_results, run_eval
 
-    run = run_eval()
+    run = asyncio.run(run_eval())
     if run:
         print_eval_results(run.run_id)
 
