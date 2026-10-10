@@ -1,0 +1,46 @@
+INCIDENT REPORT WITH CONTRACTUAL IMPACT ASSESSMENT
+
+INCIDENT: API-2024-045 - Payment Processing Outage
+DATE: August 12, 2024
+CONTRACTS AFFECTED:
+- MSA-2023-001 (Acme Corp) - SLA: 99.9% uptime
+- MSA-2023-007 (Global Industries) - SLA: 99.95% uptime
+- MSA-2023-012 (TechStart Ventures) - SLA: 99.9% uptime
+
+OUTAGE DETAILS
+Duration: 47 minutes
+Start: 14:23 UTC
+End: 15:10 UTC
+Root Cause: Database migration lock contention
+Services Affected: Payment API, Refunds API, Webhooks
+
+SLA IMPACT CALCULATION
+Monthly uptime target (99.9%): 43,200 minutes * 0.999 = 43,156.8 minutes allowed downtime
+Monthly uptime target (99.95%): 43,200 minutes * 0.9995 = 43,178.4 minutes allowed downtime
+
+August downtime to date (including this incident): 52 minutes
+- Acme Corp (99.9%): 52 min used of 43.2 min budget = 120% of budget = SLA BREACH
+- Global Industries (99.95%): 52 min used of 21.6 min budget = 241% of budget = SLA BREACH
+- TechStart (99.9%): 52 min used of 43.2 min budget = 120% of budget = SLA BREACH
+
+FINANCIAL IMPACT
+Per MSA terms, SLA breach triggers service credits:
+- Acme Corp: 10% of monthly fee ($10,000) = $1,000 credit
+- Global Industries: 15% of monthly fee ($25,000) = $3,750 credit
+- TechStart: 10% of monthly fee ($15,000) = $1,500 credit
+Total service credits due: $6,250
+
+CUSTOMER COMMUNICATIONS
+- Acme Corp: Notified at 14:30 UTC, acknowledged at 14:35 UTC
+- Global Industries: Notified at 14:32 UTC, acknowledged at 14:38 UTC
+- TechStart: Notified at 14:35 UTC, acknowledged at 14:40 UTC
+
+REMEDIATION PLAN
+1. Immediate: Deploy connection pool monitoring (by Aug 15)
+2. Short-term: Migration safety gates in CI/CD (by Aug 30)
+3. Long-term: Evaluate online schema change tools (by Sep 30)
+
+CONTRACTUAL NEXT STEPS
+- Issue service credit invoices by August 20
+- Schedule SLA review meetings with each client (by August 25)
+- Update runbooks and incident response procedures (by September 15)

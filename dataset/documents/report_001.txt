@@ -1,0 +1,33 @@
+QUARTERLY BUSINESS REPORT
+
+Q1 2024 FINANCIAL PERFORMANCE REPORT
+Prepared: April 15, 2024
+Prepared by: Finance Department, Acme Corporation
+Period: January 1 - March 31, 2024
+
+EXECUTIVE SUMMARY
+Revenue increased 15% year-over-year to $42.5M. Operating margin improved to 22% from 19%.
+Net income of $8.2M exceeded projections by $1.2M.
+
+REVENUE BREAKDOWN
+- Enterprise Software: $25.0M (59%)
+- Professional Services: $10.5M (25%)
+- Maintenance & Support: $7.0M (16%)
+
+KEY METRICS
+- Customer Acquisition Cost: $12,500 (down 8%)
+- Lifetime Value: $185,000 (up 12%)
+- Churn Rate: 3.2% (down from 4.1%)
+- Net Revenue Retention: 118%
+
+OPERATIONAL HIGHLIGHTS
+- Launched Version 4.2 with AI-powered analytics
+- Expanded APAC team by 15 engineers
+- Achieved SOC 2 Type II compliance
+
+OUTLOOK
+Q2 guidance: $44-46M revenue, 23-24% operating margin. Full year guidance raised to $185-190M.
+
+APPROVED BY:
+John Smith, CFO
+Date: April 15, 2024

@@ -1,0 +1,27 @@
+INVOICE
+
+Invoice #: INV-2024-003
+Date: July 1, 2024
+Due Date: July 31, 2024
+
+BILL TO:
+TechStart Ventures
+400 Innovation Way
+Seattle, WA 98101
+
+FROM:
+Legal Counsel Partners
+600 Justice Avenue
+San Francisco, CA 94102
+
+DESCRIPTION                                          QTY    RATE      AMOUNT
+NDA Review and Negotiation                            1    $3,500    $3,500.00
+IP Assignment Agreement Drafting                      1    $5,000    $5,000.00
+Corporate Governance Advisory (5 hrs)                 5    $600      $3,000.00
+
+SUBTOTAL                                                          $11,500.00
+TAX (9.25%)                                                        $1,063.75
+TOTAL                                                         $12,563.75
+
+Payment Terms: Due on receipt. ACH to account ending in 8901.
+Contact: billing@legalcounsel.com | (415) 555-0147

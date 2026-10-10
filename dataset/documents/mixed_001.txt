@@ -1,0 +1,41 @@
+PROJECT PROPOSAL WITH EMBEDDED CONTRACT TERMS
+
+PROJECT: Customer Portal Redesign
+CLIENT: Acme Corporation
+VENDOR: Beta Services LLC
+DATE: February 20, 2024
+VERSION: 1.0
+
+SCOPE OF WORK
+Beta Services will redesign the Acme Customer Portal with the following deliverables:
+1. UX Research & Personas (Weeks 1-2)
+2. Information Architecture & Wireframes (Weeks 3-4)
+3. High-Fidelity Designs (Weeks 5-7)
+4. Design System Documentation (Week 8)
+5. Developer Handoff & QA Support (Weeks 9-10)
+
+TIMELINE: 10 weeks from project kickoff (target: March 1, 2024)
+
+COMMERCIAL TERMS
+Total Project Fee: $75,000 (fixed price)
+Payment Schedule:
+- 30% ($22,500) upon signing
+- 40% ($30,000) at midpoint (Week 5)
+- 30% ($22,500) upon final delivery
+
+Additional work beyond scope billed at $150/hour with prior written approval.
+
+CONTRACTUAL PROVISIONS
+This proposal incorporates by reference the Master Service Agreement dated January 15, 2024 between Acme Corporation and Beta Services LLC. In case of conflict, the MSA governs.
+
+Intellectual Property: All deliverables are work made for hire; Client owns all rights upon full payment.
+Confidentiality: Per Section 4 of MSA.
+Termination: Per Section 7 of MSA.
+
+ACCEPTANCE
+By signing below, both parties agree to the scope, timeline, and terms above.
+
+ACME CORPORATION                    BETA SERVICES LLC
+By: John Smith                      By: Jane Doe
+Title: CEO                          Title: Managing Partner
+Date: February 22, 2024             Date: February 22, 2024

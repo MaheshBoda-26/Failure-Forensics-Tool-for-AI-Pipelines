@@ -1,0 +1,22 @@
+NON-DISCLOSURE AGREEMENT
+
+This Non-Disclosure Agreement ("NDA") is entered into on June 10, 2024, between TechStart Ventures ("Disclosing Party"), 400 Innovation Way, Seattle, WA 98101, and David Kim ("Receiving Party"), 150 Pine Street, Portland, OR 97204.
+
+1. CONFIDENTIAL INFORMATION. "Confidential Information" includes all non-public business plans, financial data, technical specifications, and customer lists disclosed by Disclosing Party.
+
+2. OBLIGATIONS. Receiving Party shall: (a) hold Confidential Information in strict confidence; (b) not disclose to third parties; (c) use only for evaluating potential investment.
+
+3. EXCEPTIONS. Obligations do not apply to information that: (a) is publicly known; (b) was known prior to disclosure; (c) is independently developed.
+
+4. TERM. This NDA remains in effect for 3 years from the date of disclosure.
+
+5. RETURN OF MATERIALS. Upon request, Receiving Party shall return or destroy all Confidential Information.
+
+6. REMEDIES. Disclosing Party may seek injunctive relief for any breach.
+
+7. GOVERNING LAW. Washington state law applies.
+
+TECHSTART VENTURES              DAVID KIM
+By: Sarah Johnson               By: David Kim
+Title: Managing Director        Title: Angel Investor
+Date: June 10, 2024             Date: June 10, 2024

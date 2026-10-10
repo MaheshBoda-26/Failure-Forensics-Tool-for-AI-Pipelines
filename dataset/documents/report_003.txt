@@ -1,0 +1,36 @@
+INCIDENT POSTMORTEM REPORT
+
+INCIDENT: API-2024-045 - Payment Processing Outage
+Date: August 12, 2024
+Duration: 47 minutes (14:23 - 15:10 UTC)
+Severity: SEV-1 (Customer-facing payment failures)
+Owner: Platform Engineering Team
+
+TIMELINE
+14:23 - Alert: Payment API 5xx rate > 5%
+14:25 - On-call engaged, identified database connection pool exhaustion
+14:30 - Root cause: Long-running migration locked payment_transactions table
+14:35 - Mitigation: Killed migration, restarted connection pools
+14:40 - Traffic normalized, 5xx rate < 0.1%
+15:10 - Incident closed, monitoring enhanced
+
+ROOT CAUSE
+A schema migration for the new refunds feature was deployed without proper locking strategy.
+The ALTER TABLE statement acquired an ACCESS EXCLUSIVE lock, blocking all writes for 47 minutes.
+
+IMPACT
+- 12,400 failed payment attempts
+- Estimated revenue loss: $187,000
+- 3,200 unique customers affected
+- SLA breach for 2 enterprise contracts
+
+ACTION ITEMS
+1. [P0] Implement migration safety checks in CI/CD (due: Aug 30)
+2. [P1] Add pg_stat_activity monitoring alert (due: Sep 15)
+3. [P1] Create runbook for lock contention scenarios (due: Sep 15)
+4. [P2] Evaluate online schema change tools (gh-ost, pt-online-schema-change)
+
+LESSONS LEARNED
+- Never run DDL on high-traffic tables during business hours
+- Always test migrations on production-scale data in staging
+- Connection pool monitoring is critical for early detection

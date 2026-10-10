@@ -1,0 +1,26 @@
+SERVICE AGREEMENT
+
+This Service Agreement ("Agreement") is entered into as of January 15, 2024, by and between Acme Corporation ("Client"), with its principal place of business at 100 Market Street, San Francisco, CA 94105, and Beta Services LLC ("Provider"), with its principal place of business at 200 Tech Drive, Austin, TX 78701.
+
+1. SERVICES. Provider shall perform the services described in Exhibit A ("Services") in a professional and workmanlike manner.
+
+2. COMPENSATION. Client shall pay Provider a fee of $10,000 per month, payable within 30 days of invoice. Late payments accrue interest at 1.5% per month.
+
+3. TERM. This Agreement commences on January 15, 2024 and continues for 12 months unless terminated earlier per Section 7.
+
+4. CONFIDENTIALITY. Each party shall protect the other's confidential information with at least the same degree of care it uses for its own.
+
+5. INTELLECTUAL PROPERTY. All work product created by Provider under this Agreement shall be the exclusive property of Client.
+
+6. INDEMNIFICATION. Provider shall indemnify Client against claims arising from Provider's negligence or breach.
+
+7. TERMINATION. Either party may terminate with 30 days written notice. Client may terminate immediately for material breach.
+
+8. GOVERNING LAW. This Agreement shall be governed by the laws of the State of California.
+
+IN WITNESS WHEREOF, the parties have executed this Agreement as of the date first written above.
+
+ACME CORPORATION          BETA SERVICES LLC
+By: John Smith            By: Jane Doe
+Title: CEO                Title: Managing Partner
+Date: January 15, 2024    Date: January 15, 2024

@@ -1,5 +1,96 @@
 {
   "$comment": "Ground truth for the demo dataset. Every document declares whether it should fail, and if so at which step, with which category. The analyzer is scored against this file — it is the only source of free ground truth in the project. Schema is specified in PROMPT.md D8; this is the empty starting shape.",
   "schema_version": 1,
-  "documents": []
+  "documents": [
+    {
+      "doc_id": "contract_001",
+      "doc_type": "contract",
+      "should_fail": true,
+      "failure_step": "classification",
+      "failure_category": "misclassification",
+      "notes": "Seeded failure: contract misclassified as invoice"
+    },
+    {
+      "doc_id": "contract_002",
+      "doc_type": "contract",
+      "should_fail": false
+    },
+    {
+      "doc_id": "contract_003",
+      "doc_type": "contract",
+      "should_fail": false
+    },
+    {
+      "doc_id": "invoice_001",
+      "doc_type": "invoice",
+      "should_fail": true,
+      "failure_step": "extraction",
+      "failure_category": "extraction_hallucination",
+      "notes": "Seeded failure: hallucinated entity extraction"
+    },
+    {
+      "doc_id": "invoice_002",
+      "doc_type": "invoice",
+      "should_fail": false
+    },
+    {
+      "doc_id": "invoice_003",
+      "doc_type": "invoice",
+      "should_fail": false
+    },
+    {
+      "doc_id": "report_001",
+      "doc_type": "report",
+      "should_fail": true,
+      "failure_step": "summarization",
+      "failure_category": "prompt_failure",
+      "notes": "Seeded failure: summarization prompt failure"
+    },
+    {
+      "doc_id": "report_002",
+      "doc_type": "report",
+      "should_fail": false
+    },
+    {
+      "doc_id": "report_003",
+      "doc_type": "report",
+      "should_fail": false
+    },
+    {
+      "doc_id": "correspondence_001",
+      "doc_type": "correspondence",
+      "should_fail": true,
+      "failure_step": "intake",
+      "failure_category": "context_loss",
+      "notes": "Seeded failure: intake context loss"
+    },
+    {
+      "doc_id": "correspondence_002",
+      "doc_type": "correspondence",
+      "should_fail": false
+    },
+    {
+      "doc_id": "correspondence_003",
+      "doc_type": "correspondence",
+      "should_fail": false
+    },
+    {
+      "doc_id": "mixed_001",
+      "doc_type": "mixed",
+      "should_fail": true,
+      "failure_step": "extraction",
+      "failure_category": "propagation_error",
+      "notes": "Seeded failure: propagation error from upstream"
+    },
+    {
+      "doc_id": "mixed_002",
+      "doc_type": "mixed",
+      "should_fail": false
+    },
+    {
+      "doc_id": "mixed_003",
+      "doc_type": "mixed",
+      "should_fail": false
+    }
+  ]
 }

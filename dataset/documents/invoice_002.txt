@@ -1,0 +1,28 @@
+INVOICE
+
+Invoice #: INV-2024-002
+Date: March 15, 2024
+Due Date: April 14, 2024
+
+BILL TO:
+Global Industries Inc.
+500 Corporate Blvd
+Chicago, IL 60601
+
+FROM:
+Maria Rodriguez Consulting
+300 Oak Avenue
+Denver, CO 80202
+
+DESCRIPTION                                          QTY    RATE      AMOUNT
+Strategic Advisory - Market Analysis Report           1    $5,000    $5,000.00
+Strategic Advisory - Go-to-Market Strategy            1    $7,500    $7,500.00
+Weekly Status Updates (4 weeks)                       4    $500      $2,000.00
+Travel Expenses (Denver to Chicago, round trip)       1    $1,200    $1,200.00
+
+SUBTOTAL                                                          $15,700.00
+TAX (0%)                                                               $0.00
+TOTAL                                                         $15,700.00
+
+Payment Terms: Net 30. Wire transfer preferred.
+Contact: maria.rodriguez@consulting.com | (303) 555-0198

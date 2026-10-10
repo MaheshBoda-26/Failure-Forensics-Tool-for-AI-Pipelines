@@ -7,7 +7,7 @@ Supports record/replay mode for future real OpenRouter integration.
 import hashlib
 import json
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar, cast
 
 from pydantic import BaseModel
 
@@ -45,7 +45,7 @@ class FakeLLMClient:
     def _cache_path(self, key: str) -> Path:
         return self.cache_dir / f"{key}.json"
 
-    def _build_canned_responses(self) -> dict[str, dict]:
+    def _build_canned_responses(self) -> dict[str, dict[str, Any]]:
         """Hardcoded responses for each pipeline step."""
         return {
             "intake": {
@@ -100,7 +100,7 @@ class FakeLLMClient:
             },
         }
 
-    def _format_canned(self, step: str, input_data: dict) -> dict:
+    def _format_canned(self, step: str, input_data: dict[str, Any]) -> dict[str, Any]:
         """Format canned response with input-specific values."""
         canned = self._canned_responses[step].copy()
 
@@ -133,7 +133,7 @@ class FakeLLMClient:
         prompt: str,
         response_model: type[T],
         step: str = "",
-        input_data: dict | None = None,
+        input_data: dict[str, Any] | None = None,
     ) -> T:
         """Return structured response matching response_model."""
 
@@ -149,23 +149,30 @@ class FakeLLMClient:
             response_dict = self._format_canned(step, input_data)
             return response_model.model_validate(response_dict)
 
-        # Fallback: minimal valid response
+        # Fallback: minimal valid response - use cast since runtime type matches
         if response_model == IntakeOutput:
-            return IntakeOutput(
-                document=Document(content=input_data.get("text", "") if input_data else ""),
-                cleaned_text=input_data.get("text", "") if input_data else "",
-                char_count=0,
+            return cast(
+                T,
+                IntakeOutput(
+                    document=Document(content=input_data.get("text", "") if input_data else ""),
+                    cleaned_text=input_data.get("text", "") if input_data else "",
+                    char_count=0,
+                ),
             )
         elif response_model == ExtractionOutput:
-            return ExtractionOutput(entities=[])
+            return cast(T, ExtractionOutput(entities=[]))
         elif response_model == ClassificationOutput:
-            return ClassificationOutput(document_type=DocumentType.CONTRACT, confidence=0.5)
+            ct = ClassificationOutput(document_type=DocumentType.CONTRACT, confidence=0.5)
+            return cast(T, ct)
         elif response_model == SummaryOutput:
-            return SummaryOutput(summary="Summary not available", key_points=[])
+            so = SummaryOutput(summary="Summary not available", key_points=[])
+            return cast(T, so)
         else:
             raise ValueError(f"Unknown response model: {response_model}")
 
-    def chat_completion(self, model: str, messages: list[dict], **kwargs) -> dict:
+    def chat_completion(
+        self, model: str, messages: list[dict[str, Any]], **kwargs: Any
+    ) -> dict[str, Any]:
         """OpenAI-compatible chat completion for compatibility."""
         # Extract the user message as prompt
         prompt = ""
