@@ -1,5 +1,21 @@
 # Full-Codebase Review — Phase 0 to End
 
+> **STATUS: ALL FINDINGS RESOLVED** (2026-10-11)
+>
+> Every defect below is fixed and covered by a test. Verification:
+> `make check` green (133 tests, was 109); CLI, API and Streamlit smoke-tested
+> end to end; all 7 fault-injection cases now produce their declared category.
+> Fix commits: `a516bdf`, `56c0427`.
+>
+> Two findings were resolved by *design change*, not a patch:
+> - **C11/C12 (dataset ground truth)**: `mixed` was added to `DocumentType`, and
+>   misclassification is now detected via a new `label_grounding` check against
+>   the dataset's labels — because a *valid* but wrong enum value is not
+>   observable without ground truth. `validate-dataset` now enforces that every
+>   seeded failure is a pair `reachable_failure_pairs()` can emit.
+> - **W6 (`faults.py`)**: implemented as a real harness with 7 faults, each
+>   declaring its expected `(step, category)`; a test asserts all 7 round-trip.
+
 **Scope:** every line of `src/forensics/*` (20 files, ~4,600 lines), `streamlit_app.py`
 (726), `demo.sh`, `tests/*` (2,199), `dataset/labels.json`, `pyproject.toml`,
 `Makefile`, `.gitignore`, `.pre-commit-config.yaml`.
