@@ -20,7 +20,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from forensics.analyzer_simple import analyze_trace
-from forensics.models import Flag, Trace
+from forensics.models import FailureCategory, Flag, Trace
 from forensics.storage import Storage
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -195,6 +195,17 @@ def load_doc_text(doc_id: str) -> str:
 PIPELINE_STEPS = ["intake", "extraction", "classification", "summarization"]
 
 
+def status_str(status: object) -> str:
+    """Normalize a Span.status or TraceStatus to its plain string value.
+
+    `Span.status` is a plain string Literal (no `.value`); `TraceStatus` is a
+    StrEnum (has `.value`). Reading `.value` off a span status raised
+    AttributeError on first render.
+    """
+    value = getattr(status, "value", status)
+    return str(value)
+
+
 def build_pipeline_graph(trace: Trace) -> go.Figure:
     """Create an interactive pipeline graph using NetworkX + Plotly."""
     G = nx.DiGraph()
@@ -203,9 +214,9 @@ def build_pipeline_graph(trace: Trace) -> go.Figure:
     for i, step in enumerate(PIPELINE_STEPS):
         span = next((s for s in trace.spans if s.step_name == step), None)
         if span:
-            icon, color, _ = get_span_badge(span.status.value)
+            icon, color, _ = get_span_badge(status_str(span.status))
             label = f"{icon} {step.title()}"
-            tooltip = f"{step} | {span.latency_ms}ms | {span.status.value}"
+            tooltip = f"{step} | {span.latency_ms}ms | {status_str(span.status)}"
         else:
             label = f"⏳ {step.title()}"
             color = "#6c757d"
@@ -341,7 +352,7 @@ def render_span_detail(span, step_scores: list, doc_text: str) -> None:
     """Render a detailed span view with all available data."""
     score = next((s for s in step_scores if s.step_name == span.step_name), None)
     checks = score.deterministic_checks if score else {}
-    icon, _, css_class = get_span_badge(span.status.value)
+    icon, _, css_class = get_span_badge(status_str(span.status))
     _ = get_span_status_text(checks)  # for side effect if any
 
     # Header
@@ -354,7 +365,7 @@ def render_span_detail(span, step_scores: list, doc_text: str) -> None:
     with col2:
         st.metric("Latency", f"{span.latency_ms}ms")
     with col3:
-        st.metric("Status", span.status.value.title())
+        st.metric("Status", status_str(span.status).title())
 
     # Input / Output / Prompt / Raw Response
     try:
@@ -378,7 +389,7 @@ def render_span_detail(span, step_scores: list, doc_text: str) -> None:
         else:
             st.info("No prompt recorded")
 
-    with tabs[2]:
+    with tabs[3]:
         if span.raw_response:
             st.text_area("Raw LLM Response", span.raw_response, height=200, disabled=True)
         else:
@@ -506,10 +517,13 @@ def render_flag_interface(trace: Trace, diagnosis, storage: Storage, doc_text: s
     with col1:
         # Flag button
         if st.button("🚩 Flag This Trace", type="primary", use_container_width=True):
+            # Link the flag to the current diagnosis so the flag→eval path can
+            # trace back to a specific analyzer verdict.
             flag = Flag(
                 trace_id=trace.trace_id,
                 user_id="streamlit_user",
                 note="Flagged via Streamlit UI for review",
+                diagnosis_id=diagnosis.diagnosis_id if diagnosis else None,
             )
             storage.create_flag(flag)
             st.success(f"Flagged! Flag ID: {flag.flag_id}")
@@ -541,13 +555,22 @@ def render_flag_interface(trace: Trace, diagnosis, storage: Storage, doc_text: s
             col_a, col_b = st.columns(2)
             with col_a:
                 if st.button("✅ Confirm Diagnosis", type="secondary", use_container_width=True):
-                    # Update flag with confirmation
-                    flags = storage.list_flags_for_trace(trace.trace_id)
-                    if flags:
-                        flag = flags[-1]
-                        storage.update_flag(flag.flag_id, confirmed=True)
-                        st.success("Diagnosis confirmed!")
-                        st.rerun()
+                    # Confirm the diagnosis itself. `Storage` has no
+                    # `update_flag`; confirmation lives on the diagnosis row and
+                    # is what `create_eval_cases_from_confirmed_flags` gates on.
+                    storage.update_diagnosis_confirmation(
+                        diagnosis.diagnosis_id,
+                        confirmed=True,
+                        overridden=diagnosis.overridden,
+                        override_category=(
+                            diagnosis.override_category.value
+                            if diagnosis.override_category
+                            else None
+                        ),
+                        override_reason=diagnosis.override_reason,
+                    )
+                    st.success("Diagnosis confirmed!")
+                    st.rerun()
 
             with col_b:
                 if st.button("✏️ Override Diagnosis", use_container_width=True):
@@ -560,27 +583,20 @@ def render_flag_interface(trace: Trace, diagnosis, storage: Storage, doc_text: s
                     st.markdown("**Override Diagnosis**")
                     new_category = st.selectbox(
                         "New Category",
-                        options=[
-                            c.value
-                            for c in __import__(
-                                "forensics.models", fromlist=["FailureCategory"]
-                            ).FailureCategory
-                        ],
+                        options=[c.value for c in FailureCategory],
                         format_func=lambda x: get_category_display(x),
                     )
                     override_reason = st.text_area("Reason for Override")
                     submitted = st.form_submit_button("Submit Override")
                     if submitted:
-                        flags = storage.list_flags_for_trace(trace.trace_id)
-                        if flags:
-                            flag = flags[-1]
-                            storage.update_flag(
-                                flag.flag_id,
-                                overridden=True,
-                                override_category=new_category,
-                                override_reason=override_reason,
-                            )
-                        st.session_state[f"override_{trace.trace_id}"] = False
+                        storage.update_diagnosis_confirmation(
+                            diagnosis.diagnosis_id,
+                            confirmed=True,
+                            overridden=True,
+                            override_category=new_category,
+                            override_reason=override_reason,
+                        )
+                        st.success("Diagnosis overridden and confirmed!")
                         st.success("Diagnosis overridden!")
                         st.rerun()
 
@@ -642,12 +658,22 @@ def main() -> None:
     traces = load_traces(limit=200)
 
     if status_filter != "All":
-        traces = [t for t in traces if t.status.value == status_filter]
+        traces = [t for t in traces if status_str(t.status) == status_filter]
 
     if category_filter != "All":
-        traces = [
-            t for t in traces if t.diagnosis and t.diagnosis.category.value == category_filter
-        ]
+        # `Trace` has no `diagnosis` attribute: diagnoses live in their own
+        # table. Reading `t.diagnosis` raised AttributeError as soon as a
+        # category other than "All" was selected, so join via storage.
+        storage = Storage()
+        matching: list[Trace] = []
+        for t in traces:
+            diag = storage.get_diagnosis_for_trace(t.trace_id)
+            if diag is None:
+                continue
+            effective = diag.override_category or diag.category
+            if str(getattr(effective, "value", effective)) == category_filter:
+                matching.append(t)
+        traces = matching
 
     if not traces:
         st.warning("No traces found. Run `python -m forensics.cli demo` to generate traces.")
@@ -662,7 +688,7 @@ def main() -> None:
             {
                 "Trace ID": trace.trace_id[:12],
                 "Document": trace.document_id,
-                "Status": trace.status.value.title(),
+                "Status": status_str(trace.status).title(),
                 "Spans": len(trace.spans),
                 "Latency (ms)": trace.total_latency_ms,
                 "Created": trace.created_at.strftime("%H:%M:%S") if trace.created_at else "N/A",
@@ -708,8 +734,10 @@ def main() -> None:
     st.subheader("📍 Pipeline Spans")
 
     for span in selected_trace.spans:
-        badge = get_span_badge(span.status.value)[0]
-        label = f"{badge} {span.step_name.title()} — {span.status.value} — {span.latency_ms}ms"
+        badge = get_span_badge(status_str(span.status))[0]
+        label = (
+            f"{badge} {span.step_name.title()} — {status_str(span.status)} — {span.latency_ms}ms"
+        )
         with st.expander(label, expanded=False):
             render_span_detail(span, diagnosis.step_scores, doc_text)
 
