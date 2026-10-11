@@ -48,7 +48,7 @@ class FlagRequest(BaseModel):
 class ConfirmDiagnosisRequest(BaseModel):
     diagnosis_id: str
     confirmed: bool
-    override_category: str | None = None
+    override_category: FailureCategory | None = None
     override_reason: str | None = None
 
 
@@ -109,21 +109,14 @@ def confirm_diagnosis(diagnosis_id: str, request: ConfirmDiagnosisRequest) -> Di
     if not diagnosis:
         raise HTTPException(status_code=404, detail="Diagnosis not found")
 
+    override_category = request.override_category.value if request.override_category else None
     get_storage().update_diagnosis_confirmation(
         diagnosis_id,
         request.confirmed,
         overridden=bool(request.override_category),
-        override_category=request.override_category,
+        override_category=override_category,
         override_reason=request.override_reason,
     )
-
-    # If confirmed, create eval case
-    if request.confirmed:
-        # Find flag for this trace
-        flags = get_storage().list_flags_for_trace(diagnosis.trace_id)
-        if flags:
-            # In a real app, we'd link the flag to the diagnosis
-            pass
 
     updated_diagnosis = get_storage().get_diagnosis(diagnosis_id)
     if not updated_diagnosis:
@@ -137,39 +130,77 @@ def list_eval_cases(limit: int = 100, offset: int = 0) -> list[EvalCase]:
 
 
 @app.get("/eval/runs")
-def list_eval_runs() -> list[EvalRun]:
-    # Would need to implement list_eval_runs in storage
-    return []
+def list_eval_runs(limit: int = 100, offset: int = 0) -> list[EvalRun]:
+    return get_storage().list_eval_runs(limit=limit, offset=offset)
+
+
+@app.get("/eval/runs/{run_id}")
+def get_eval_run(run_id: str) -> EvalRun:
+    run = get_storage().get_eval_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Eval run not found")
+    return run
 
 
 @app.get("/analytics")
 def get_analytics() -> AnalyticsSnapshot:
-    """Get aggregated analytics for dashboard."""
-    traces = get_storage().list_traces(limit=10000)
+    """Get aggregated analytics for dashboard.
+
+    A trace counts as a failure when its run status is FAILURE **or** the
+    analyzer produced a real root cause for it. Counting only status=FAILURE
+    reported 0% on a dataset whose seeded failures are semantic (the run
+    completed, but the output was wrong), which is the number the dashboard
+    exists to show.
+    """
+    storage = get_storage()
+    traces = storage.list_traces(limit=10000)
 
     total_traces = len(traces)
-    failure_traces = [t for t in traces if t.status == TraceStatus.FAILURE]
-    failure_rate = len(failure_traces) / total_traces if total_traces > 0 else 0.0
 
-    # Failures by category (from diagnoses)
     failures_by_category: dict[FailureCategory, int] = {}
     failures_by_step: dict[str, int] = {}
+    failure_traces = 0
+    root_cause_latencies: list[float] = []
 
-    for trace in failure_traces:
-        diagnosis = get_storage().get_diagnosis_for_trace(trace.trace_id)
-        if diagnosis:
-            cat = diagnosis.category
-            failures_by_category[cat] = failures_by_category.get(cat, 0) + 1
+    for trace in traces:
+        diagnosis = storage.get_diagnosis_for_trace(trace.trace_id)
+        has_semantic_failure = diagnosis is not None and diagnosis.root_cause_step not in (
+            "",
+            "none",
+        )
+        is_run_failure = trace.status == TraceStatus.FAILURE
+
+        if not (is_run_failure or has_semantic_failure):
+            continue
+        failure_traces += 1
+
+        if diagnosis is not None and diagnosis.root_cause_step not in ("", "none"):
+            category = diagnosis.override_category or diagnosis.category
+            failures_by_category[category] = failures_by_category.get(category, 0) + 1
             step = diagnosis.root_cause_step
             failures_by_step[step] = failures_by_step.get(step, 0) + 1
+
+            # Time to root cause = latency accumulated up to and including the
+            # failing step, from real span timings (never an invented average).
+            elapsed_ms = 0
+            for span in trace.spans:
+                elapsed_ms += span.latency_ms
+                if span.step_name == step:
+                    root_cause_latencies.append(elapsed_ms / 1000.0)
+                    break
+
+    failure_rate = failure_traces / total_traces if total_traces > 0 else 0.0
+    avg_time_to_root_cause = (
+        sum(root_cause_latencies) / len(root_cause_latencies) if root_cause_latencies else None
+    )
 
     return AnalyticsSnapshot(
         total_traces=total_traces,
         failure_rate=failure_rate,
         failures_by_category=failures_by_category,
         failures_by_step=failures_by_step,
-        failure_rate_over_time=[],  # Would need time-series data
-        avg_time_to_root_cause_seconds=None,  # Would need timing data
+        failure_rate_over_time=[],
+        avg_time_to_root_cause_seconds=avg_time_to_root_cause,
     )
 
 

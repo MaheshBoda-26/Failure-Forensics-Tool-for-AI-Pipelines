@@ -11,6 +11,7 @@ from pathlib import Path
 
 import typer
 
+from forensics.analyzer_simple import analyze_trace
 from forensics.config import get_settings, validate_startup
 from forensics.llm import using_llm_client
 from forensics.models import Document
@@ -84,6 +85,10 @@ def run(doc_path: Path) -> None:
                 result = await pipeline.run(doc)
                 storage = Storage()
                 json_path = storage.save_trace(ctx.trace)
+
+            # Persist the diagnosis so analytics/eval/UI have a root cause.
+            assert ctx.trace is not None
+            storage.create_diagnosis(analyze_trace(ctx.trace, doc.content))
 
             typer.secho(f"Pipeline completed: {doc_path.stem}", fg=typer.colors.GREEN)
             typer.echo(f"Trace saved to: {json_path}")
@@ -179,6 +184,14 @@ def demo() -> None:
                     result = await pipeline.run(doc)
                     storage.save_trace(ctx.trace)
 
+                # Analyze and persist the diagnosis so analytics, the eval loop
+                # and the UI have a real root cause per trace. Previously the
+                # demo saved traces but never analyzed them, so analytics and
+                # eval had nothing to read.
+                assert ctx.trace is not None
+                diagnosis = analyze_trace(ctx.trace, doc.content)
+                storage.create_diagnosis(diagnosis)
+
                 expected_type = doc_info.get("doc_type", "unknown")
                 actual_type = result.classification.document_type.value
                 match = expected_type == actual_type
@@ -192,6 +205,8 @@ def demo() -> None:
                         "should_fail": doc_info.get("should_fail", False),
                         "failure_step": doc_info.get("failure_step"),
                         "failure_category": doc_info.get("failure_category"),
+                        "root_cause_step": diagnosis.root_cause_step,
+                        "root_cause_category": diagnosis.category.value,
                     }
                 )
 
@@ -211,12 +226,25 @@ def demo() -> None:
         typer.echo(f"Seeded failures in dataset: {seeded_failures}")
         typer.echo(f"Traces saved: {total}")
 
+        # Show how many diagnoses found a real root cause and match ground truth
+        diagnosed = [r for r in results if r["root_cause_step"] not in ("", "none")]
+        typer.echo(f"Traces with a diagnosed root cause: {len(diagnosed)}")
+
+        seeded = [r for r in results if r["should_fail"]]
+        step_hits = sum(1 for r in seeded if r["root_cause_step"] == r["failure_step"])
+        cat_hits = sum(1 for r in seeded if r["root_cause_category"] == r["failure_category"])
+        if seeded:
+            typer.echo(
+                f"Seeded-failure root-cause step accuracy: {step_hits}/{len(seeded)}, "
+                f"category accuracy: {cat_hits}/{len(seeded)}"
+            )
+
     asyncio.run(_run_demo())
 
 
-@app.command()
-def eval() -> None:
-    """Re-run the accumulated eval dataset."""
+@app.command(name="eval", help="Re-run the accumulated eval dataset.")
+def eval_command() -> None:
+    """Trigger a full eval run against the current pipeline."""
     _setup()
     import asyncio
 
@@ -229,15 +257,8 @@ def eval() -> None:
 
 @app.command(name="eval-run")
 def eval_run() -> None:
-    """Trigger a full eval run against the current pipeline."""
-    _setup()
-    import asyncio
-
-    from forensics.eval_simple import print_eval_results, run_eval
-
-    run = asyncio.run(run_eval())
-    if run:
-        print_eval_results(run.run_id)
+    """Alias for `eval`."""
+    eval_command()
 
 
 @app.command(name="eval-cases")
@@ -297,5 +318,10 @@ def validate_config() -> None:
     typer.secho("Configuration valid", fg=typer.colors.GREEN)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Console-script entry point declared in pyproject.toml."""
     app()
+
+
+if __name__ == "__main__":
+    main()

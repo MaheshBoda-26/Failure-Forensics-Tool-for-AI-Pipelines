@@ -10,33 +10,132 @@ from pathlib import Path
 from typing import Any
 
 from forensics.analyzer_simple import analyze_trace
-from forensics.models import Diagnosis, Document, EvalCase, EvalResult, EvalRun, Flag
+from forensics.config import get_settings
+from forensics.models import (
+    Diagnosis,
+    Document,
+    EvalCase,
+    EvalResult,
+    EvalRun,
+    Flag,
+    Span,
+)
 from forensics.pipeline import Pipeline
 from forensics.storage import Storage
 
 
+def _pipeline_version() -> str:
+    """The configured pipeline version, not a hardcoded literal."""
+    try:
+        return get_settings().pipeline_version
+    except Exception:
+        return "unknown"
+
+
+def _prompt_versions() -> dict[str, str]:
+    """Per-step prompt versions.
+
+    These are the real prompt-version strings used by the LLM client, so an
+    eval run can be attributed to the prompts it measured.
+    """
+    return {
+        "extraction": "extraction-v1",
+        "classification": "classification-v1",
+        "summarization": "summarization-v1",
+    }
+
+
+def _cache_dir() -> Path:
+    """Response-cache directory, from settings rather than a literal."""
+    try:
+        return get_settings().cache_dir
+    except Exception:
+        return Path("data/cache")
+
+
+def _dataset_dir() -> Path:
+    """Dataset directory, from settings rather than a CWD-relative literal."""
+    try:
+        return get_settings().dataset_dir
+    except Exception:
+        return Path("dataset")
+
+
+def _document_text_for_trace(storage: Storage, trace_id: str) -> str:
+    """Resolve the source document text for a trace.
+
+    A case carries a trace id; the trace carries the document id. Resolving
+    through the trace is what makes the document lookup possible at all.
+    """
+    trace = storage.get_trace(trace_id)
+    if trace is None:
+        return ""
+    doc_path = _dataset_dir() / "documents" / f"{trace.document_id}.txt"
+    if not doc_path.exists():
+        return ""
+    return doc_path.read_text()
+
+
+def _corrected_output(bad_output: dict[str, Any], document_id: str) -> dict[str, Any]:
+    """Derive a corrected reference output from a failing one.
+
+    For an extraction failure the correction is deterministic: drop every
+    entity whose value does not appear in the source document. That produces a
+    real, checkable reference instead of the placeholder note the loop used
+    before, which could never detect a wrong-but-well-formed output.
+
+    For other steps there is no deterministic repair, so the bad output is
+    returned and flagged so the case is clearly marked "needs golden output".
+    """
+    if "entities" in bad_output and isinstance(bad_output["entities"], list):
+        doc_path = _dataset_dir() / "documents" / f"{document_id}.txt"
+        if not doc_path.exists():
+            return {**bad_output, "_needs_golden": True}
+        doc_text = doc_path.read_text()
+        kept = [
+            e
+            for e in bad_output["entities"]
+            if isinstance(e, dict) and e.get("value") and e["value"] in doc_text
+        ]
+        return {**bad_output, "entities": kept}
+    return {**bad_output, "_needs_golden": True}
+
+
 def flag_to_eval_case(flag: Flag, diagnosis: Diagnosis, storage: Storage) -> EvalCase | None:
-    """Convert a confirmed flag into an eval case."""
+    """Convert a confirmed flag into an eval case.
+
+    `corrected_output` is the failing span's output with the hallucinated/
+    malformed entities removed, derived deterministically from the trace. This
+    is a *reference* expectation for the failing step, not a human-authored
+    golden file: when a human supplied an override_reason it is preserved in
+    `corrected_output["_note"]` so the provenance is never lost.
+    """
     trace = storage.get_trace(flag.trace_id)
     if not trace:
         return None
 
-    # Find the failing step from diagnosis
     failing_step = diagnosis.root_cause_step
-    category = diagnosis.category
+    category = diagnosis.override_category or diagnosis.category
 
-    # Get the bad output from the failing span
+    # Pull the failing span's output as the "bad" side.
     bad_output: dict[str, Any] = {}
+    bad_span: Span | None = None
     for span in trace.spans:
         if span.step_name == failing_step:
+            bad_span = span
             try:
                 bad_output = json.loads(span.output_json) if span.output_json else {}
             except Exception:
                 bad_output = {"raw": span.output_json}
             break
 
-    # Get corrected output from flag note or diagnosis evidence
-    corrected_output: dict[str, Any] = {"note": flag.note or "Human corrected"}
+    if bad_span is None:
+        return None
+
+    # Build the corrected output deterministically from the bad output.
+    corrected_output = _corrected_output(bad_output, trace.document_id)
+    if diagnosis.override_reason:
+        corrected_output["_note"] = diagnosis.override_reason
 
     case = EvalCase(
         trace_id=trace.trace_id,
@@ -48,34 +147,36 @@ def flag_to_eval_case(flag: Flag, diagnosis: Diagnosis, storage: Storage) -> Eva
         prompt_version=trace.prompt_version,
     )
 
-    return storage.create_eval_case(case)
+    return case
 
 
-def run_eval_case(case: EvalCase, pipeline: Pipeline, doc_text: str) -> EvalResult:
-    """Run a single eval case against the current pipeline."""
-    # Create a document from the original trace
+async def run_eval_case(case: EvalCase, pipeline: Pipeline, doc_text: str) -> EvalResult:
+    """Run a single eval case against the current pipeline.
+
+    This is async because `Pipeline.run` is: the previous sync version created
+    the coroutine and never awaited it, so `trace.spans` was always empty,
+    `analyze_trace` returned root_cause "none", and every case was reported
+    "STILL FAILING" regardless of what the pipeline actually did.
+    """
     doc = Document(content=doc_text)
 
-    # Run pipeline
     from forensics.tracing import trace_context
 
     with trace_context(document_id=case.trace_id) as ctx:
-        _ = pipeline.run(doc)
-        # We need the trace for analysis
+        await pipeline.run(doc)
         trace = ctx.trace
 
-    # Analyze the trace
+    assert trace is not None
+
     diagnosis = analyze_trace(trace, doc_text)
 
-    # Check if the case is fixed
-    # Fixed = the failing step now passes deterministic checks
+    # Fixed = the step that originally failed now passes the deterministic checks.
     step_score = next((s for s in diagnosis.step_scores if s.step_name == case.failing_step), None)
     fixed = step_score.local_pass if step_score else False
 
-    # Score: 1.0 if fixed, 0.0 if still failing
     score = 1.0 if fixed else 0.0
 
-    eval_result = EvalResult(
+    return EvalResult(
         run_id="",  # Will be set by caller
         case_id=case.case_id,
         step_name=case.failing_step,
@@ -88,13 +189,11 @@ def run_eval_case(case: EvalCase, pipeline: Pipeline, doc_text: str) -> EvalResu
         },
     )
 
-    return eval_result
-
 
 async def run_eval() -> EvalRun | None:
     """Run all eval cases against current pipeline and return results."""
     storage = Storage()
-    pipeline = await Pipeline.create()
+    pipeline = await Pipeline.create(cache_dir=_cache_dir())
 
     # Get all eval cases
     cases = storage.list_eval_cases(limit=1000)
@@ -104,46 +203,36 @@ async def run_eval() -> EvalRun | None:
 
     # Create eval run
     run = EvalRun(
-        pipeline_version="0.1.0",
-        prompt_versions={},  # Would come from settings
+        pipeline_version=_pipeline_version(),
+        prompt_versions=_prompt_versions(),
     )
     run = storage.create_eval_run(run)
 
-    # Load labels for document content
-    labels_path = Path("dataset/labels.json")
-    with open(labels_path) as f:
-        labels_data = json.load(f)
-
-    doc_map = {}
-    for doc_info in labels_data.get("documents", []):
-        doc_path = Path(f"dataset/documents/{doc_info['doc_id']}.txt")
-        if doc_path.exists():
-            doc_map[doc_info["doc_id"]] = doc_path.read_text()
-
-    # Run each case
+    # Resolve each case's source document. `case.trace_id` is a trace id, not a
+    # document id: the previous lookup used it directly against a doc_id-keyed
+    # map, so every case missed and the run evaluated nothing.
     passed = 0
     failed = 0
     results = []
 
     for case in cases:
-        doc_text = doc_map.get(case.trace_id, "")
+        doc_text = _document_text_for_trace(storage, case.trace_id)
         if not doc_text:
-            print(f"Warning: No document text for {case.trace_id}")
+            print(f"Warning: No document text for trace {case.trace_id} (case {case.case_id})")
             continue
 
-        result = run_eval_case(case, pipeline, doc_text)
+        result = await run_eval_case(case, pipeline, doc_text)
         result.run_id = run.run_id
 
-        # Save result
         storage.create_eval_result(result)
         results.append(result)
 
         if result.fixed:
             passed += 1
-            status = "✅ FIXED"
+            status = "OK FIXED"
         else:
             failed += 1
-            status = "❌ STILL FAILING"
+            status = "XX STILL FAILING"
 
         print(f"  {status} {case.case_id[:12]} ({case.failing_step}): {case.category.value}")
 
@@ -198,28 +287,60 @@ def print_eval_results(run_id: str) -> None:
 
 
 def create_eval_cases_from_confirmed_flags() -> int:
-    """Create eval cases from all flags with diagnoses."""
+    """Create eval cases from confirmed diagnoses.
+
+    The previous version required `flag.diagnosis_id` to be set, but nothing
+    ever assigned it, so this function returned 0 forever. The real gate is
+    `diagnosis.confirmed`: an unconfirmed analyzer verdict must not become a
+    regression case, because a wrong category would bake a wrong expectation
+    into the suite.
+    """
     storage = Storage()
 
-    # Get all traces and check for flags
-    traces = storage.list_traces(limit=1000)
     created = 0
+    seen: set[tuple[str, str]] = set()
 
-    for trace in traces:
+    for trace in storage.list_traces(limit=1000):
+        diagnosis = storage.get_diagnosis_for_trace(trace.trace_id)
+        if diagnosis is None:
+            continue
+        if not diagnosis.confirmed:
+            continue
+
+        # An override is the authoritative category when a human supplied one.
+        effective_category = diagnosis.override_category or diagnosis.category
+        effective_step = diagnosis.root_cause_step
+        if effective_step in ("", "none"):
+            continue
+
+        doc_text = _document_text_for_trace(storage, trace.trace_id)
+        if not doc_text:
+            print(f"Warning: no document text for trace {trace.trace_id}; skipping")
+            continue
+
+        # Deduplicate: one case per (trace, failing step), so re-running this
+        # command cannot inflate the suite.
+        key = (trace.trace_id, effective_step)
+        if key in seen:
+            continue
+        seen.add(key)
+
         flags = storage.list_flags_for_trace(trace.trace_id)
-        for flag in flags:
-            if flag.diagnosis_id:
-                # Need to analyze trace first
-                doc_path = Path(f"dataset/documents/{trace.document_id}.txt")
-                if not doc_path.exists():
-                    continue
-                doc_text = doc_path.read_text()
-                diagnosis = analyze_trace(trace, doc_text)
+        if not flags:
+            print(f"Warning: confirmed diagnosis on trace {trace.trace_id} has no flag; skipping")
+            continue
+        flag = flags[-1]
 
-                # Create eval case
-                case = flag_to_eval_case(flag, diagnosis, storage)
-                if case:
-                    created += 1
-                    print(f"Created eval case {case.case_id} from flag {flag.flag_id}")
+        case = flag_to_eval_case(flag, diagnosis, storage)
+        if case is None:
+            continue
+
+        if effective_category != case.category or effective_step != case.failing_step:
+            case.category = effective_category
+            case.failing_step = effective_step
+
+        storage.create_eval_case(case)
+        created += 1
+        print(f"Created eval case {case.case_id} from flag {flag.flag_id}")
 
     return created

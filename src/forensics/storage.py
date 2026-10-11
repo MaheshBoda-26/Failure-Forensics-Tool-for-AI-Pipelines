@@ -460,7 +460,7 @@ class Storage:
                     run.pipeline_version,
                     json.dumps(run.prompt_versions),
                     run.started_at.isoformat(),
-                    run.completed_at.isoformat() if run.completed_at else "",
+                    run.completed_at.isoformat() if run.completed_at else None,
                     run.total_cases,
                     run.passed_count,
                     run.failed_count,
@@ -503,7 +503,9 @@ class Storage:
                 return None
             cols = [d[0] for d in cursor.description]
             data = dict(zip(cols, row, strict=False))
-            data["prompt_versions"] = json.loads(data["prompt_versions"])
+            # The table stores NULL (not "") for an incomplete run; loading
+            # "" back failed datetime validation on EvalRun.
+            data["prompt_versions"] = json.loads(data["prompt_versions"] or "{}")
             return EvalRun.model_validate(data)
 
     def list_eval_runs(self, limit: int = 100, offset: int = 0) -> list[EvalRun]:
@@ -518,7 +520,9 @@ class Storage:
             runs = []
             for row in rows:
                 data = dict(zip(cols, row, strict=False))
-                data["prompt_versions"] = json.loads(data["prompt_versions"])
+                # The table stores NULL (not "") for an incomplete run; loading
+                # "" back failed datetime validation on EvalRun.
+                data["prompt_versions"] = json.loads(data["prompt_versions"] or "{}")
                 runs.append(EvalRun.model_validate(data))
             return runs
 

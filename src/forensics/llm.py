@@ -278,22 +278,29 @@ class SpendTracker:
         return self._global_spend_usd
 
     def check_and_add(self, cost_usd: float) -> None:
-        """Check caps and add cost. Raises SpendCapExceededError if exceeded."""
-        if self._run_spend_usd + cost_usd > self.cap_per_run_usd:
-            msg = (
-                f"Per-run spend cap exceeded: "
-                f"${self._run_spend_usd:.4f} + ${cost_usd:.4f} > ${self.cap_per_run_usd:.2f}"
-            )
-            raise SpendCapExceededError(msg, "per_run")
-        if self._global_spend_usd + cost_usd > self.cap_global_usd:
-            msg = (
-                f"Global spend cap exceeded: "
-                f"${self._global_spend_usd:.4f} + ${cost_usd:.4f} > ${self.cap_global_usd:.2f}"
-            )
-            raise SpendCapExceededError(msg, "global")
+        """Check caps and add cost. Raises SpendCapExceededError if exceeded.
+
+        The cost is recorded *before* the cap raises: the call that trips the
+        cap has already been made and paid for, so refusing to record it made
+        the global total under-report actual spend — exactly the number the cap
+        exists to protect.
+        """
         self._run_spend_usd += cost_usd
         self._global_spend_usd += cost_usd
         self._save_global_spend()
+
+        if self._run_spend_usd > self.cap_per_run_usd:
+            msg = (
+                f"Per-run spend cap exceeded: "
+                f"${self._run_spend_usd:.4f} > ${self.cap_per_run_usd:.2f}"
+            )
+            raise SpendCapExceededError(msg, "per_run")
+        if self._global_spend_usd > self.cap_global_usd:
+            msg = (
+                f"Global spend cap exceeded: "
+                f"${self._global_spend_usd:.4f} > ${self.cap_global_usd:.2f}"
+            )
+            raise SpendCapExceededError(msg, "global")
 
 
 class OpenRouterClient:

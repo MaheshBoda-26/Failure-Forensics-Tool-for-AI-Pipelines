@@ -31,12 +31,32 @@ DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 @dataclass
 class CheckResult:
-    """Result of a single deterministic check."""
+    """Result of a single deterministic check.
+
+    `check_name` is the *kind* of check, not a unique id: a step can legitimately
+    produce many results of the same kind (one per entity). Aggregation therefore
+    uses AND, never last-write-wins, so a verdict cannot depend on the order
+    entities happen to appear in.
+    """
 
     check_name: str
     passed: bool
     evidence: str
     step_name: str
+
+
+def aggregate_checks(results: list[CheckResult]) -> dict[str, bool]:
+    """Collapse check results to one verdict per check kind.
+
+    Repeated kinds are combined with AND. Writing them into a dict instead
+    (last-wins) made the category depend on entity order: with [bad, good] the
+    grounded entity overwrote the hallucination and the step was reported as
+    `unknown` instead of `extraction_hallucination`.
+    """
+    verdicts: dict[str, bool] = {}
+    for result in results:
+        verdicts[result.check_name] = verdicts.get(result.check_name, True) and result.passed
+    return verdicts
 
 
 def _parse_span_output(span: Span) -> dict[str, Any]:
@@ -79,8 +99,11 @@ def check_entity_grounding(span: Span, document_text: str) -> list[CheckResult]:
         output_data = _parse_span_output(span)
         entities_data = _extract_entities(output_data)
     except (ValueError, TypeError):
-        msg = "Failed to parse extraction output"
-        return [CheckResult("entity_grounding", False, msg, span.step_name)]
+        # Unparseable output is not evidence of hallucination; prompt_schema
+        # reports it as a schema failure. Emitting a grounding failure here
+        # outranked prompt_schema in find_root_cause and mislabelled every
+        # malformed extraction as extraction_hallucination.
+        return results
 
     for entity_data in entities_data:
         # All test data uses dicts; object branch is unreachable but kept for completeness
@@ -141,11 +164,11 @@ def check_date_regex(span: Span) -> list[CheckResult]:
         output_data = _parse_span_output(span)
         entities_data = _extract_entities(output_data)
     except (ValueError, TypeError):
-        msg = "Failed to parse extraction output"
-        return [CheckResult("date_regex", False, msg, span.step_name)]
+        # Schema failure, reported by check_prompt_schema.
+        return results
 
     for entity_data in entities_data:
-        # All test data uses dicts; object branch is unreachable
+        # All test data uses dicts; object branch is unreachable but kept for completeness
         value = entity_data.get("value", "")
         entity_type = entity_data.get("entity_type", "")
 
@@ -206,7 +229,6 @@ def check_context_preservation(span: Span, trace: Trace, document_text: str) -> 
     # Search in both summary and key_points
     searchable_text = f"{summary} {' '.join(key_points)}"
 
-    all_preserved = True
     for value, entity_type in grounded_entities:
         if value in searchable_text:
             msg = f"Grounded entity '{value}' ({entity_type}) preserved in summarization"
@@ -214,20 +236,6 @@ def check_context_preservation(span: Span, trace: Trace, document_text: str) -> 
         else:
             msg = f"Grounded entity '{value}' ({entity_type}) LOST in summarization (context loss)"
             results.append(CheckResult("context_preservation", False, msg, span.step_name))
-            all_preserved = False
-
-    # If we have multiple checks for the same name, the dict in build_step_scores
-    # will keep the last one. So we add a synthetic "any_failed" entry that
-    # ensures the step fails if ANY grounded entity was lost.
-    if not all_preserved:
-        results.append(
-            CheckResult(
-                "context_preservation_any_failed",
-                False,
-                "At least one grounded entity lost in summarization",
-                span.step_name,
-            )
-        )
 
     return results
 
@@ -388,24 +396,26 @@ def check_prompt_schema(span: Span) -> list[CheckResult]:
 
 
 def run_deterministic_checks(trace: Trace, document_text: str) -> dict[str, list[CheckResult]]:
-    """Run all deterministic checks on all spans in a trace."""
-    all_results = {}
+    """Run all deterministic checks on all spans in a trace.
+
+    Keyed by `span_id`, not `step_name`: two spans of the same step (a retry, a
+    fan-out) previously overwrote each other's results, and build_step_scores
+    then handed both spans the same verdict regardless of their real outputs.
+    """
+    all_results: dict[str, list[CheckResult]] = {}
 
     for span in trace.spans:
-        step_results = []
+        step_results: list[CheckResult] = []
 
-        # Original 3 checks
         step_results.extend(check_entity_grounding(span, document_text))
         step_results.extend(check_label_enum(span))
         step_results.extend(check_date_regex(span))
-
-        # New Phase 3 checks
         step_results.extend(check_context_preservation(span, trace, document_text))
         step_results.extend(check_propagation(span, trace))
         step_results.extend(check_prompt_schema(span))
 
         if step_results:
-            all_results[span.step_name] = step_results
+            all_results[span.span_id] = step_results
 
     return all_results
 
@@ -413,28 +423,27 @@ def run_deterministic_checks(trace: Trace, document_text: str) -> dict[str, list
 def build_step_scores(
     trace: Trace, check_results: dict[str, list[CheckResult]], document_text: str
 ) -> list[StepScore]:
-    """Build StepScore objects from check results."""
+    """Build StepScore objects from check results.
+
+    Repeated check kinds are aggregated with AND via `aggregate_checks`, so the
+    verdict for a step cannot depend on the order its checks were produced in.
+    `document_text` is accepted for call-site symmetry but unused: global
+    fidelity is not separated from local fidelity in v0 (see the limitations doc).
+    """
+    del document_text
     step_scores = []
 
     for span in trace.spans:
-        step_results = check_results.get(span.step_name, [])
+        step_results = check_results.get(span.span_id, [])
 
-        local_checks = {}
-        local_pass = True
-        global_pass = True
-        evidence = []
+        local_checks = aggregate_checks(step_results)
+        local_pass = all(local_checks.values()) if local_checks else True
+        evidence = [result.evidence for result in step_results]
 
-        for result in step_results:
-            local_checks[result.check_name] = result.passed
-            if not result.passed:
-                local_pass = False
-                global_pass = False
-            evidence.append(result.evidence)
-
-        # Local fidelity: all checks for this step pass
+        # Local fidelity: all checks for this step pass.
+        # Global fidelity: identical to local in v0 (no cross-step attribution).
         local_fidelity = 1.0 if local_pass else 0.0
-        # Global fidelity: for now same as local (no propagation analysis in v0)
-        global_fidelity = 1.0 if global_pass else 0.0
+        global_fidelity = 1.0 if local_pass else 0.0
 
         step_scores.append(
             StepScore(
@@ -442,7 +451,7 @@ def build_step_scores(
                 local_fidelity=local_fidelity,
                 global_fidelity=global_fidelity,
                 local_pass=local_pass,
-                global_pass=global_pass,
+                global_pass=local_pass,
                 evidence=evidence,
                 deterministic_checks=local_checks,
             )
@@ -460,19 +469,23 @@ def find_root_cause(step_scores: list[StepScore]) -> tuple[str, FailureCategory,
                 name for name, passed in score.deterministic_checks.items() if not passed
             ]
 
-            # Priority order: more specific failures first
-            if "entity_grounding" in failed_checks:
-                category = FailureCategory.EXTRACTION_HALLUCINATION
-            elif "prompt_schema" in failed_checks:
+            # Priority order: the most specific explanation of *this step*.
+            #
+            # `prompt_schema` first: an output we could not parse tells us nothing
+            # about grounding, so any co-emitted content check is a downstream
+            # symptom of the same malformed response, not an independent failure.
+            if "prompt_schema" in failed_checks:
                 category = FailureCategory.PROMPT_FAILURE
-            elif "context_preservation_any_failed" in failed_checks:
+            elif "entity_grounding" in failed_checks:
+                category = FailureCategory.EXTRACTION_HALLUCINATION
+            elif "date_regex" in failed_checks:
+                category = FailureCategory.PROMPT_FAILURE  # date format issue
+            elif "label_enum" in failed_checks:
+                category = FailureCategory.MISCLASSIFICATION
+            elif "context_preservation" in failed_checks:
                 category = FailureCategory.CONTEXT_LOSS
             elif "propagation" in failed_checks:
                 category = FailureCategory.PROPAGATION_ERROR
-            elif "label_enum" in failed_checks:
-                category = FailureCategory.MISCLASSIFICATION
-            elif "date_regex" in failed_checks:
-                category = FailureCategory.PROMPT_FAILURE  # date format issue
             else:
                 category = FailureCategory.UNKNOWN
 
@@ -495,8 +508,9 @@ def analyze_trace(trace: Trace, document_text: str) -> Diagnosis:
     root_cause_step, category, confidence, evidence_chain = find_root_cause(step_scores)
 
     # Create diagnosis
+    # diagnosis_id must be unique per call, not per second: two diagnoses of
+    # different traces inside the same second collided on the PRIMARY KEY.
     diagnosis = Diagnosis(
-        diagnosis_id=f"diag-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}",
         trace_id=trace.trace_id,
         root_cause_step=root_cause_step,
         category=category,

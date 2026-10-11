@@ -3,6 +3,10 @@ data/*.db
 data/*.db-*
 data/traces/*.json
 
+# Runtime data — LLM response cache and spend ledger
+data/cache/
+data/spend.json
+
 # Secrets
 .env
 .env.local

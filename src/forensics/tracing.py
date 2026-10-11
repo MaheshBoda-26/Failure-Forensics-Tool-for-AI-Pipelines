@@ -205,6 +205,7 @@ def traced_step(step_name: str) -> Callable[[F], F]:
                 return func(*args, **kwargs)
 
             start_time = time.perf_counter()
+            started_at = _utc_now()
             input_data = _span_payload(args, kwargs)
 
             def record(elapsed_ms: int, result: Any, error: str | None) -> None:
@@ -245,7 +246,13 @@ def traced_step(step_name: str) -> Callable[[F], F]:
                     latency_ms=elapsed_ms,
                     status=status,  # type: ignore[arg-type]
                     error=error,
-                    started_at=_utc_now(),
+                    # Bracket the actual work: started_at is captured before the
+                    # step runs, not when the span is written. Setting both here
+                    # made every span report ~0 duration in its timestamps while
+                    # latency_ms held the real value, which invalidated all
+                    # time-to-detection / time-to-root-cause metrics and made
+                    # `ORDER BY started_at` unreliable on DB round-trip.
+                    started_at=started_at,
                     ended_at=_utc_now(),
                 )
                 if confidence is not None:
@@ -256,7 +263,7 @@ def traced_step(step_name: str) -> Callable[[F], F]:
             # Fast path: an async step is detected BEFORE running it, so the
             # span brackets the awaited work instead of the coroutine creation.
             if inspect.iscoroutinefunction(func):
-                return _await_and_record(func(*args, **kwargs), trace, record, input_data)
+                return _await_and_record(func(*args, **kwargs), trace, record, started_at)
 
             try:
                 result = func(*args, **kwargs)
@@ -275,10 +282,13 @@ async def _await_and_record(
     awaitable: Any,
     trace: Trace,
     record: Callable[[int, Any, str | None], None],
-    input_data: dict[str, Any],
+    started_at: datetime,
 ) -> Any:
-    """Await an async traced step and record exactly one span for it."""
-    del input_data
+    """Await an async traced step and record exactly one span for it.
+
+    `started_at` is captured by the sync wrapper before the coroutine is created,
+    so the recorded span brackets the awaited work.
+    """
     start_time = time.perf_counter()
     try:
         result = await awaitable
@@ -338,6 +348,11 @@ def finalize_trace(
     so analytics never has to parse 15+ JSON files. Both are written here so
     they cannot disagree about totals.
 
+    Status is derived from the spans but never downgraded: `TraceContext.__exit__`
+    already marked the trace FAILURE when an exception escaped, including one
+    raised outside any traced step (where no span failed). Recomputing from
+    spans alone silently turned those runs back into SUCCESS.
+
     When `otel_exporter` is given the trace is also mirrored into OpenTelemetry,
     so it can be correlated with an operator's other telemetry. OTel is strictly
     additive: an exporter failure must not lose the forensic record.
@@ -345,7 +360,11 @@ def finalize_trace(
     if trace.completed_at is None:
         trace.completed_at = _utc_now()
 
-    trace.status = compute_trace_status(trace.spans)
+    derived = compute_trace_status(trace.spans)
+    if trace.status is TraceStatus.FAILURE or derived is TraceStatus.FAILURE:
+        trace.status = TraceStatus.FAILURE
+    else:
+        trace.status = derived
     trace.total_tokens = sum(
         span.prompt_tokens + span.completion_tokens + span.reasoning_tokens for span in trace.spans
     )
@@ -470,8 +489,8 @@ def write_trace_to_db(trace: Trace, conn: sqlite3.Connection) -> None:
             trace.trace_id,
             trace.document_id,
             trace.status.value,
-            trace.created_at.isoformat() if trace.created_at else "",
-            trace.completed_at.isoformat() if trace.completed_at else "",
+            trace.created_at.isoformat() if trace.created_at else None,
+            trace.completed_at.isoformat() if trace.completed_at else None,
             trace.total_latency_ms,
             trace.total_tokens,
             trace.total_cost_usd,
@@ -498,8 +517,8 @@ def write_trace_to_db(trace: Trace, conn: sqlite3.Connection) -> None:
                 span.latency_ms,
                 span.status,
                 span.error,
-                span.started_at.isoformat() if span.started_at else "",
-                span.ended_at.isoformat() if span.ended_at else "",
+                span.started_at.isoformat() if span.started_at else None,
+                span.ended_at.isoformat() if span.ended_at else None,
             ),
         )
 

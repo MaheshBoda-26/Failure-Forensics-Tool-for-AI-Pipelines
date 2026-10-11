@@ -439,7 +439,11 @@ def test_check_result_structure() -> None:
 
 
 def test_run_deterministic_checks_returns_per_step_results() -> None:
-    """run_deterministic_checks groups results by step name."""
+    """run_deterministic_checks groups results by span id.
+
+    Keyed by span_id rather than step_name so two spans of the same step do not
+    overwrite one another's results.
+    """
     doc = "Invoice for 500.00 USD"
     spans = [
         _span("intake", {"cleaned_text": doc}),
@@ -461,8 +465,8 @@ def test_run_deterministic_checks_returns_per_step_results() -> None:
 
     results = run_deterministic_checks(trace, doc)
 
-    assert "extraction" in results
-    assert "intake" not in results  # intake has no checks
+    assert spans[1].span_id in results
+    assert spans[0].span_id not in results  # intake has no checks
 
 
 # --- Date regex edge cases -----------------------------------------------
