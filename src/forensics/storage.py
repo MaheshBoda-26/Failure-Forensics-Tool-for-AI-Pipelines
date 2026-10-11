@@ -493,6 +493,7 @@ class Storage:
         completed_at: datetime | None = None,
         passed_count: int | None = None,
         failed_count: int | None = None,
+        total_cases: int | None = None,
     ) -> None:
         """Update eval run completion status."""
         if completed_at is None:
@@ -506,6 +507,9 @@ class Storage:
         with self._conn() as conn:
             updates = ["completed_at = ?"]
             params: list[Any] = [completed_iso]
+            if total_cases is not None:
+                updates.append("total_cases = ?")
+                params.append(total_cases)
             if passed_count is not None:
                 updates.append("passed_count = ?")
                 params.append(passed_count)

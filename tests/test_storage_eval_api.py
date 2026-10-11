@@ -364,6 +364,44 @@ def test_confirm_validates_override_category() -> None:
     from forensics.api import ConfirmDiagnosisRequest
 
     with pytest.raises(ValidationError):
-        ConfirmDiagnosisRequest(
-            diagnosis_id="d", confirmed=True, override_category="not_a_category"
-        )
+        ConfirmDiagnosisRequest(confirmed=True, override_category="not_a_category")
+
+
+def test_request_bodies_do_not_require_path_parameters() -> None:
+    """Identifiers come from the path, so the body must not demand them again.
+
+    Both bodies originally redeclared the path id, so a correct request failed
+    with `Field required` on every call.
+    """
+    from forensics.api import ConfirmDiagnosisRequest, FlagRequest
+
+    assert FlagRequest(note="x").user_id == "api_user"
+    assert ConfirmDiagnosisRequest(confirmed=True).confirmed is True
+    assert not {"trace_id"} & FlagRequest.model_fields.keys()
+    assert not {"diagnosis_id"} & ConfirmDiagnosisRequest.model_fields.keys()
+
+
+def test_flag_and_confirm_roundtrip_through_the_api(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from forensics import api
+
+    st = Storage(traces_dir=tmp_path / "traces", db_path=tmp_path / "db.sqlite")
+    monkeypatch.setattr(api, "_storage", st)
+    st.save_trace(_clean_trace())
+
+    flag = api.create_flag("t1", api.FlagRequest(note="smoke"))
+    assert flag.trace_id == "t1"
+
+    diagnosis = api.diagnose_trace("t1")
+    updated = api.confirm_diagnosis(
+        diagnosis.diagnosis_id,
+        api.ConfirmDiagnosisRequest(
+            confirmed=True,
+            override_category=FailureCategory.CONTEXT_LOSS,
+            override_reason="manual",
+        ),
+    )
+    assert updated.confirmed is True
+    assert updated.overridden is True
+    assert updated.override_category is FailureCategory.CONTEXT_LOSS

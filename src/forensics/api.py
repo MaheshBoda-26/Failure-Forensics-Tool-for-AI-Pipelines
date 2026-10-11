@@ -42,13 +42,23 @@ def get_storage() -> Storage:
 
 
 class FlagRequest(BaseModel):
-    trace_id: str
+    """Body for POST /traces/{trace_id}/flag.
+
+    `trace_id` comes from the path, not the body; requiring it in both places
+    meant a correct request failed validation with "Field required".
+    """
+
     user_id: str = "api_user"
     note: str | None = None
 
 
 class ConfirmDiagnosisRequest(BaseModel):
-    diagnosis_id: str
+    """Body for POST /diagnoses/{diagnosis_id}/confirm.
+
+    `diagnosis_id` comes from the path; requiring it in the body too made every
+    correct request fail validation.
+    """
+
     confirmed: bool
     override_category: FailureCategory | None = None
     override_reason: str | None = None

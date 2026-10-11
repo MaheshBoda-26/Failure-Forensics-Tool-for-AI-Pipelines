@@ -76,8 +76,12 @@ def _document_text_for_trace(storage: Storage, trace_id: str) -> str:
     return doc_path.read_text()
 
 
-def _corrected_output(bad_output: dict[str, Any], document_id: str) -> dict[str, Any]:
+def _corrected_output(bad_output: Any, document_id: str) -> dict[str, Any]:
     """Derive a corrected reference output from a failing one.
+
+    `bad_output` is `Any` on purpose: a span's serialized output is whatever
+    the model produced, so a non-object (a bare string, a list) is a real
+    possibility that must be handled rather than asserted away.
 
     For an extraction failure the correction is deterministic: drop every
     entity whose value does not appear in the source document. That produces a
@@ -87,16 +91,22 @@ def _corrected_output(bad_output: dict[str, Any], document_id: str) -> dict[str,
     For other steps there is no deterministic repair, so the bad output is
     returned and flagged so the case is clearly marked "needs golden output".
     """
+    if not isinstance(bad_output, dict):
+        return {"raw": bad_output, "_needs_golden": True}
     if "entities" in bad_output and isinstance(bad_output["entities"], list):
         doc_path = _dataset_dir() / "documents" / f"{document_id}.txt"
         if not doc_path.exists():
             return {**bad_output, "_needs_golden": True}
         doc_text = doc_path.read_text()
-        kept = [
-            e
-            for e in bad_output["entities"]
-            if isinstance(e, dict) and e.get("value") and e["value"] in doc_text
-        ]
+        kept: list[Any] = []
+        for entity in bad_output["entities"]:
+            # Guard against malformed entries: a non-dict entity cannot be
+            # ground-truth-checked, so it is dropped rather than crashing.
+            if not isinstance(entity, dict):
+                continue
+            value = entity.get("value")
+            if isinstance(value, str) and value and value in doc_text:
+                kept.append(entity)
         return {**bad_output, "entities": kept}
     return {**bad_output, "_needs_golden": True}
 
@@ -124,9 +134,13 @@ def flag_to_eval_case(flag: Flag, diagnosis: Diagnosis, storage: Storage) -> Eva
         if span.step_name == failing_step:
             bad_span = span
             try:
-                bad_output = json.loads(span.output_json) if span.output_json else {}
-            except Exception:
-                bad_output = {"raw": span.output_json}
+                parsed = json.loads(span.output_json) if span.output_json else {}
+            except (ValueError, TypeError):
+                parsed = None
+            # A span's output may legitimately be a non-object (a bare string
+            # from a malformed model response); keep it under "raw" so the
+            # case stays well-typed instead of crashing downstream.
+            bad_output = parsed if isinstance(parsed, dict) else {"raw": parsed}
             break
 
     if bad_span is None:
@@ -244,6 +258,7 @@ async def run_eval() -> EvalRun | None:
     storage.update_eval_run(
         run.run_id,
         completed_at=run.completed_at,
+        total_cases=run.total_cases,
         passed_count=passed,
         failed_count=failed,
     )
@@ -267,18 +282,18 @@ def print_eval_results(run_id: str) -> None:
     print(f"Started: {run.started_at} | Completed: {run.completed_at or 'N/A'}")
     print(f"Total: {run.total_cases} | Passed: {run.passed_count} | Failed: {run.failed_count}")
     print(f"{'=' * 80}")
-    print(f"{'Case ID':<15} {'Step':<20} {'Score':<8} {'Fixed':<8} {'Details'}")
+    print(f"{'Case ID':<15} {'Step':<20} {'Score':<8} {'Fixed':<6} {'Details'}")
     print(f"{'-' * 80}")
 
     for result in results:
-        fixed_str = "✅" if result.fixed else "❌"
+        fixed_str = "yes" if result.fixed else "no"
         score_str = f"{result.score:.2f}"
         details = result.details.get("category", "") if result.details else ""
         parts = [
             f"{result.case_id[:14]:<15}",
             f"{result.step_name:<20}",
             f"{score_str:<8}",
-            f"{fixed_str:<8}",
+            f"{fixed_str:<6}",
             details,
         ]
         print(" ".join(parts))
