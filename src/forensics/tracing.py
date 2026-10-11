@@ -10,11 +10,13 @@ import inspect
 import json
 import os
 import sqlite3
+import sys
 import tempfile
 import time
 import uuid
 from collections.abc import Callable
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import wraps
 from pathlib import Path
@@ -31,6 +33,63 @@ _current_trace: contextvars.ContextVar[Trace | None] = contextvars.ContextVar(
 _current_span: contextvars.ContextVar[Span | None] = contextvars.ContextVar(
     "_current_span", default=None
 )
+
+
+@dataclass
+class StepTelemetry:
+    """Real LLM provenance for one step, published by the step itself.
+
+    This exists because a span that records `model_id="fake-model"` with zero
+    tokens cannot answer "what did this run cost" or "which model was wrong".
+    """
+
+    model_id: str
+    provider: str
+    prompt: str = ""
+    raw_response: str = ""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    reasoning_tokens: int = 0
+    confidence: int | None = None
+    cached: bool = False
+
+
+# Telemetry published by a step for the decorator to attach to its span.
+#
+# The LLM client knows the model, tokens and cost; the decorator knows the
+# span. Rather than threading a wrapper object through every step signature,
+# the step publishes a side-channel record that `traced_step` consumes
+# immediately after the call returns. ContextVar keeps this correct under
+# concurrency: each task gets its own slot.
+_pending_telemetry: contextvars.ContextVar[StepTelemetry | None] = contextvars.ContextVar(
+    "_pending_telemetry", default=None
+)
+
+
+def record_telemetry(telemetry: StepTelemetry) -> None:
+    """Publish telemetry for the step currently being traced."""
+    _pending_telemetry.set(telemetry)
+
+
+def _take_telemetry() -> StepTelemetry | None:
+    """Consume pending telemetry so it cannot bleed into a later span."""
+    telemetry = _pending_telemetry.get()
+    _pending_telemetry.set(None)
+    return telemetry
+
+
+def compute_trace_status(spans: list[Span]) -> TraceStatus:
+    """Derive trace status from the statuses of its spans (C5).
+
+    Failure dominates degraded: a trace containing a failed step cannot be
+    trusted even if the pipeline continued past it.
+    """
+    statuses = {span.status for span in spans}
+    if "failure" in statuses:
+        return TraceStatus.FAILURE
+    if "degraded" in statuses:
+        return TraceStatus.DEGRADED
+    return TraceStatus.SUCCESS
 
 
 def _utc_now() -> datetime:
@@ -77,6 +136,10 @@ class TraceContext:
             self._trace.total_latency_ms = int((time.perf_counter() - self._start_time) * 1000)
             if exc_type is not None:
                 self._trace.status = TraceStatus.FAILURE
+            else:
+                # Derive from spans: `trace_context` forwards no exception, so a
+                # failure the caller caught would otherwise leave this SUCCESS.
+                self._trace.status = compute_trace_status(self._trace.spans)
         _current_trace.set(None)
 
     @property
@@ -93,9 +156,15 @@ def trace_context(
 ) -> Any:
     """Context manager for a trace."""
     ctx = TraceContext(trace_id, document_id, traces_dir, db_path)
+    entered = ctx.__enter__()
     try:
-        yield ctx.__enter__()
-    finally:
+        yield entered
+    except BaseException:
+        # Forward the exception so the trace is marked FAILURE. Swallowing it
+        # here would report success for a run that in fact blew up.
+        ctx.__exit__(*sys.exc_info())
+        raise
+    else:
         ctx.__exit__(None, None, None)
 
 
@@ -141,22 +210,46 @@ def traced_step(step_name: str) -> Callable[[F], F]:
             def record(elapsed_ms: int, result: Any, error: str | None) -> None:
                 status = "failure" if error else "success"
                 output_json = json.dumps(result, default=str) if result is not None else "{}"
+
+                # Consume whatever the step published. A step that raises after
+                # a successful LLM call still reports failure, but the model and
+                # token counts stay attached so the cost is not lost.
+                telemetry = _take_telemetry()
+                if telemetry is None:
+                    model_id, provider = "n/a", "n/a"
+                    prompt, raw_response = f"Step: {step_name}", output_json
+                    prompt_tokens = completion_tokens = reasoning_tokens = 0
+                    confidence: int | None = None
+                else:
+                    model_id, provider = telemetry.model_id, telemetry.provider
+                    prompt = telemetry.prompt
+                    raw_response = telemetry.raw_response or output_json
+                    prompt_tokens = telemetry.prompt_tokens
+                    completion_tokens = telemetry.completion_tokens
+                    reasoning_tokens = telemetry.reasoning_tokens
+                    confidence = telemetry.confidence
+
                 span = Span(
                     span_id=_new_id(),
                     trace_id=trace.trace_id,
                     step_name=step_name,
                     input_json=json.dumps(input_data, default=str),
                     output_json=output_json,
-                    model_id="fake-model",
-                    provider="fake",
-                    prompt=f"Step: {step_name}",
-                    raw_response=output_json,
+                    model_id=model_id,
+                    provider=provider,
+                    prompt=prompt,
+                    raw_response=raw_response,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    reasoning_tokens=reasoning_tokens,
                     latency_ms=elapsed_ms,
                     status=status,  # type: ignore[arg-type]
                     error=error,
                     started_at=_utc_now(),
                     ended_at=_utc_now(),
                 )
+                if confidence is not None:
+                    span.confidence = confidence
                 trace.spans.append(span)
                 _current_span.set(span)
 
@@ -194,6 +287,99 @@ async def _await_and_record(
         raise
     record(int((time.perf_counter() - start_time) * 1000), result, None)
     return result
+
+
+def _span_cost_usd(span: Span) -> float:
+    """Cost of one span from config-driven price assumptions (C12).
+
+    Prices come from config, so they are an ASSUMPTION, not an invoice. An
+    unknown model prices at 0.0 rather than guessing upward.
+    """
+    from forensics.config import get_settings
+
+    try:
+        settings = get_settings()
+    except Exception as exc:
+        # Only a config problem lands here. Swallowing it would silently make
+        # every trace report $0.00, which is worse than a loud failure: the
+        # caller cannot tell real cost from a broken price table.
+        raise RuntimeError(
+            f"Cannot price span for model {span.model_id!r}: configuration unavailable"
+        ) from exc
+
+    known = [
+        settings.pipeline_model,
+        settings.pipeline_fallback_model,
+        settings.judge_model,
+        settings.cheap_model,
+    ]
+    model = next((m for m in known if m.model_id == span.model_id), None)
+    if model is None:
+        return 0.0
+
+    prompt_price = model.price_in_per_1m / 1_000_000
+    completion_price = model.price_out_per_1m / 1_000_000
+    return (
+        span.prompt_tokens * prompt_price
+        + span.completion_tokens * completion_price
+        + span.reasoning_tokens * completion_price
+    )
+
+
+def finalize_trace(
+    trace: Trace,
+    traces_dir: Path | None = None,
+    db_path: Path | None = None,
+    otel_exporter: object | None = None,
+) -> None:
+    """Finish a trace: derive status, aggregate totals, persist to both stores.
+
+    The JSON file is the source of truth for payloads; the SQLite index exists
+    so analytics never has to parse 15+ JSON files. Both are written here so
+    they cannot disagree about totals.
+
+    When `otel_exporter` is given the trace is also mirrored into OpenTelemetry,
+    so it can be correlated with an operator's other telemetry. OTel is strictly
+    additive: an exporter failure must not lose the forensic record.
+    """
+    if trace.completed_at is None:
+        trace.completed_at = _utc_now()
+
+    trace.status = compute_trace_status(trace.spans)
+    trace.total_tokens = sum(
+        span.prompt_tokens + span.completion_tokens + span.reasoning_tokens for span in trace.spans
+    )
+    trace.total_cost_usd = round(sum(_span_cost_usd(span) for span in trace.spans), 8)
+    if not trace.total_latency_ms:
+        trace.total_latency_ms = sum(span.latency_ms for span in trace.spans)
+
+    traces_dir = traces_dir or Path("data/traces")
+    write_trace_json(trace, traces_dir)
+
+    if db_path is not None:
+        conn = init_db(db_path)
+        try:
+            write_trace_to_db(trace, conn)
+        finally:
+            conn.close()
+
+    if otel_exporter is not None:
+        _export_otel(trace, otel_exporter)
+
+
+def _export_otel(trace: Trace, exporter: object) -> None:
+    """Mirror to OTel, never letting a collector problem lose the trace."""
+    try:
+        from opentelemetry.sdk.trace.export import SpanExporter
+
+        from forensics.otel_export import export_trace_to_otel
+
+        if isinstance(exporter, SpanExporter):
+            export_trace_to_otel(trace, exporter=exporter)
+    except Exception:  # pragma: no cover - defensive
+        # The JSON + SQLite writes above are the durable record. A telemetry
+        # backend being unreachable must never fail a pipeline run.
+        pass
 
 
 def write_trace_json(trace: Trace, traces_dir: Path) -> Path:

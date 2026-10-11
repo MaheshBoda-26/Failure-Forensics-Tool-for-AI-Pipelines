@@ -21,7 +21,6 @@ from forensics.models import (
     Trace,
     TraceStatus,
 )
-from forensics.tracing import write_trace_to_db
 
 
 class Storage:
@@ -200,13 +199,16 @@ class Storage:
     # --- Trace operations ---
 
     def save_trace(self, trace: Trace) -> Path:
-        """Save trace to JSON and SQLite index."""
-        from forensics.tracing import write_trace_json
+        """Save trace: finalize status/totals, then write JSON + SQLite.
 
-        json_path = write_trace_json(trace, self.traces_dir)
-        with self._conn() as conn:
-            write_trace_to_db(trace, conn)
-        return json_path
+        Routed through `finalize_trace` so a trace saved here carries the same
+        derived status and token/cost totals as one saved by the CLI. Writing
+        JSON and SQLite directly would silently leave those fields at defaults.
+        """
+        from forensics.tracing import finalize_trace
+
+        finalize_trace(trace, traces_dir=self.traces_dir, db_path=self.db_path)
+        return self.traces_dir / f"{trace.trace_id}.json"
 
     def load_trace(self, trace_id: str) -> Trace | None:
         """Load trace from JSON file."""

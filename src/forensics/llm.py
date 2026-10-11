@@ -767,6 +767,28 @@ class OpenRouterClient:
             )
 
 
+def _publish_telemetry(response: StructuredResponse, prompt: str) -> None:
+    """Attach real LLM provenance to the step being traced (C5/C12).
+
+    Without this the trace records model_id="fake-model" and zero tokens, so a
+    finished run cannot be audited for cost or blamed on a model.
+    """
+    from forensics.tracing import StepTelemetry, record_telemetry
+
+    record_telemetry(
+        StepTelemetry(
+            model_id=response.model,
+            provider=response.provider,
+            prompt=prompt,
+            raw_response=response.content,
+            prompt_tokens=response.usage.prompt_tokens,
+            completion_tokens=response.usage.completion_tokens,
+            reasoning_tokens=response.usage.reasoning_tokens,
+            cached=response.cached,
+        )
+    )
+
+
 class LLMClient:
     """High-level LLM client for the pipeline steps."""
 
@@ -856,6 +878,7 @@ class LLMClient:
             prompt_version="extraction-v1",
             step="extraction",
         )
+        _publish_telemetry(response, prompt)
         return response.parsed  # type: ignore[return-value]
 
     async def classification(self, extraction_output: ExtractionOutput) -> ClassificationOutput:
@@ -873,6 +896,7 @@ class LLMClient:
             prompt_version="classification-v1",
             step="classification",
         )
+        _publish_telemetry(response, prompt)
         return response.parsed  # type: ignore[return-value]
 
     async def summarization(
@@ -897,6 +921,7 @@ class LLMClient:
             prompt_version="summarization-v1",
             step="summarization",
         )
+        _publish_telemetry(response, prompt)
         return response.parsed  # type: ignore[return-value]
 
     async def judge_analyze(
