@@ -5,6 +5,8 @@ confirm or override a diagnosis, list eval cases, trigger and fetch eval runs
 and trend data, fetch analytics.
 """
 
+import json
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
@@ -88,15 +90,30 @@ def diagnose_trace(trace_id: str) -> Diagnosis:
     if not trace:
         raise HTTPException(status_code=404, detail="Trace not found")
 
-    # Load document text
-    from pathlib import Path
+    from forensics.config import get_settings
 
-    doc_path = Path(f"dataset/documents/{trace.document_id}.txt")
+    dataset_dir = get_settings().dataset_dir
+    doc_path = dataset_dir / "documents" / f"{trace.document_id}.txt"
     if not doc_path.exists():
         raise HTTPException(status_code=404, detail="Document not found")
 
     doc_text = doc_path.read_text()
-    diagnosis = analyze_trace(trace, doc_text)
+
+    # Ground-truth type, when the document has a label, so misclassification
+    # is observable rather than assumed away.
+    expected_type: str | None = None
+    labels_path = dataset_dir / "labels.json"
+    if labels_path.exists():
+        try:
+            labels = json.loads(labels_path.read_text())
+            for entry in labels.get("documents", []):
+                if entry.get("doc_id") == trace.document_id:
+                    expected_type = entry.get("doc_type")
+                    break
+        except (OSError, ValueError):
+            expected_type = None
+
+    diagnosis = analyze_trace(trace, doc_text, expected_type)
 
     # Save diagnosis
     get_storage().create_diagnosis(diagnosis)

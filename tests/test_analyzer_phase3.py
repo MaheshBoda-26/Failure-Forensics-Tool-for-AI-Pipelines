@@ -125,8 +125,13 @@ def test_misclassification_detected() -> None:
     assert "Invalid document type" in results[0].evidence
 
 
-def test_misclassification_maps_to_correct_category() -> None:
-    """Invalid document_type should categorize as MISCLASSIFICATION."""
+def test_invalid_enum_maps_to_prompt_failure() -> None:
+    """A document_type outside the enum is a schema violation, not a misclassification.
+
+    The contract cannot represent the value, so the model failed to follow the
+    schema. Misclassification is reserved for a *valid* enum value that is the
+    wrong one, which only ground-truth labels can reveal.
+    """
     spans = [
         _span("intake", {"cleaned_text": "doc"}),
         _span("extraction", {"entities": []}),
@@ -136,9 +141,39 @@ def test_misclassification_maps_to_correct_category() -> None:
 
     diagnosis = analyze_trace(trace, "doc")
 
+    assert diagnosis.category is FailureCategory.PROMPT_FAILURE
+    assert diagnosis.root_cause_step == "classification"
+    assert any("not a valid DocumentType" in e for e in diagnosis.evidence_chain)
+
+
+def test_valid_but_wrong_label_is_misclassification() -> None:
+    """A valid DocumentType that contradicts ground truth is a misclassification."""
+    spans = [
+        _span("intake", {"cleaned_text": "doc"}),
+        _span("extraction", {"entities": []}),
+        _span("classification", {"document_type": "invoice", "confidence": 0.9}),
+    ]
+    trace = _trace_with_spans(spans)
+
+    diagnosis = analyze_trace(trace, "doc", expected_type="contract")
+
     assert diagnosis.category is FailureCategory.MISCLASSIFICATION
     assert diagnosis.root_cause_step == "classification"
-    assert any("Invalid document type" in e for e in diagnosis.evidence_chain)
+    assert any("does not match ground truth" in e for e in diagnosis.evidence_chain)
+
+
+def test_label_grounding_is_inactive_without_ground_truth() -> None:
+    """Without labels a valid-but-wrong label is unobservable, and must not be invented."""
+    spans = [
+        _span("intake", {"cleaned_text": "doc"}),
+        _span("extraction", {"entities": []}),
+        _span("classification", {"document_type": "invoice", "confidence": 0.9}),
+    ]
+    trace = _trace_with_spans(spans)
+
+    diagnosis = analyze_trace(trace, "doc")
+
+    assert diagnosis.root_cause_step == "none"
 
 
 # --- Prompt Failure (schema-invalid output) -------------------------------

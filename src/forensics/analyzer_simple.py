@@ -123,6 +123,46 @@ def check_entity_grounding(span: Span, document_text: str) -> list[CheckResult]:
     return results
 
 
+def check_label_grounding(span: Span, expected_type: str | None) -> list[CheckResult]:
+    """Check classification against ground-truth labels, when available.
+
+    A *valid* enum value can still be the wrong one, and no amount of
+    self-consistency can detect that: the analyzer only sees the model's own
+    output. Only the dataset's labels make misclassification observable, so
+    this check is active exactly when a ground-truth type is supplied.
+
+    Expected category: misclassification.
+    """
+    if span.step_name != "classification" or expected_type is None:
+        return []
+
+    try:
+        output_data = _parse_span_output(span)
+        actual = _extract_string_field(output_data, "document_type")
+    except (ValueError, TypeError):
+        return []
+
+    if actual == expected_type:
+        return [
+            CheckResult(
+                "label_grounding",
+                True,
+                f"Classification matches ground truth: {actual}",
+                span.step_name,
+            )
+        ]
+
+    return [
+        CheckResult(
+            "label_grounding",
+            False,
+            f"Classification '{actual}' does not match ground truth '{expected_type}' "
+            "(misclassification)",
+            span.step_name,
+        )
+    ]
+
+
 def check_label_enum(span: Span) -> list[CheckResult]:
     """Check that classification output is a valid DocumentType."""
     results: list[CheckResult] = []
@@ -367,6 +407,19 @@ def check_prompt_schema(span: Span) -> list[CheckResult]:
             msg = "Classification 'document_type' must be a non-empty string"
             return [CheckResult("prompt_schema", False, msg, span.step_name)]
 
+        # A non-empty string outside the enum is a schema violation, not a
+        # misclassification: the model emitted a value the contract cannot
+        # represent. Validating it here also keeps label_enum for valid-but-wrong.
+        try:
+            DocumentType(doc_type)
+        except ValueError:
+            valid_types = [t.value for t in DocumentType]
+            msg = (
+                f"Classification document_type '{doc_type}' is not a valid "
+                f"DocumentType (valid: {valid_types})"
+            )
+            return [CheckResult("prompt_schema", False, msg, span.step_name)]
+
         confidence = output_data.get("confidence")
         if confidence is None:
             msg = "Classification missing required field 'confidence'"
@@ -395,8 +448,14 @@ def check_prompt_schema(span: Span) -> list[CheckResult]:
     return results
 
 
-def run_deterministic_checks(trace: Trace, document_text: str) -> dict[str, list[CheckResult]]:
+def run_deterministic_checks(
+    trace: Trace, document_text: str, expected_type: str | None = None
+) -> dict[str, list[CheckResult]]:
     """Run all deterministic checks on all spans in a trace.
+
+    `expected_type` is the ground-truth document type from the dataset, when
+    available. It enables the misclassification check; without it, a valid but
+    wrong label is unobservable.
 
     Keyed by `span_id`, not `step_name`: two spans of the same step (a retry, a
     fan-out) previously overwrote each other's results, and build_step_scores
@@ -409,6 +468,7 @@ def run_deterministic_checks(trace: Trace, document_text: str) -> dict[str, list
 
         step_results.extend(check_entity_grounding(span, document_text))
         step_results.extend(check_label_enum(span))
+        step_results.extend(check_label_grounding(span, expected_type))
         step_results.extend(check_date_regex(span))
         step_results.extend(check_context_preservation(span, trace, document_text))
         step_results.extend(check_propagation(span, trace))
@@ -476,11 +536,13 @@ def find_root_cause(step_scores: list[StepScore]) -> tuple[str, FailureCategory,
             # symptom of the same malformed response, not an independent failure.
             if "prompt_schema" in failed_checks:
                 category = FailureCategory.PROMPT_FAILURE
+            elif "date_regex" in failed_checks:
+                # A malformed date is a formatting contract violation, not a
+                # fabrication: the value may well be grounded in the source.
+                category = FailureCategory.PROMPT_FAILURE
             elif "entity_grounding" in failed_checks:
                 category = FailureCategory.EXTRACTION_HALLUCINATION
-            elif "date_regex" in failed_checks:
-                category = FailureCategory.PROMPT_FAILURE  # date format issue
-            elif "label_enum" in failed_checks:
+            elif "label_enum" in failed_checks or "label_grounding" in failed_checks:
                 category = FailureCategory.MISCLASSIFICATION
             elif "context_preservation" in failed_checks:
                 category = FailureCategory.CONTEXT_LOSS
@@ -496,10 +558,54 @@ def find_root_cause(step_scores: list[StepScore]) -> tuple[str, FailureCategory,
     return "none", FailureCategory.UNKNOWN, 1.0, ["All deterministic checks passed"]
 
 
-def analyze_trace(trace: Trace, document_text: str) -> Diagnosis:
-    """Analyze a trace and produce a root cause diagnosis."""
+def reachable_failure_pairs() -> set[tuple[str, str]]:
+    """The (step, category) pairs the analyzer can actually emit.
+
+    Maps each check name to the category it produces, then restricts to the
+    steps that check inspects. The dataset's seeded ground truth must be
+    reproducible against the analyzer, otherwise "category accuracy" measures
+    the label definitions rather than model behaviour: two of the five seeded
+    failures were seeded at steps where their category can never be produced.
+    """
+    # check name -> category produced by that check
+    check_category = {
+        "prompt_schema": FailureCategory.PROMPT_FAILURE,
+        "entity_grounding": FailureCategory.EXTRACTION_HALLUCINATION,
+        "date_regex": FailureCategory.PROMPT_FAILURE,
+        "label_enum": FailureCategory.MISCLASSIFICATION,
+        "label_grounding": FailureCategory.MISCLASSIFICATION,
+        "context_preservation": FailureCategory.CONTEXT_LOSS,
+        "propagation": FailureCategory.PROPAGATION_ERROR,
+    }
+    # which step each check inspects
+    check_step = {
+        "prompt_schema": {"extraction", "classification", "summarization"},
+        "entity_grounding": {"extraction"},
+        "date_regex": {"extraction"},
+        "label_enum": {"classification"},
+        "label_grounding": {"classification"},
+        "context_preservation": {"summarization"},
+        "propagation": {"summarization"},
+    }
+    pairs: set[tuple[str, str]] = set()
+    for check, category in check_category.items():
+        for step in check_step[check]:
+            pairs.add((step, category.value))
+    # UNKNOWN is reachable at any step.
+    for step in check_step["prompt_schema"]:
+        pairs.add((step, FailureCategory.UNKNOWN.value))
+    return pairs
+
+
+def analyze_trace(trace: Trace, document_text: str, expected_type: str | None = None) -> Diagnosis:
+    """Analyze a trace and produce a root cause diagnosis.
+
+    `expected_type` is the dataset's ground-truth document type. Supplying it
+    enables misclassification detection; omitting it makes the analyzer purely
+    self-consistency based.
+    """
     # Run deterministic checks
-    check_results = run_deterministic_checks(trace, document_text)
+    check_results = run_deterministic_checks(trace, document_text, expected_type)
 
     # Build step scores
     step_scores = build_step_scores(trace, check_results, document_text)

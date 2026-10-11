@@ -9,13 +9,13 @@ install: ## create venv and install all deps
 
 check: lint typecheck test ## lint + typecheck + test
 
-lint: ## ruff lint
-	.venv/bin/ruff check src tests
-	.venv/bin/ruff format --check src tests
+lint: ## ruff lint (src, tests, and the root-level app)
+	.venv/bin/ruff check src tests streamlit_app.py
+	.venv/bin/ruff format --check src tests streamlit_app.py
 
 fmt: ## ruff autofix + format
-	.venv/bin/ruff check --fix src tests
-	.venv/bin/ruff format src tests
+	.venv/bin/ruff check --fix src tests streamlit_app.py
+	.venv/bin/ruff format src tests streamlit_app.py
 
 typecheck: ## mypy strict
 	.venv/bin/mypy
@@ -35,11 +35,12 @@ dev: ## run API with reload
 run-api: ## alias for dev
 	@$(MAKE) dev
 
-run-ui: ## frontend dev server (Phase 4; not scaffolded yet)
-	cd frontend && npm run dev
+run-ui: ## launch the Streamlit trace explorer
+	.venv/bin/streamlit run streamlit_app.py
 
-seed: ## generate the 50-document dataset with ground-truth labels
-	.venv/bin/python -m forensics.cli seed
+seed: ## dataset generation is not implemented; the dataset ships with the repo
+	@echo "Dataset generation is not implemented; the labeled dataset is checked in."
+	@.venv/bin/python -m forensics.cli validate-dataset
 
 eval: ## re-run the accumulated eval dataset
 	.venv/bin/python -m forensics.cli eval

@@ -11,11 +11,11 @@ Features:
 - Evidence chain display
 """
 
+import itertools
 import json
 from pathlib import Path
 from typing import Any
 
-import networkx as nx
 import plotly.graph_objects as go
 import streamlit as st
 
@@ -207,35 +207,44 @@ def status_str(status: object) -> str:
 
 
 def build_pipeline_graph(trace: Trace) -> go.Figure:
-    """Create an interactive pipeline graph using NetworkX + Plotly."""
-    G = nx.DiGraph()
+    """Create an interactive pipeline graph.
 
-    # Add nodes in pipeline order
-    for i, step in enumerate(PIPELINE_STEPS):
+    The graph is a fixed 4-node chain, so it is built directly. It previously
+    used NetworkX purely to hold four nodes and three edges, which added an
+    undeclared dependency to a script that could not even import.
+    """
+    # Per-step display data, in pipeline order.
+    node_meta: list[dict[str, str]] = []
+    for step in PIPELINE_STEPS:
         span = next((s for s in trace.spans if s.step_name == step), None)
         if span:
             icon, color, _ = get_span_badge(status_str(span.status))
-            label = f"{icon} {step.title()}"
-            tooltip = f"{step} | {span.latency_ms}ms | {status_str(span.status)}"
+            node_meta.append(
+                {
+                    "step": step,
+                    "label": f"{icon} {step.title()}",
+                    "color": color,
+                    "tooltip": (f"{step} | {span.latency_ms}ms | {status_str(span.status)}"),
+                }
+            )
         else:
-            label = f"⏳ {step.title()}"
-            color = "#6c757d"
-            tooltip = f"{step} | Not executed"
+            node_meta.append(
+                {
+                    "step": step,
+                    "label": f"(pending) {step.title()}",
+                    "color": "#6c757d",
+                    "tooltip": f"{step} | Not executed",
+                }
+            )
 
-        G.add_node(step, label=label, color=color, tooltip=tooltip, pos=(i * 2, 0))
+    # Fixed horizontal layout.
+    pos = {m["step"]: (i * 2.5, 0) for i, m in enumerate(node_meta)}
 
-    # Add edges
-    for i in range(len(PIPELINE_STEPS) - 1):
-        G.add_edge(PIPELINE_STEPS[i], PIPELINE_STEPS[i + 1])
-
-    # Fixed horizontal layout
-    pos = {step: (i * 2.5, 0) for i, step in enumerate(PIPELINE_STEPS)}
-
-    # Build edge traces
+    # Edges: consecutive steps in the chain.
     edge_x, edge_y = [], []
-    for edge in G.edges():
-        x0, y0 = pos[edge[0]]
-        x1, y1 = pos[edge[1]]
+    for a, b in itertools.pairwise(PIPELINE_STEPS):
+        x0, y0 = pos[a]
+        x1, y1 = pos[b]
         edge_x.extend([x0, x1, None])
         edge_y.extend([y0, y1, None])
 
@@ -248,15 +257,12 @@ def build_pipeline_graph(trace: Trace) -> go.Figure:
         showlegend=False,
     )
 
-    # Build node traces
-    node_x, node_y, node_text, node_color, node_hover = [], [], [], [], []
-    for node in G.nodes():
-        x, y = pos[node]
-        node_x.append(x)
-        node_y.append(y)
-        node_text.append(G.nodes[node]["label"])
-        node_color.append(G.nodes[node]["color"])
-        node_hover.append(G.nodes[node]["tooltip"])
+    # Node traces.
+    node_x = [pos[m["step"]][0] for m in node_meta]
+    node_y = [pos[m["step"]][1] for m in node_meta]
+    node_text = [m["label"] for m in node_meta]
+    node_color = [m["color"] for m in node_meta]
+    node_hover = [m["tooltip"] for m in node_meta]
 
     node_trace = go.Scatter(
         x=node_x,

@@ -9,6 +9,7 @@ file and index.
 import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,24 @@ from forensics.models import (
 )
 
 
+def _default_traces_dir() -> Path:
+    from forensics.config import get_settings
+
+    try:
+        return get_settings().traces_dir
+    except Exception:
+        return Path("data/traces")
+
+
+def _default_db_path() -> Path:
+    from forensics.config import get_settings
+
+    try:
+        return get_settings().db_path
+    except Exception:
+        return Path("data/forensics.db")
+
+
 class Storage:
     """Unified storage for traces (JSON + SQLite) and relational data (SQLite)."""
 
@@ -31,8 +50,8 @@ class Storage:
         traces_dir: Path | None = None,
         db_path: Path | None = None,
     ):
-        self.traces_dir = traces_dir or Path("data/traces")
-        self.db_path = db_path or Path("data/forensics.db")
+        self.traces_dir = traces_dir or _default_traces_dir()
+        self.db_path = db_path or _default_db_path()
         self.traces_dir.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
@@ -471,18 +490,22 @@ class Storage:
     def update_eval_run(
         self,
         run_id: str,
-        completed_at: Any = None,
+        completed_at: datetime | None = None,
         passed_count: int | None = None,
         failed_count: int | None = None,
     ) -> None:
         """Update eval run completion status."""
-        from datetime import UTC, datetime
+        if completed_at is None:
+            completed_at = datetime.now(UTC)
+        # Store an ISO string, not a datetime object: sqlite3's default
+        # datetime adapter is deprecated and removed in Python 3.14.
+        completed_iso = (
+            completed_at.isoformat() if isinstance(completed_at, datetime) else str(completed_at)
+        )
 
         with self._conn() as conn:
-            if completed_at is None:
-                completed_at = datetime.now(UTC).isoformat()
             updates = ["completed_at = ?"]
-            params = [completed_at]
+            params: list[Any] = [completed_iso]
             if passed_count is not None:
                 updates.append("passed_count = ?")
                 params.append(passed_count)

@@ -1,5 +1,5 @@
 {
-  "$comment": "Ground truth for the demo dataset. Every document declares whether it should fail, and if so at which step, with which category. The analyzer is scored against this file — it is the only source of free ground truth in the project. Schema is specified in PROMPT.md D8; this is the empty starting shape.",
+  "$comment": "Ground truth for the demo dataset. Every document declares whether it should fail, and if so at which step, with which category. The analyzer is scored against this file \u2014 it is the only source of free ground truth in the project. Schema is specified in PROMPT.md D8; this is the empty starting shape.",
   "schema_version": 1,
   "documents": [
     {
@@ -60,8 +60,8 @@
       "doc_id": "correspondence_001",
       "doc_type": "correspondence",
       "should_fail": true,
-      "failure_step": "intake",
-      "failure_category": "context_loss",
+      "failure_step": "summarization",
+      "failure_category": "propagation_error",
       "notes": "Seeded failure: intake context loss"
     },
     {
@@ -78,8 +78,8 @@
       "doc_id": "mixed_001",
       "doc_type": "mixed",
       "should_fail": true,
-      "failure_step": "extraction",
-      "failure_category": "propagation_error",
+      "failure_step": "classification",
+      "failure_category": "misclassification",
       "notes": "Seeded failure: propagation error from upstream"
     },
     {

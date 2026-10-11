@@ -100,6 +100,26 @@ def _new_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
+def _default_traces_dir() -> Path:
+    """Default traces directory, from settings rather than a literal."""
+    try:
+        from forensics.config import get_settings
+
+        return get_settings().traces_dir
+    except Exception:
+        return Path("data/traces")
+
+
+def _default_db_path() -> Path:
+    """Default SQLite path, from settings rather than a literal."""
+    try:
+        from forensics.config import get_settings
+
+        return get_settings().db_path
+    except Exception:
+        return Path("data/forensics.db")
+
+
 class TraceContext:
     """Manages the current trace and span context."""
 
@@ -112,8 +132,8 @@ class TraceContext:
     ):
         self.trace_id = trace_id or _new_id()
         self.document_id = document_id or _new_id()
-        self.traces_dir = traces_dir or Path("data/traces")
-        self.db_path = db_path or Path("data/forensics.db")
+        self.traces_dir = traces_dir or _default_traces_dir()
+        self.db_path = db_path or _default_db_path()
         self.traces_dir.mkdir(parents=True, exist_ok=True)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._trace: Trace | None = None
@@ -178,6 +198,29 @@ def get_current_span() -> Span | None:
     return _current_span.get()
 
 
+def _safe_repr(value: Any, _depth: int = 0) -> str:
+    """Render an object for a span payload without leaking secrets.
+
+    A blind `json.dumps(..., default=str)` wrote `str(obj)` for anything JSON
+    could not encode — and `str(Settings)` contains the plaintext API key, so
+    a config or client object reaching a traced step leaked the secret into
+    every trace file on disk. This renders a type-only placeholder instead.
+    """
+    if _depth > 2:
+        return "<...>"
+    # Known-safe scalar-ish types are fine to stringify.
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    module = type(value).__module__
+    qualname = type(value).__qualname__
+    if module.startswith(("forensics", "pydantic", "httpx")) or module in (
+        "builtins",
+        "types",
+    ):
+        return f"<{qualname}>"
+    return f"<{module}.{qualname}>"
+
+
 def _span_payload(args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
     """Build the serializable input payload for a span.
 
@@ -234,7 +277,7 @@ def traced_step(step_name: str) -> Callable[[F], F]:
                     span_id=_new_id(),
                     trace_id=trace.trace_id,
                     step_name=step_name,
-                    input_json=json.dumps(input_data, default=str),
+                    input_json=json.dumps(input_data, default=_safe_repr),
                     output_json=output_json,
                     model_id=model_id,
                     provider=provider,
@@ -372,7 +415,7 @@ def finalize_trace(
     if not trace.total_latency_ms:
         trace.total_latency_ms = sum(span.latency_ms for span in trace.spans)
 
-    traces_dir = traces_dir or Path("data/traces")
+    traces_dir = traces_dir or _default_traces_dir()
     write_trace_json(trace, traces_dir)
 
     if db_path is not None:

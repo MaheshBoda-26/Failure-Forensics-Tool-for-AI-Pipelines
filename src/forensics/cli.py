@@ -14,7 +14,7 @@ import typer
 from forensics.analyzer_simple import analyze_trace
 from forensics.config import get_settings, validate_startup
 from forensics.llm import using_llm_client
-from forensics.models import Document
+from forensics.models import Document, DocumentType, FailureCategory
 from forensics.pipeline import Pipeline
 from forensics.storage import Storage
 from forensics.tracing import trace_context
@@ -59,10 +59,10 @@ def ping() -> None:
 
 @app.command()
 def seed() -> None:
-    """Generate the 50-document dataset with ground-truth labels."""
+    """Generate the labeled dataset (not implemented)."""
     _setup()
     typer.secho("Dataset generation not yet implemented (Phase 1)", fg=typer.colors.YELLOW)
-    typer.echo("This will create 50 documents in dataset/documents/ and labels.json")
+    typer.echo("Dataset generation is not implemented; the dataset ships with the repo.")
     raise typer.Exit(code=1)
 
 
@@ -107,7 +107,9 @@ def run(doc_path: Path) -> None:
 def validate_dataset() -> None:
     """Validate the dataset against labels.json."""
     _setup()
-    labels_path = Path("dataset/labels.json")
+    from forensics.analyzer_simple import reachable_failure_pairs
+
+    labels_path = get_settings().dataset_dir / "labels.json"
     if not labels_path.exists():
         typer.secho("labels.json not found", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
@@ -115,24 +117,52 @@ def validate_dataset() -> None:
     with open(labels_path) as f:
         labels = json.load(f)
 
-    errors = []
-    warnings = []
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    valid_types = {d.value for d in DocumentType}
+    valid_steps = {"intake", "extraction", "classification", "summarization"}
+    valid_categories = {c.value for c in FailureCategory}
+    reachable = reachable_failure_pairs()
 
     for doc_info in labels.get("documents", []):
         doc_id = doc_info["doc_id"]
-        doc_path = Path(f"dataset/documents/{doc_id}.txt")
+        doc_path = get_settings().dataset_dir / "documents" / f"{doc_id}.txt"
 
         if not doc_path.exists():
             errors.append(f"Missing document file: {doc_path}")
             continue
 
-        # Verify document is readable
         try:
             content = doc_path.read_text()
             if not content.strip():
                 warnings.append(f"Empty document: {doc_path}")
         except Exception as e:
             errors.append(f"Cannot read {doc_path}: {e}")
+            continue
+
+        # The label vocabulary must be expressible by the pipeline, or the
+        # document is unclassifiable by construction.
+        doc_type = doc_info.get("doc_type")
+        if doc_type not in valid_types:
+            errors.append(
+                f"{doc_id}: doc_type '{doc_type}' is not a DocumentType "
+                f"(valid: {sorted(valid_types)})"
+            )
+
+        if doc_info.get("should_fail"):
+            step = doc_info.get("failure_step")
+            category = doc_info.get("failure_category")
+
+            if step not in valid_steps:
+                errors.append(f"{doc_id}: failure_step '{step}' is not a pipeline step")
+            if category not in valid_categories:
+                errors.append(f"{doc_id}: failure_category '{category}' is not a FailureCategory")
+            elif (step, category) not in reachable:
+                errors.append(
+                    f"{doc_id}: seeded failure ({step}, {category}) is unreachable by the "
+                    f"analyzer; ground truth must be reproducible"
+                )
 
     if errors:
         typer.secho("VALIDATION FAILED", fg=typer.colors.RED, bold=True)
@@ -155,7 +185,8 @@ def validate_dataset() -> None:
 def demo() -> None:
     """Run the pipeline on all 15 documents and print summary."""
     _setup()
-    labels_path = Path("dataset/labels.json")
+    dataset_dir = get_settings().dataset_dir
+    labels_path = dataset_dir / "labels.json"
     if not labels_path.exists():
         typer.secho("labels.json not found", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
@@ -173,7 +204,7 @@ def demo() -> None:
             results = []
             for doc_info in labels.get("documents", []):
                 doc_id = doc_info["doc_id"]
-                doc_path = Path(f"dataset/documents/{doc_id}.txt")
+                doc_path = dataset_dir / "documents" / f"{doc_id}.txt"
 
                 if not doc_path.exists():
                     typer.secho(f"Skipping missing: {doc_id}", fg=typer.colors.YELLOW)
@@ -189,10 +220,12 @@ def demo() -> None:
                 # demo saved traces but never analyzed them, so analytics and
                 # eval had nothing to read.
                 assert ctx.trace is not None
-                diagnosis = analyze_trace(ctx.trace, doc.content)
+                expected_type = doc_info.get("doc_type", "unknown")
+                # The dataset's ground-truth type lets the analyzer detect a
+                # valid-but-wrong label (misclassification).
+                diagnosis = analyze_trace(ctx.trace, doc.content, expected_type)
                 storage.create_diagnosis(diagnosis)
 
-                expected_type = doc_info.get("doc_type", "unknown")
                 actual_type = result.classification.document_type.value
                 match = expected_type == actual_type
 

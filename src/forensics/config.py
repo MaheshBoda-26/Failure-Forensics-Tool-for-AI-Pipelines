@@ -8,7 +8,7 @@ that shares a provider family with the pipeline models.
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,7 +40,9 @@ class Settings(BaseSettings):
     )
 
     # --- Secrets ---
-    openrouter_api_key: str = Field(..., description="OpenRouter API key")
+    # SecretStr so the key is masked in repr()/logs/tracebacks instead of being
+    # printed in plaintext by any accidental repr of Settings.
+    openrouter_api_key: SecretStr = Field(..., description="OpenRouter API key")
 
     # --- Models (flat env vars, assembled in validator) ---
     pipeline_model_id: str = Field(default="")
@@ -78,6 +80,8 @@ class Settings(BaseSettings):
     dry_run: bool = Field(default=False, description="Dry-run mode (no network calls)")
 
     # --- Paths ---
+    # Read from env so a test (or a deployment) can redirect every output
+    # location without touching the code that consumes it.
     data_dir: Path = Field(default=Path("data"))
     traces_dir: Path = Field(default=Path("data/traces"))
     db_path: Path = Field(default=Path("data/forensics.db"))
@@ -102,10 +106,11 @@ class Settings(BaseSettings):
 
     @field_validator("openrouter_api_key")
     @classmethod
-    def validate_api_key(cls, v: str) -> str:
-        if not v or v.strip() == "":
+    def validate_api_key(cls, v: SecretStr) -> SecretStr:
+        secret = v.get_secret_value() if isinstance(v, SecretStr) else str(v)
+        if not secret or secret.strip() == "":
             raise ValueError("OPENROUTER_API_KEY must be set and non-empty")
-        return v.strip()
+        return SecretStr(secret.strip())
 
     @field_validator("traces_dir", "cache_dir", mode="before")
     @classmethod
@@ -206,7 +211,9 @@ def validate_startup() -> None:
     settings = get_settings()
 
     # Validate API key format (basic check)
-    if not settings.openrouter_api_key.startswith(("sk-or-", "sk-")):
+    key = settings.openrouter_api_key
+    key_str = key.get_secret_value() if isinstance(key, SecretStr) else str(key)
+    if not key_str.startswith(("sk-or-", "sk-")):
         raise ValueError(
             "OPENROUTER_API_KEY does not look like a valid OpenRouter key "
             "(expected 'sk-or-' or 'sk-' prefix)"

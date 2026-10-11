@@ -33,12 +33,20 @@ class FailureCategory(StrEnum):
 
 
 class DocumentType(StrEnum):
-    """Document classification types."""
+    """Document classification types.
+
+    `mixed` is a real, first-class type: the dataset contains documents that
+    genuinely combine several document shapes (e.g. a proposal carrying
+    contract terms). Leaving it out of the enum made those documents
+    unclassifiable by construction, so the classifier could never match their
+    ground-truth label.
+    """
 
     CONTRACT = "contract"
     INVOICE = "invoice"
     REPORT = "report"
     CORRESPONDENCE = "correspondence"
+    MIXED = "mixed"
 
 
 class Document(BaseModel):

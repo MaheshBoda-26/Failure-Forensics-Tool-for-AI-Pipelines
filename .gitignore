@@ -1,7 +1,11 @@
-# Runtime data — SQLite index, per-trace JSON payloads
+# Runtime data — SQLite index, per-trace JSON payloads, LLM response cache,
+# and spend ledger. The response cache contains full prompts (verbatim document
+# text), so it must never be committed.
 data/*.db
 data/*.db-*
 data/traces/*.json
+data/cache/
+data/spend.json
 
 # Runtime data — LLM response cache and spend ledger
 data/cache/

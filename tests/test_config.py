@@ -46,7 +46,9 @@ def test_settings_loads_from_env(monkeypatch):
     # Use _env_file=None to ignore .env file
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
 
-    assert settings.openrouter_api_key == "sk-or-test-key"  # pragma: allowlist secret
+    # The key is a SecretStr; compare via get_secret_value().
+    key = settings.openrouter_api_key.get_secret_value()
+    assert key == "sk-or-test-key"  # pragma: allowlist secret
     assert settings.pipeline_model.model_id == "openai/gpt-4o-mini"
     assert settings.pipeline_model.family == "openai"
     assert settings.pipeline_model.price_in_per_1m == 0.15
