@@ -506,6 +506,22 @@ class Storage:
             data["prompt_versions"] = json.loads(data["prompt_versions"])
             return EvalRun.model_validate(data)
 
+    def list_eval_runs(self, limit: int = 100, offset: int = 0) -> list[EvalRun]:
+        """List all eval runs."""
+        import json
+
+        with self._conn() as conn:
+            sql = "SELECT * FROM eval_runs ORDER BY started_at DESC LIMIT ? OFFSET ?"
+            cursor = conn.execute(sql, (limit, offset))
+            rows = cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            runs = []
+            for row in rows:
+                data = dict(zip(cols, row, strict=False))
+                data["prompt_versions"] = json.loads(data["prompt_versions"])
+                runs.append(EvalRun.model_validate(data))
+            return runs
+
     # --- Eval Result operations ---
 
     def create_eval_result(self, result: EvalResult) -> EvalResult:

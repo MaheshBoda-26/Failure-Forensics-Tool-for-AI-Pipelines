@@ -227,6 +227,29 @@ def eval() -> None:
         print_eval_results(run.run_id)
 
 
+@app.command(name="eval-run")
+def eval_run() -> None:
+    """Trigger a full eval run against the current pipeline."""
+    _setup()
+    import asyncio
+
+    from forensics.eval_simple import print_eval_results, run_eval
+
+    run = asyncio.run(run_eval())
+    if run:
+        print_eval_results(run.run_id)
+
+
+@app.command(name="eval-cases")
+def create_eval_cases() -> None:
+    """Create eval cases from all confirmed flags."""
+    _setup()
+    from forensics.eval_simple import create_eval_cases_from_confirmed_flags
+
+    created = create_eval_cases_from_confirmed_flags()
+    typer.secho(f"Created {created} eval cases from confirmed flags", fg=typer.colors.GREEN)
+
+
 @app.command()
 def analytics() -> None:
     """Show analytics dashboard."""
@@ -234,7 +257,37 @@ def analytics() -> None:
     from forensics.api import get_analytics
 
     analytics = get_analytics()
-    typer.echo(json.dumps(analytics.model_dump(), indent=2, default=str))
+
+    # Pretty print analytics
+    typer.secho("\n📊 Analytics Dashboard", fg=typer.colors.BLUE, bold=True)
+    typer.secho(f"  Total Traces: {analytics.total_traces}", fg=typer.colors.CYAN)
+
+    rate_color = typer.colors.RED if analytics.failure_rate > 0 else typer.colors.GREEN
+    typer.secho(f"  Failure Rate: {analytics.failure_rate:.1%}", fg=rate_color)
+
+    if analytics.avg_time_to_root_cause_seconds:
+        typer.secho(
+            f"  Avg Time to Root Cause: {analytics.avg_time_to_root_cause_seconds:.2f}s",
+            fg=typer.colors.CYAN,
+        )
+    else:
+        typer.secho("  Avg Time to Root Cause: N/A", fg=typer.colors.CYAN)
+
+    if analytics.failures_by_category:
+        typer.secho("\n  Failures by Category:", fg=typer.colors.BLUE, bold=True)
+        for cat, count in analytics.failures_by_category.items():
+            typer.secho(f"  {cat.value}: {count}", fg=typer.colors.RED)
+
+    if analytics.failures_by_step:
+        typer.secho("\n  Failures by Step:", fg=typer.colors.BLUE, bold=True)
+        for step, count in analytics.failures_by_step.items():
+            typer.secho(f"  {step}: {count}", fg=typer.colors.RED)
+
+    if analytics.failure_rate_over_time:
+        typer.secho("\n  Failure Rate Over Time:", fg=typer.colors.BLUE, bold=True)
+        for entry in analytics.failure_rate_over_time[-10:]:  # Last 10 days
+            rate_str = f"{entry['rate']:.1%} ({entry['failures']}/{entry['total']})"
+            typer.secho(f"  {entry['date']}: {rate_str}", fg=typer.colors.YELLOW)
 
 
 @app.command()
