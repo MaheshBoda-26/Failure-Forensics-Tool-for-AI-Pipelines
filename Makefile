@@ -1,4 +1,4 @@
-.PHONY: help install dev test lint fmt typecheck check seed run-api run-ui eval precommit clean
+.PHONY: help install dev test lint fmt typecheck check seed run-api run-ui run-web build-ui eval precommit clean
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s "$$(printf '\t')"
@@ -6,6 +6,7 @@ help:
 install: ## create venv and install all deps
 	uv venv --python 3.12
 	uv pip install -e ".[dev]"
+	cd frontend && npm install
 
 check: lint typecheck test ## lint + typecheck + test
 
@@ -29,10 +30,17 @@ test-live: ## run tests including live OpenRouter calls (costs money)
 cov: ## tests with coverage
 	.venv/bin/pytest -m "not live" --cov=forensics --cov-report=term-missing
 
-dev: ## run API with reload
+build-ui: ## build React frontend production bundle
+	cd frontend && npm run build
+
+dev: ## run API with reload (serves frontend/dist at root)
 	.venv/bin/uvicorn forensics.api:app --reload --host $${HOST:-127.0.0.1} --port $${PORT:-8000}
 
 run-api: ## alias for dev
+	@$(MAKE) dev
+
+run-web: ## build and serve React frontend via FastAPI
+	@$(MAKE) build-ui
 	@$(MAKE) dev
 
 run-ui: ## launch the Streamlit trace explorer
@@ -43,7 +51,7 @@ seed: ## dataset generation is not implemented; the dataset ships with the repo
 	@.venv/bin/python -m forensics.cli validate-dataset
 
 eval: ## re-run the accumulated eval dataset
-	.venv/bin/python -m forensics.cli eval
+	@.venv/bin/python -m forensics.cli eval
 
 precommit: ## install git hooks
 	.venv/bin/pre-commit install

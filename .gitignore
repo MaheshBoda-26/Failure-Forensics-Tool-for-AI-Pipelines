@@ -7,10 +7,6 @@ data/traces/*.json
 data/cache/
 data/spend.json
 
-# Runtime data — LLM response cache and spend ledger
-data/cache/
-data/spend.json
-
 # Secrets
 .env
 .env.local
@@ -28,6 +24,10 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
 
 # Editors / OS
 .DS_Store

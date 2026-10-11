@@ -1,0 +1,93 @@
+:root {
+  --color-ground: #FFFFFF;
+  --color-chalk: #F3F4F4;
+  --color-chalk-deep: #E9EAEA;
+  --color-ink: #17191C;
+  --color-ink-2: #5C6166;
+  --color-ink-3: #6E7378;
+  --color-rule: #E4E5E6;
+  --color-rule-strong: #C7C9CB;
+  --color-copper: #1F5B54;
+  --color-copper-tint: #E4EEEC;
+  --color-cinnabar: #A93A20;
+  --color-cinnabar-tint: #F8E9E4;
+  --color-ochre: #8A6410;
+  --color-ochre-tint: #F7F0DC;
+
+  --font-display: 'Archivo', -apple-system, sans-serif;
+  --font-body: 'IBM Plex Sans', -apple-system, sans-serif;
+  --font-mono: 'IBM Plex Mono', Menlo, Monaco, Consolas, monospace;
+
+  --text-display: 64px;
+  --text-h1: 44px;
+  --text-h2: 30px;
+  --text-h3: 20px;
+  --text-lg: 17px;
+  --text-body: 15px;
+  --text-sm: 13px;
+  --text-label: 11px;
+  --text-mono: 12px;
+
+  --font-weight-display: 800;
+  --font-weight-body: 400;
+  --font-weight-medium: 500;
+  --font-weight-mono: 400;
+  --font-weight-mono-strong: 600;
+
+  --tracking-display: -0.03em;
+  --tracking-label: 0.08em;
+  --tracking-tight: -0.015em;
+
+  --leading-tight: 1.1;
+  --leading-snug: 1.35;
+  --leading-normal: 1.55;
+
+  --radius-0: 0px;
+  --radius-1: 2px;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--color-ground);
+  color: var(--color-ink);
+  font-family: var(--font-body);
+  font-size: var(--text-body);
+  line-height: var(--leading-normal);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button {
+  font-family: var(--font-body);
+  cursor: pointer;
+  transition: all 0.15s ease-in-out;
+}
+
+button:active {
+  transform: translateY(1px);
+}
+
+pre, code {
+  font-family: var(--font-mono);
+}
+
+/* Custom scrollbars matching the mineral theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-chalk);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-rule-strong);
+  border-radius: var(--radius-0);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-ink-3);
+}
