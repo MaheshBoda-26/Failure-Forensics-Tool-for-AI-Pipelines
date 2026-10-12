@@ -56,6 +56,11 @@ def ping() -> None:
     typer.echo(f"Cache: {'enabled' if settings.cache_enabled else 'disabled'}")
     typer.echo(f"Dry run: {settings.dry_run}")
 
+    # OTel status
+    otel = settings.otel
+    typer.echo(f"OTel exporter: {otel.exporter} (endpoint: {otel.endpoint})")
+    typer.echo(f"OTel service: {otel.service_name} (sampling: {otel.sampling_rate:.0%})")
+
 
 @app.command()
 def seed() -> None:

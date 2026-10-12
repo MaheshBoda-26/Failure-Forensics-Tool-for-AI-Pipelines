@@ -6,7 +6,7 @@ that shares a provider family with the pipeline models.
 """
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -27,6 +27,21 @@ class ModelConfig(BaseModel):
         default=True, description="Whether model supports native structured output"
     )
     max_tokens: int = Field(default=4096, gt=0, description="Max output tokens")
+
+
+class OTelSettings(BaseModel):
+    """OpenTelemetry export configuration."""
+
+    exporter: Literal["none", "otlp", "console"] = Field(
+        default="none", description="Exporter type: none, otlp (OTLP/HTTP), or console"
+    )
+    endpoint: str = Field(
+        default="http://localhost:4318/v1/traces", description="OTLP/HTTP endpoint"
+    )
+    service_name: str = Field(default="failure-forensics", description="OTel service name")
+    sampling_rate: float = Field(
+        default=1.0, ge=0.0, le=1.0, description="Head-based sampling rate"
+    )
 
 
 class Settings(BaseSettings):
@@ -92,6 +107,27 @@ class Settings(BaseSettings):
     host: str = Field(default="127.0.0.1")
     port: int = Field(default=8000, ge=1, le=65535)
     static_dir: Path = Field(default=Path("frontend/dist"))
+
+    # --- OpenTelemetry ---
+    otel: OTelSettings = Field(default_factory=OTelSettings)
+
+    # --- PII Redaction ---
+    pii_redaction_enabled: bool = Field(default=False, description="Enable PII redaction")
+    pii_entity_types: str = Field(
+        default="api_key,email,phone,credit_card,ssn,ipv4,jwt",
+        description="Comma-separated entity types to redact",
+    )
+    pii_custom_patterns: str = Field(
+        default="",
+        description="JSON array of custom patterns: [{name, pattern}]",
+    )
+    pii_redaction_char: str = Field(default="█", description="Character used for redaction")
+
+    # --- Judge LLM ---
+    judge_enabled: bool = Field(default=False, description="Enable judge LLM for semantic analysis")
+    judge_force: bool = Field(
+        default=False, description="Force judge to run even if deterministic passes"
+    )
 
     # --- Versions ---
     pipeline_version: str = Field(default="0.1.0")
@@ -226,4 +262,11 @@ def validate_startup() -> None:
     settings.dataset_dir.mkdir(parents=True, exist_ok=True)
 
 
-__all__ = ["ModelConfig", "Settings", "get_settings", "reset_settings", "validate_startup"]
+__all__ = [
+    "ModelConfig",
+    "OTelSettings",
+    "Settings",
+    "get_settings",
+    "reset_settings",
+    "validate_startup",
+]

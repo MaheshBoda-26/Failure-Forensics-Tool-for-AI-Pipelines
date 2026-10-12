@@ -22,7 +22,10 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, TypeVar
 
+from forensics.config import get_settings
 from forensics.models import Span, Trace, TraceStatus
+from forensics.otel_export import DEFAULT_MAX_PROMPT_CHARS, ForensicsSpanProcessor, configure_otel
+from forensics.pii import create_redactor_from_settings
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -383,7 +386,6 @@ def finalize_trace(
     trace: Trace,
     traces_dir: Path | None = None,
     db_path: Path | None = None,
-    otel_exporter: object | None = None,
 ) -> None:
     """Finish a trace: derive status, aggregate totals, persist to both stores.
 
@@ -396,9 +398,13 @@ def finalize_trace(
     raised outside any traced step (where no span failed). Recomputing from
     spans alone silently turned those runs back into SUCCESS.
 
-    When `otel_exporter` is given the trace is also mirrored into OpenTelemetry,
-    so it can be correlated with an operator's other telemetry. OTel is strictly
-    additive: an exporter failure must not lose the forensic record.
+    If OTel is configured (via settings), the trace is also mirrored into
+    OpenTelemetry so it can be correlated with an operator's other telemetry.
+    OTel is strictly additive: an exporter failure must not lose the forensic
+    record.
+
+    If PII redaction is enabled, sensitive data is redacted from span payloads
+    before persistence.
     """
     if trace.completed_at is None:
         trace.completed_at = _utc_now()
@@ -415,6 +421,15 @@ def finalize_trace(
     if not trace.total_latency_ms:
         trace.total_latency_ms = sum(span.latency_ms for span in trace.spans)
 
+    # PII redaction (before persistence)
+    redactor = create_redactor_from_settings()
+    if redactor.enabled:
+        for span in trace.spans:
+            span.prompt, _ = redactor.redact(span.prompt)
+            span.raw_response, _ = redactor.redact(span.raw_response)
+            span.input_json, _ = redactor.redact(span.input_json)
+            span.output_json, _ = redactor.redact(span.output_json)
+
     traces_dir = traces_dir or _default_traces_dir()
     write_trace_json(trace, traces_dir)
 
@@ -425,20 +440,17 @@ def finalize_trace(
         finally:
             conn.close()
 
-    if otel_exporter is not None:
-        _export_otel(trace, otel_exporter)
-
-
-def _export_otel(trace: Trace, exporter: object) -> None:
-    """Mirror to OTel, never letting a collector problem lose the trace."""
+    # Mirror to OTel if configured
     try:
-        from opentelemetry.sdk.trace.export import SpanExporter
-
-        from forensics.otel_export import export_trace_to_otel
-
-        if isinstance(exporter, SpanExporter):
-            export_trace_to_otel(trace, exporter=exporter)
-    except Exception:  # pragma: no cover - defensive
+        _provider, configured, exporter = configure_otel()
+        if configured and exporter is not None:
+            # Use settings for max_prompt_chars
+            settings = get_settings()
+            max_prompt_chars = getattr(settings, "otel_max_prompt_chars", DEFAULT_MAX_PROMPT_CHARS)
+            otel_processor = ForensicsSpanProcessor(trace, exporter, max_prompt_chars)
+            for span in trace.spans:
+                otel_processor.on_end(span)
+    except Exception:
         # The JSON + SQLite writes above are the durable record. A telemetry
         # backend being unreachable must never fail a pipeline run.
         pass

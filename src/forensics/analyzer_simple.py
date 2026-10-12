@@ -11,6 +11,7 @@ Runs deterministic checks per span:
 First span with ANY failed check = root cause.
 """
 
+import contextlib
 import json
 import re
 from dataclasses import dataclass
@@ -603,19 +604,81 @@ def analyze_trace(trace: Trace, document_text: str, expected_type: str | None = 
     `expected_type` is the dataset's ground-truth document type. Supplying it
     enables misclassification detection; omitting it makes the analyzer purely
     self-consistency based.
+
+    If JUDGE_ENABLED=true and (deterministic finds failure OR JUDGE_FORCE=true),
+    the judge LLM runs for semantic analysis and may override the deterministic verdict.
     """
+    from forensics.config import get_settings
+
+    settings = get_settings()
+
     # Run deterministic checks
     check_results = run_deterministic_checks(trace, document_text, expected_type)
 
     # Build step scores
     step_scores = build_step_scores(trace, check_results, document_text)
 
-    # Find root cause
+    # Find root cause (deterministic)
     root_cause_step, category, confidence, evidence_chain = find_root_cause(step_scores)
 
+    # Determine if judge should run
+    deterministic_failed = root_cause_step != "none"
+    judge_should_run = settings.judge_enabled and (deterministic_failed or settings.judge_force)
+
+    judge_analysis = None
+    analyzer_fallback = False
+
+    if judge_should_run:
+        try:
+            # Import here to avoid circular dependency
+            from forensics.llm import create_llm_client
+            from forensics.models import DocumentType, JudgeAnalysis
+
+            async def _run_judge() -> JudgeAnalysis | None:
+                async with create_llm_client() as client:
+                    expected_enum = None
+                    if expected_type:
+                        with contextlib.suppress(ValueError):
+                            expected_enum = DocumentType(expected_type)
+                    return await client.judge_analyze(
+                        trace_data=trace.model_dump(mode="json"),
+                        document_text=document_text,
+                        expected_type=expected_enum,
+                    )
+
+            import asyncio
+
+            judge_result = asyncio.run(_run_judge())
+
+            if judge_result:
+                judge_analysis = judge_result
+                # Judge overrides deterministic if it disagrees on root cause or category
+                if (
+                    judge_result.root_cause_step != root_cause_step
+                    or judge_result.category != category
+                ):
+                    analyzer_fallback = True
+                    root_cause_step = judge_result.root_cause_step
+                    category = judge_result.category
+                    confidence = judge_result.confidence
+                    first_step = judge_result.step_scores[0] if judge_result.step_scores else None
+                    evidence_chain = first_step.evidence if first_step else evidence_chain
+
+        except Exception:
+            # Judge failure: log and fall back to deterministic
+            pass
+
     # Create diagnosis
-    # diagnosis_id must be unique per call, not per second: two diagnoses of
-    # different traces inside the same second collided on the PRIMARY KEY.
+    analyzer_ver = "0.1.0-deterministic"
+    if analyzer_fallback:
+        analyzer_ver += "+judge"
+    model_id = "deterministic-v0"
+    if analyzer_fallback:
+        model_id = settings.judge_model.model_id
+    provider_name = "local"
+    if analyzer_fallback:
+        provider_name = settings.judge_model.provider
+
     diagnosis = Diagnosis(
         trace_id=trace.trace_id,
         root_cause_step=root_cause_step,
@@ -623,10 +686,12 @@ def analyze_trace(trace: Trace, document_text: str, expected_type: str | None = 
         confidence=confidence,
         evidence_chain=evidence_chain,
         step_scores=step_scores,
-        analyzer_version="0.1.0-deterministic",
-        model_id="deterministic-v0",
-        provider="local",
+        analyzer_version=analyzer_ver,
+        model_id=model_id,
+        provider=provider_name,
         created_at=datetime.now(UTC),
+        judge_analysis=judge_analysis,
+        analyzer_fallback=analyzer_fallback,
     )
 
     return diagnosis

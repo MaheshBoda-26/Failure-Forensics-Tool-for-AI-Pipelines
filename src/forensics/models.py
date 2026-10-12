@@ -236,6 +236,11 @@ class Diagnosis(VersionedModel):
     overridden: bool = Field(default=False, description="Human overrode this diagnosis")
     override_category: FailureCategory | None = None
     override_reason: str | None = None
+    # Judge LLM analysis (optional, populated when judge runs)
+    judge_analysis: "JudgeAnalysis | None" = None
+    analyzer_fallback: bool = Field(
+        default=False, description="True if judge overrode deterministic verdict"
+    )
 
 
 class Flag(BaseModel):
@@ -301,6 +306,31 @@ class AnalyticsSnapshot(BaseModel):
     generated_at: datetime = Field(default_factory=_utc_now)
 
 
+class StepJudgeScore(BaseModel):
+    """Judge model score for a single step."""
+
+    step_name: str
+    local_fidelity: float = Field(..., ge=0.0, le=1.0)
+    global_fidelity: float = Field(..., ge=0.0, le=1.0)
+    evidence: list[str] = Field(default_factory=list)
+    semantic_issues: list[str] = Field(
+        default_factory=list, description="Issues deterministic checks missed"
+    )
+
+
+class JudgeAnalysis(BaseModel):
+    """Structured analysis from the judge model."""
+
+    step_scores: list[StepJudgeScore]
+    root_cause_step: str
+    category: FailureCategory
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    cost_usd: float = Field(default=0.0, ge=0.0)
+    model_id: str
+    provider: str
+    created_at: datetime = Field(default_factory=_utc_now)
+
+
 __all__ = [
     "AnalyticsSnapshot",
     "ClassificationOutput",
@@ -315,8 +345,10 @@ __all__ = [
     "FailureCategory",
     "Flag",
     "IntakeOutput",
+    "JudgeAnalysis",
     "PipelineOutput",
     "Span",
+    "StepJudgeScore",
     "StepScore",
     "SummaryOutput",
     "Trace",

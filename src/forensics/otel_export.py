@@ -15,16 +15,18 @@ Attribute keys follow the OTel GenAI semantic conventions where they exist and
 a contract with whatever collector eventually receives them.
 """
 
-from typing import Any
+from typing import Any, Literal
 
 from opentelemetry import trace as otel_trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import (
+    ConsoleSpanExporter,
     SimpleSpanProcessor,
     SpanExporter,
 )
 from opentelemetry.trace import SpanKind, Status, StatusCode
 
+from forensics.config import get_settings
 from forensics.models import Span, Trace
 
 # GenAI semantic conventions (stable names) plus our own namespace.
@@ -186,24 +188,47 @@ class ForensicsSpanProcessor:
 _configured: tuple[TracerProvider, bool] | None = None
 
 
-def configure_otel(
-    exporter: SpanExporter | None = None,
-    service_name: str = "failure-forensics",
-) -> tuple[TracerProvider, bool]:
-    """Configure the global OTel provider once.
+def _create_exporter(
+    exporter_type: Literal["none", "otlp", "console"], endpoint: str
+) -> SpanExporter | None:
+    """Create the appropriate span exporter based on type."""
+    if exporter_type == "none":
+        return None
+    if exporter_type == "console":
+        return ConsoleSpanExporter()
+    if exporter_type == "otlp":
+        # Lazy import to avoid hard dependency when not using OTLP
+        try:
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        except ImportError as e:
+            raise RuntimeError(
+                "OTLP exporter requires 'opentelemetry-exporter-otlp-proto-http'. "
+                "Install with: pip install 'forensics[otel]'"
+            ) from e
+        return OTLPSpanExporter(endpoint=endpoint)
+    return None
 
-    Returns `(provider, configured_now)`. Calling it repeatedly is safe and
+
+def configure_otel() -> tuple[TracerProvider, bool, SpanExporter | None]:
+    """Configure the global OTel provider from settings.
+
+    Returns `(provider, configured_now, exporter)`. Calling it repeatedly is safe and
     returns the same provider; OTel itself forbids replacing a set provider.
     """
     global _configured
     if _configured is not None:
         return _configured
 
+    settings = get_settings()
+    otel_config = settings.otel
+
+    exporter = _create_exporter(otel_config.exporter, otel_config.endpoint)
+
     provider = TracerProvider()
     if exporter is not None:
         provider.add_span_processor(SimpleSpanProcessor(exporter))
     otel_trace.set_tracer_provider(provider)
-    _configured = (provider, exporter is not None)
+    _configured = (provider, exporter is not None, exporter)
     return _configured
 
 
