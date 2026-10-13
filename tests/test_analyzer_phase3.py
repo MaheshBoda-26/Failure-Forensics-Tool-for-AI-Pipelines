@@ -534,8 +534,15 @@ def test_date_regex_valid_yyyymmdd_passes() -> None:
     assert results[0].passed is True
 
 
-def test_date_regex_invalid_format_fails() -> None:
-    """Non-YYYY-MM-DD dates fail."""
+def test_date_regex_common_non_iso_date_passes() -> None:
+    """A verbatim US-format date is legitimate, not a contract violation.
+
+    entity_grounding requires the extracted value to appear literally in the
+    document, so a model copying "03/01/2024" out of the text is behaving
+    correctly. Holding it to the ISO-only pattern made date_regex fail on
+    every date in every real trace and made the analyzer blame extraction
+    ahead of the true root cause.
+    """
     doc = "Due 03/01/2024"
     spans = [
         _span("intake", {"cleaned_text": doc}),
@@ -558,8 +565,35 @@ def test_date_regex_invalid_format_fails() -> None:
     results = check_date_regex(spans[1])
 
     assert len(results) == 1
+    assert results[0].passed is True
+
+
+def test_date_regex_invalid_format_fails() -> None:
+    """A date value that is not a date in any common format fails."""
+    doc = "Due soonish"
+    spans = [
+        _span("intake", {"cleaned_text": doc}),
+        _span(
+            "extraction",
+            {
+                "entities": [
+                    {
+                        "value": "soonish",
+                        "entity_type": "DATE",
+                        "start_offset": 4,
+                        "end_offset": 11,
+                    }
+                ]
+            },
+        ),
+    ]
+    _trace_with_spans(spans)
+
+    results = check_date_regex(spans[1])
+
+    assert len(results) == 1
     assert results[0].passed is False
-    assert "does NOT match YYYY-MM-DD" in results[0].evidence
+    assert "not a recognisable date format" in results[0].evidence
 
 
 # --- Confidence calibration ----------------------------------------------

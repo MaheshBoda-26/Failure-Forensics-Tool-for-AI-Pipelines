@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from pydantic import ValidationError as PydanticValidationError
+
 from forensics.models import (
     Diagnosis,
     DocumentType,
@@ -28,6 +30,34 @@ from forensics.models import (
 )
 
 DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+# A real model copies date strings verbatim from the document ("April 15,
+# 2024", "Q1 2024"), and entity_grounding requires that literal value. Holding
+# those to the ISO-only pattern made date_regex fail on every date in every
+# real trace, so the analyzer always blamed extraction as its first failure
+# and never reached the actual root cause downstream. The contract check now
+# fires only on values that are not a recognisable date in any common format.
+DATE_FORMATS = (
+    DATE_PATTERN,
+    re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}$"),
+    re.compile(r"^\d{1,2}\s+[A-Za-z]{3,9}\.?\s+\d{4}$"),
+    re.compile(r"^[A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4}$"),
+    re.compile(r"^(?:19|20)\d{2}$"),
+    re.compile(r"^Q[1-4]\s+(?:19|20)\d{2}$"),
+    re.compile(
+        r"^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+(?:19|20)\d{2}$"
+    ),
+    re.compile(r"^(?:19|20)\d{2}-\d{2}$"),
+    # Month-day without a year ("January 1") is what documents state when the
+    # year is implied by context.
+    re.compile(r"^[A-Za-z]{3,9}\.?\s+\d{1,2}$"),
+    re.compile(r"^\d{1,2}\s+[A-Za-z]{3,9}\.?$"),
+)
+
+
+def is_recognisable_date(value: str) -> bool:
+    """True when a date entity is a date in a format a model legitimately emits."""
+    return any(pattern.match(value) for pattern in DATE_FORMATS)
 
 
 @dataclass
@@ -217,8 +247,11 @@ def check_date_regex(span: Span) -> list[CheckResult]:
             if DATE_PATTERN.match(value):
                 msg = f"Date '{value}' matches YYYY-MM-DD pattern"
                 results.append(CheckResult("date_regex", True, msg, span.step_name))
+            elif is_recognisable_date(value):
+                msg = f"Date '{value}' is a well-formed non-ISO date"
+                results.append(CheckResult("date_regex", True, msg, span.step_name))
             else:
-                msg = f"Date '{value}' does NOT match YYYY-MM-DD pattern"
+                msg = f"Date '{value}' is not a recognisable date format"
                 results.append(CheckResult("date_regex", False, msg, span.step_name))
 
     return results
@@ -631,24 +664,49 @@ def analyze_trace(trace: Trace, document_text: str, expected_type: str | None = 
     if judge_should_run:
         try:
             # Import here to avoid circular dependency
-            from forensics.llm import create_llm_client
-            from forensics.models import DocumentType, JudgeAnalysis
+            from forensics.llm import using_llm_client
+            from forensics.models import JudgeAnalysis
 
-            async def _run_judge() -> JudgeAnalysis | None:
-                async with create_llm_client() as client:
-                    expected_enum = None
-                    if expected_type:
-                        with contextlib.suppress(ValueError):
-                            expected_enum = DocumentType(expected_type)
+            async def _run_judge() -> dict[str, Any] | None:
+                # `create_llm_client` is a coroutine returning a client, not an
+                # async context manager; entering it raised AttributeError, the
+                # bare `except` swallowed it, and the judge silently never ran.
+                async with using_llm_client() as client:
                     return await client.judge_analyze(
                         trace_data=trace.model_dump(mode="json"),
                         document_text=document_text,
-                        expected_type=expected_enum,
                     )
 
             import asyncio
 
-            judge_result = asyncio.run(_run_judge())
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                judge_payload = asyncio.run(_run_judge())
+            else:
+                # analyze_trace is sync but is called from async request
+                # handlers; asyncio.run() inside a running loop raises. A worker
+                # thread gets its own loop so the judge runs either way.
+                import concurrent.futures
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    judge_payload = pool.submit(lambda: asyncio.run(_run_judge())).result()
+
+            # judge_analyze returns whatever JSON the judge produced. Anything
+            # that does not validate as a JudgeAnalysis is discarded rather than
+            # read attribute-by-attribute off a dict, which used to raise and
+            # disappear into the same bare except.
+            judge_result: JudgeAnalysis | None = None
+            if judge_payload:
+                # model_id/provider are facts about the call, not the verdict, so
+                # they are filled in here instead of being asked of the model.
+                payload = {
+                    "model_id": settings.judge_model.model_id,
+                    "provider": settings.judge_model.provider,
+                    **judge_payload,
+                }
+                with contextlib.suppress(PydanticValidationError):
+                    judge_result = JudgeAnalysis.model_validate(payload)
 
             if judge_result:
                 judge_analysis = judge_result

@@ -22,6 +22,8 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, TypeVar
 
+from pydantic import BaseModel
+
 from forensics.config import get_settings
 from forensics.models import Span, Trace, TraceStatus
 from forensics.otel_export import DEFAULT_MAX_PROMPT_CHARS, ForensicsSpanProcessor, configure_otel
@@ -201,6 +203,22 @@ def get_current_span() -> Span | None:
     return _current_span.get()
 
 
+def _serialize_payload(value: Any) -> str:
+    """Serialize a step result to JSON that the analyzer can re-read.
+
+    `json.dumps(result, default=str)` turns a Pydantic model into a JSON
+    *string* holding its repr, so every downstream check that parses
+    `output_json` as an object failed with "schema invalid" on real traces.
+    Pydantic results are dumped structurally; anything else keeps the
+    stringifying fallback.
+    """
+    if value is None:
+        return "{}"
+    if isinstance(value, BaseModel):
+        return json.dumps(value.model_dump(mode="json"), default=str)
+    return json.dumps(value, default=str)
+
+
 def _safe_repr(value: Any, _depth: int = 0) -> str:
     """Render an object for a span payload without leaking secrets.
 
@@ -256,7 +274,7 @@ def traced_step(step_name: str) -> Callable[[F], F]:
 
             def record(elapsed_ms: int, result: Any, error: str | None) -> None:
                 status = "failure" if error else "success"
-                output_json = json.dumps(result, default=str) if result is not None else "{}"
+                output_json = _serialize_payload(result)
 
                 # Consume whatever the step published. A step that raises after
                 # a successful LLM call still reports failure, but the model and

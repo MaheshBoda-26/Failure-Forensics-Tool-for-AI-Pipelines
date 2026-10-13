@@ -101,6 +101,30 @@ async def test_all_successful_spans_leave_trace_success() -> None:
     assert ctx.trace.status is TraceStatus.SUCCESS
 
 
+async def test_step_output_is_serialized_as_json_object() -> None:
+    """A Pydantic step result must land in `output_json` as a JSON object.
+
+    `json.dumps(result, default=str)` stringified the model into a JSON
+    *string*, so every analyzer check that re-read `output_json` as an object
+    raised and reported "schema invalid". On real traces that made every LLM
+    step look broken and the analyzer always blamed the first one.
+    """
+    from forensics.models import ExtractionOutput
+
+    output = ExtractionOutput(entities=[])
+    with trace_context(document_id="d1") as ctx:
+
+        @traced_step("extraction")
+        async def extraction() -> ExtractionOutput:
+            return output
+
+        await extraction()
+
+    assert ctx.trace is not None
+    span = ctx.trace.spans[0]
+    assert json.loads(span.output_json)["entities"] == []
+
+
 # --- Real telemetry reaches the span (C5 / C12) --------------------------
 
 

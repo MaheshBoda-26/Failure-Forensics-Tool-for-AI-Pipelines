@@ -18,6 +18,7 @@ from forensics.llm import (
     OpenRouterClient,
     SpendCapExceededError,
     StructuredOutputError,
+    TokenUsage,
 )
 from forensics.models import ClassificationOutput, DocumentType, ExtractionOutput
 
@@ -271,6 +272,32 @@ async def test_response_is_cached_and_replayed(tmp_path: Path) -> None:
     assert calls == 1, f"second call should hit cache, but {calls} HTTP calls were made"
     assert second.cached is True
     assert first.parsed == second.parsed
+
+
+async def test_cached_response_rehydrates_usage(tmp_path: Path) -> None:
+    """A cache hit must hand back a TokenUsage, not the raw dict from disk.
+
+    The cache round-trips through JSON, so `usage` came back as a plain dict.
+    `_publish_telemetry` then read `response.usage.prompt_tokens` and raised
+    AttributeError, which killed every live run from the second identical call
+    onward. Nothing caught it because the earlier cache test never looked at
+    `usage`.
+    """
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=_completion('{"entities": [], "raw_response": ""}'))
+
+    client = _client(handler, tmp_path)
+    await client.structured(_model(), "Extract entities.", ExtractionOutput)
+    cached = await client.structured(_model(), "Extract entities.", ExtractionOutput)
+
+    assert calls == 1
+    assert isinstance(cached.usage, TokenUsage)
+    assert cached.usage.prompt_tokens == _completion("{}")["usage"]["prompt_tokens"]
+    assert cached.usage.total_tokens == cached.usage.prompt_tokens + cached.usage.completion_tokens
 
 
 async def test_cache_key_separates_different_prompts(tmp_path: Path) -> None:
