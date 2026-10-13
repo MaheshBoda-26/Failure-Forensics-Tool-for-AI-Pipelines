@@ -366,6 +366,7 @@ class NIMClient:
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
+            settings = get_settings()
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
                 headers={
@@ -373,7 +374,9 @@ class NIMClient:
                     "Content-Type": "application/json",
                     "Accept": "application/json",
                 },
-                timeout=httpx.Timeout(60.0, connect=10.0),
+                timeout=httpx.Timeout(
+                    settings.request_timeout_s, connect=settings.connect_timeout_s
+                ),
                 transport=self._transport,
             )
         return self._client
@@ -579,7 +582,16 @@ class NIMClient:
         response_model: type[T],
         system: str | None = None,
     ) -> StructuredResponse:
-        """Tier 1: native structured output via response_format."""
+        """Tier 1: native structured output via response_format.
+
+        Skipped for reasoning models (is_reasoning=True) because they spend
+        the entire output budget on hidden reasoning and never emit content.
+        """
+        if model_config.is_reasoning:
+            raise StructuredOutputError(
+                f"Skipping Tier 1 for reasoning model {model_config.model_id}; "
+                f"native structured output does not work with reasoning models."
+            )
         schema = response_model.model_json_schema()
         response_format = {
             "type": "json_schema",

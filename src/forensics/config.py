@@ -25,6 +25,16 @@ class ModelConfig(BaseModel):
         ...,
         description="Model family for bias separation (e.g., 'nvidia', 'meta', 'google')",
     )
+    is_reasoning: bool = Field(
+        default=False,
+        description=(
+            "Whether this model uses hidden reasoning tokens that consume the same "
+            "output budget. Reasoning models (e.g., nemotron-3-super, o1, o3) often "
+            "fail native structured output because they spend the entire budget on "
+            "hidden reasoning. When true, the client skips Tier 1 native structured "
+            "output and goes straight to Tier 2 (schema in prompt)."
+        ),
+    )
     price_in_per_1m: float = Field(..., ge=0, description="Input price per 1M tokens (USD)")
     price_out_per_1m: float = Field(..., ge=0, description="Output price per 1M tokens (USD)")
     supports_structured: bool = Field(
@@ -88,6 +98,16 @@ class Settings(BaseSettings):
     judge_model_id: str = Field(default="")
     judge_model_provider: str = Field(default="")
     judge_model_family: str = Field(default="")
+    request_timeout_s: float = Field(
+        default=60.0,
+        gt=0,
+        description=(
+            "Per-request HTTP timeout. Reasoning models under a JSON schema can take "
+            "70-110s on a single document; at the old fixed 60s every attempt timed "
+            "out, then retried three times across three tiers."
+        ),
+    )
+    connect_timeout_s: float = Field(default=10.0, gt=0, description="Connect timeout")
     judge_family_separation_required: bool = Field(
         default=True,
         description="Fail startup when the judge shares a family with the pipeline models",
