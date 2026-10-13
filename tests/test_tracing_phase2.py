@@ -375,7 +375,7 @@ async def test_pipeline_trace_records_real_llm_telemetry(tmp_path: Path) -> None
 
     assert ctx.trace is not None
     extraction = next(s for s in ctx.trace.spans if s.step_name == "extraction")
-    assert extraction.model_id == "nvidia/llama-3.1-nemotron-51b-instruct"
+    assert extraction.model_id == "nvidia/nemotron-3-super-120b-a12b"
     assert extraction.provider == "nvidia"
     assert extraction.prompt_tokens == 1000
     assert extraction.completion_tokens == 100

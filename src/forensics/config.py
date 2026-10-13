@@ -5,6 +5,7 @@ fast at startup on an unknown model slug, an unset API key, or a judge model
 that shares a provider family with the pipeline models.
 """
 
+import warnings
 from pathlib import Path
 from typing import Any, Literal
 
@@ -87,6 +88,10 @@ class Settings(BaseSettings):
     judge_model_id: str = Field(default="")
     judge_model_provider: str = Field(default="")
     judge_model_family: str = Field(default="")
+    judge_family_separation_required: bool = Field(
+        default=True,
+        description="Fail startup when the judge shares a family with the pipeline models",
+    )
     judge_model_price_in: float = Field(default=0.0)
     judge_model_price_out: float = Field(default=0.0)
 
@@ -173,12 +178,19 @@ class Settings(BaseSettings):
         """Build ModelConfig objects from flat env vars."""
 
         def build_model(prefix: str) -> ModelConfig:
+            max_tokens = int(data.get(f"{prefix}_model_max_tokens", 0) or 0)
             return ModelConfig(
                 model_id=data.get(f"{prefix}_model_id", ""),
                 provider=data.get(f"{prefix}_model_provider", ""),
                 family=data.get(f"{prefix}_model_family", ""),
                 price_in_per_1m=float(data.get(f"{prefix}_model_price_in", 0)),
                 price_out_per_1m=float(data.get(f"{prefix}_model_price_out", 0)),
+                # Reasoning models (nemotron-3-super and friends) spend a large
+                # share of the budget on hidden reasoning tokens. At the 4096
+                # default they finish with finish_reason="length" and an empty
+                # content string, which the structured-output tiers read as an
+                # unparseable model reply.
+                max_tokens=max_tokens or 4096,
             )
 
         data["pipeline_model"] = build_model("pipeline")
@@ -189,14 +201,29 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_judge_family_separation(self) -> "Settings":
-        """Judge model must come from a different provider family than pipeline models."""
+        """Judge model must come from a different provider family than pipeline models.
+
+        Set JUDGE_FAMILY_SEPARATION_REQUIRED=false to run a single model in
+        every role. That is a deliberate trade: the judge then grades output
+        from the same weights that produced it, which is exactly the
+        self-preference bias this guard exists to prevent, so the verdict is
+        weaker evidence than a cross-family judge's.
+        """
         pipeline_families = {self.pipeline_model.family, self.pipeline_fallback_model.family}
-        if self.judge_model.family in pipeline_families:
-            raise ValueError(
-                f"Judge model family '{self.judge_model.family}' matches pipeline family. "
-                f"Pipeline families: {pipeline_families}. "
-                f"Use a different provider family for the judge to avoid self-preference bias."
-            )
+        if self.judge_model.family not in pipeline_families:
+            return self
+        message = (
+            f"Judge model family '{self.judge_model.family}' matches pipeline family. "
+            f"Pipeline families: {pipeline_families}. "
+            f"Use a different provider family for the judge to avoid self-preference bias."
+        )
+        if self.judge_family_separation_required:
+            raise ValueError(message)
+        warnings.warn(
+            f"{message} Proceeding because JUDGE_FAMILY_SEPARATION_REQUIRED=false.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         return self
 
     @model_validator(mode="after")
@@ -210,7 +237,16 @@ class Settings(BaseSettings):
         }
         if len(set(ids.values())) < len(ids):
             duplicates = {k: v for k, v in ids.items() if list(ids.values()).count(v) > 1}
-            raise ValueError(f"Duplicate model IDs detected: {duplicates}")
+            message = f"Duplicate model IDs detected: {duplicates}"
+            if self.judge_family_separation_required:
+                raise ValueError(message)
+            warnings.warn(
+                f"{message} One model is serving every role, so the fallback path "
+                f"retries the same weights. Proceeding because "
+                f"JUDGE_FAMILY_SEPARATION_REQUIRED=false.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         return self
 
     @model_validator(mode="after")
