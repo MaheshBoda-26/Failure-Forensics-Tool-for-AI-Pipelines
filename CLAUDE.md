@@ -70,7 +70,7 @@ Ground truth in `dataset/labels.json` — 5 seeded failures (1 per type + 1 mixe
 ### Run Tests
 ```bash
 make test           # Unit tests only
-make test-live      # With real OpenRouter calls (costs $)
+make test-live      # With real NIM calls (uses hosted quota)
 ```
 
 ### Debug a Trace
@@ -101,8 +101,8 @@ OPENROUTER_API_KEY=sk-or-...          # Required for live mode
 PIPELINE_MODEL_ID=openai/gpt-4o-mini
 PIPELINE_MODEL_PROVIDER=openai
 PIPELINE_MODEL_FAMILY=openai
-PIPELINE_MODEL_PRICE_IN=0.15
-PIPELINE_MODEL_PRICE_OUT=0.60
+PIPELINE_MODEL_PRICE_IN=0.0
+PIPELINE_MODEL_PRICE_OUT=0.0
 # ... similar for fallback, judge, cheap models
 SPEND_CAP_PER_RUN_USD=0.50
 SPEND_CAP_GLOBAL_USD=20.00

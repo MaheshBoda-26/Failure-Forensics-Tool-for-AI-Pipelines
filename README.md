@@ -23,14 +23,14 @@ bad output, and feed human-confirmed failures back into a growing eval dataset.
 ## Requirements
 
 - Python 3.12 (pinned in `pyproject.toml`; `uv` manages the venv)
-- An OpenRouter API key in `.env` (copy `.env.example`) — *not required for demo mode*
+- An NVIDIA NIM API key in `.env` (copy `.env.example`) — *not required for demo mode*
 
 ## Quickstart
 
 ```bash
 make install        # create .venv (Python 3.12) and install deps
 cp .env.example .env
-$EDITOR .env        # set OPENROUTER_API_KEY and model slugs (or use dummy for demo)
+$EDITOR .env        # set NVIDIA_API_KEY and model slugs (or use dummy for demo)
 make check          # ruff + mypy strict + pytest
 ```
 
@@ -78,7 +78,7 @@ streamlit run streamlit_app.py
 ```bash
 make check          # lint + typecheck + test
 make test           # pytest, live API tests deselected
-make test-live      # includes real OpenRouter calls — costs money
+make test-live      # includes real NIM calls — hosted quota
 make dev            # FastAPI with reload
 ```
 

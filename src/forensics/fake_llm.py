@@ -1,7 +1,7 @@
 """Fake LLM client for deterministic, zero-cost testing and development.
 
 Returns canned typed responses matching each pipeline step's output schema.
-Supports record/replay mode for future real OpenRouter integration.
+Supports record/replay mode for future real NIM integration.
 """
 
 import hashlib

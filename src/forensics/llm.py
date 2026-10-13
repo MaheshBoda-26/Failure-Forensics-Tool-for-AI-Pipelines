@@ -1,6 +1,6 @@
-"""OpenRouter client — the single LLM entry point for the whole project.
+"""NVIDIA NIM client — the single LLM entry point for the whole project.
 
-Exists so that prompt, raw response, token usage, provider routing, latency,
+Exists so that prompt, raw response, token usage, latency,
 retries, caching, replay, and spend caps are captured in exactly one place
 instead of leaking into every step. Handles the three-tier structured-output
 fallback and both plain and reasoning-model response shapes.
@@ -33,7 +33,7 @@ from forensics.models import (
 
 T = TypeVar("T", bound=BaseModel)
 
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+NIM_DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
 # Prompt-injection hygiene (PROMPT.md known_weaknesses #8): document text is
 # untrusted data. It is fenced and explicitly labelled so the model does not
@@ -326,12 +326,19 @@ class SpendTracker:
             raise SpendCapExceededError(msg, "global")
 
 
-class OpenRouterClient:
-    """OpenRouter API client with structured output, caching, spend caps, and retries."""
+class NIMClient:
+    """NVIDIA NIM API client: structured output, caching, spend caps, retries.
+
+    NIM speaks the OpenAI chat-completions dialect, so the request/response
+    shapes are unchanged from the OpenRouter client this replaced. What is gone
+    is OpenRouter's provider-routing block: NIM routes on the model slug and
+    rejects the extra `provider` field.
+    """
 
     def __init__(
         self,
         api_key: str | None = None,
+        base_url: str | None = None,
         cache_dir: Path | None = None,
         spend_file: Path | None = None,
         dry_run: bool = False,
@@ -340,10 +347,11 @@ class OpenRouterClient:
         retry_base_delay: float = 0.5,
     ):
         settings = get_settings()
-        key = settings.openrouter_api_key
+        key = settings.api_key
         self.api_key = api_key or (
             key.get_secret_value() if hasattr(key, "get_secret_value") else str(key)
         )
+        self.base_url = base_url or settings.api_base_url or NIM_DEFAULT_BASE_URL
         self.dry_run = dry_run
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
@@ -359,12 +367,11 @@ class OpenRouterClient:
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
             self._client = httpx.AsyncClient(
-                base_url=OPENROUTER_BASE_URL,
+                base_url=self.base_url,
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
-                    "HTTP-Referer": "https://github.com/failure-forensics",
-                    "X-Title": "Failure Forensics Tool",
+                    "Accept": "application/json",
                 },
                 timeout=httpx.Timeout(60.0, connect=10.0),
                 transport=self._transport,
@@ -452,7 +459,7 @@ class OpenRouterClient:
         max_tokens: int | None = None,
         temperature: float = 0.0,
     ) -> dict[str, Any]:
-        """Make a request to OpenRouter, retrying transient failures.
+        """Make a request to the NIM API, retrying transient failures.
 
         Retries transport errors, 429 and 5xx with exponential backoff.
         Auth (401/403), unknown model (404) and other 4xx surface immediately:
@@ -466,9 +473,6 @@ class OpenRouterClient:
             "temperature": temperature,
             "max_tokens": max_tokens or model_config.max_tokens,
         }
-
-        if model_config.provider:
-            payload["provider"] = {"order": [model_config.provider], "allow_fallbacks": False}
 
         if response_format:
             payload["response_format"] = response_format
@@ -486,7 +490,7 @@ class OpenRouterClient:
             try:
                 response = await client.post("/chat/completions", json=payload)
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as e:
-                last_error = TransportError(f"Network error talking to OpenRouter: {e}")
+                last_error = TransportError(f"Network error talking to the NIM API: {e}")
                 continue
             latency_ms = int((time.perf_counter() - start) * 1000)
 
@@ -836,18 +840,16 @@ class LLMClient:
         spend_file: Path | None = None,
         dry_run: bool = False,
     ):
-        self.openrouter = OpenRouterClient(
-            cache_dir=cache_dir, spend_file=spend_file, dry_run=dry_run
-        )
+        self.nim = NIMClient(cache_dir=cache_dir, spend_file=spend_file, dry_run=dry_run)
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""
-        await self.openrouter.close()
+        await self.nim.close()
 
     @contextmanager
     def run_spend(self) -> Generator[None, None, None]:
         """Context manager to track spend for a single pipeline run."""
-        self.openrouter.spend_tracker.reset_run()
+        self.nim.spend_tracker.reset_run()
         try:
             yield
         finally:
@@ -859,7 +861,7 @@ class LLMClient:
         Document text is always fenced and labelled as untrusted data so that a
         document containing directives cannot steer the model.
         """
-        document = self.openrouter._fence_document(str(input_data.get("text", "")))
+        document = self.nim._fence_document(str(input_data.get("text", "")))
         prompts = {
             "extraction": (
                 f"Extract every entity that literally appears in the document.\n\n"
@@ -911,7 +913,7 @@ class LLMClient:
     async def extraction(self, intake_output: IntakeOutput) -> ExtractionOutput:
         settings = get_settings()
         prompt, system = self._get_step_prompt("extraction", {"text": intake_output.cleaned_text})
-        response = await self.openrouter.run_with_fallback(
+        response = await self.nim.run_with_fallback(
             settings.pipeline_model,
             settings.pipeline_fallback_model,
             prompt,
@@ -929,7 +931,7 @@ class LLMClient:
             {"value": e.value, "type": e.entity_type} for e in extraction_output.entities
         ]
         prompt, system = self._get_step_prompt("classification", {"entities": entities_data})
-        response = await self.openrouter.run_with_fallback(
+        response = await self.nim.run_with_fallback(
             settings.pipeline_model,
             settings.pipeline_fallback_model,
             prompt,
@@ -954,7 +956,7 @@ class LLMClient:
                 "document_type": classification_output.document_type.value,
             },
         )
-        response = await self.openrouter.run_with_fallback(
+        response = await self.nim.run_with_fallback(
             settings.pipeline_model,
             settings.pipeline_fallback_model,
             prompt,
@@ -978,7 +980,7 @@ class LLMClient:
         the prompt.
         """
         settings = get_settings()
-        fenced_doc = self.openrouter._fence_document(document_text[:3000])
+        fenced_doc = self.nim._fence_document(document_text[:3000])
         bounded_trace = json.dumps(trace_data, indent=2, default=str)[:8000]
         prompt = (
             "Analyze this pipeline trace for failures.\n\n"
@@ -1008,7 +1010,7 @@ class LLMClient:
         )
 
         # For now, use chat_completion since we don't have a proper judge response model yet
-        response = await self.openrouter.chat_completion(
+        response = await self.nim.chat_completion(
             settings.judge_model,
             [{"role": "user", "content": prompt}],
         )

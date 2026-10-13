@@ -222,7 +222,7 @@ def test_config_failure_is_loud_not_a_silent_zero_cost() -> None:
     original = config_mod.get_settings
 
     def broken() -> object:
-        raise ValueError("no OPENROUTER_API_KEY")
+        raise ValueError("no NVIDIA_API_KEY")
 
     config_mod.get_settings = broken  # type: ignore[assignment]
     try:
@@ -348,12 +348,12 @@ async def test_pipeline_trace_records_real_llm_telemetry(tmp_path: Path) -> None
     """The whole point of Phase 2: a finished run must be auditable."""
     import httpx
 
-    from forensics.llm import LLMClient, OpenRouterClient
+    from forensics.llm import LLMClient, NIMClient
     from forensics.models import Document
     from forensics.pipeline import Pipeline
 
-    router = OpenRouterClient(
-        api_key="sk-or-test",  # pragma: allowlist secret - fake key for MockTransport
+    router = NIMClient(
+        api_key="nvapi-test",  # pragma: allowlist secret - fake key for MockTransport
         transport=httpx.MockTransport(
             _mock_handler(
                 "extraction",
@@ -365,7 +365,7 @@ async def test_pipeline_trace_records_real_llm_telemetry(tmp_path: Path) -> None
         spend_file=tmp_path / "spend.json",
     )
     client = LLMClient.__new__(LLMClient)
-    client.openrouter = router
+    client.nim = router
     pipeline = Pipeline(client=client)
     doc = Document(content="Invoice 001\nTotal: 500.00 USD\nDue: 2024-03-01")
 
@@ -375,8 +375,8 @@ async def test_pipeline_trace_records_real_llm_telemetry(tmp_path: Path) -> None
 
     assert ctx.trace is not None
     extraction = next(s for s in ctx.trace.spans if s.step_name == "extraction")
-    assert extraction.model_id == "openai/gpt-4o-mini"
-    assert extraction.provider == "openai"
+    assert extraction.model_id == "nvidia/llama-3.3-nemotron-super-49b-v1.5"
+    assert extraction.provider == "nvidia"
     assert extraction.prompt_tokens == 1000
     assert extraction.completion_tokens == 100
     assert len(extraction.prompt) > 100, "span recorded a placeholder prompt, not the real one"
@@ -392,15 +392,15 @@ async def test_pipeline_trace_records_real_llm_telemetry(tmp_path: Path) -> None
 async def test_trace_status_becomes_failure_when_a_step_raises(tmp_path: Path) -> None:
     import httpx
 
-    from forensics.llm import LLMClient, OpenRouterClient
+    from forensics.llm import LLMClient, NIMClient
     from forensics.models import Document
     from forensics.pipeline import Pipeline
 
     def boom(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, json={"error": "upstream down"})
 
-    router = OpenRouterClient(
-        api_key="sk-or-test",  # pragma: allowlist secret - fake key for MockTransport
+    router = NIMClient(
+        api_key="nvapi-test",  # pragma: allowlist secret - fake key for MockTransport
         transport=httpx.MockTransport(boom),
         cache_dir=tmp_path / "cache",
         spend_file=tmp_path / "spend.json",
@@ -408,7 +408,7 @@ async def test_trace_status_becomes_failure_when_a_step_raises(tmp_path: Path) -
         retry_base_delay=0.0,
     )
     client = LLMClient.__new__(LLMClient)
-    client.openrouter = router
+    client.nim = router
     pipeline = Pipeline(client=client)
     doc = Document(content="Invoice 001\nTotal: 500.00 USD")
 

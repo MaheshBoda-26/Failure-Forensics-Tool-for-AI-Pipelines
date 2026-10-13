@@ -24,7 +24,7 @@ typecheck: ## mypy strict
 test: ## run tests, excluding live API tests
 	.venv/bin/pytest -m "not live"
 
-test-live: ## run tests including live OpenRouter calls (costs money)
+test-live: ## run tests including live NVIDIA NIM calls (uses hosted quota)
 	.venv/bin/pytest -m "live"
 
 cov: ## tests with coverage

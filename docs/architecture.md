@@ -19,7 +19,7 @@ The Failure Forensics Tool is a deterministic observability and root-cause analy
 │         │                   ▼                   ▼                │        │
 │         │            ┌──────────────┐    ┌──────────────┐       │        │
 │         │            │  LLM Client  │    │  Analyzer    │       │        │
-│         │            │ (OpenRouter) │    │ (Deterministic)       │        │
+│         │            │ (NVIDIA NIM) │    │ (Deterministic)       │        │
 │         │            └──────────────┘    └──────────────┘       │        │
 │         │                   │                   │                │        │
 │         ▼                   ▼                   ▼                ▼        │
@@ -46,7 +46,7 @@ Four deterministic/async steps:
 Each step decorated with `@traced_step("step_name")` for automatic span capture.
 
 ### 2. LLM Client (`src/forensics/llm.py`)
-Production-grade OpenRouter client with:
+Production-grade NIM client with:
 - **Tiered structured output**: Native → Schema-in-prompt → Repair
 - **Retry logic**: Exponential backoff on transport/429/5xx; fail-fast on 401/403/404
 - **Caching**: File-based response cache keyed by (model, provider, prompt, prompt_version)
@@ -139,21 +139,22 @@ User Document
 |-------|------------|
 | Language | Python 3.12+ |
 | Pipeline | Async/await, Pydantic v2 |
-| LLM Client | httpx (async), OpenRouter API |
+| LLM Client | httpx (async), NVIDIA NIM API |
 | Tracing | ContextVar, custom spans |
 | Analyzer | Pure Python, json, re, difflib |
 | Storage | JSON files + SQLite (WAL mode) |
 | API | FastAPI, Uvicorn |
 | UI | Streamlit, Plotly, NetworkX |
 | CLI | Typer |
-| LLM | OpenRouter (any model) |
+| LLM | NVIDIA NIM (any hosted model) |
 | Testing | pytest, httpx.MockTransport |
 | Lint/Type | Ruff, MyPy (strict) |
 
 ## Configuration
 
 Environment variables (`.env`):
-- `OPENROUTER_API_KEY` — required for live mode
+- `NVIDIA_API_KEY` — required for live mode
+- `NVIDIA_BASE_URL` — NIM endpoint, defaults to `https://integrate.api.nvidia.com/v1`
 - `PIPELINE_MODEL_ID`, `PIPELINE_MODEL_PROVIDER`, etc. — model routing
 - `SPEND_CAP_PER_RUN_USD`, `SPEND_CAP_GLOBAL_USD` — cost caps
 - `CACHE_ENABLED`, `DRY_RUN` — behavior toggles
@@ -212,7 +213,7 @@ src/forensics/
 ├── cli.py                # Typer CLI commands
 ├── config.py             # Settings + validation
 ├── eval_simple.py        # Eval loop: flag → case → run → trend
-├── llm.py                # OpenRouter client (tiers, retry, cache, spend)
+├── llm.py                # NIM client (tiers, retry, cache, spend)
 ├── models.py             # All Pydantic models
 ├── pipeline.py           # 4-step pipeline + @traced_step
 ├── storage.py            # JSON + SQLite storage

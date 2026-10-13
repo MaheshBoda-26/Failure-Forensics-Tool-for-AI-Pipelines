@@ -85,7 +85,7 @@ def _span_attributes(span: Span, trace: Trace, max_prompt_chars: int) -> dict[st
         attrs[GENAI_ATTRS["prompt_truncated"]] = True
 
     if _is_llm_step(span):
-        attrs[GENAI_ATTRS["system"]] = "openrouter"
+        attrs[GENAI_ATTRS["system"]] = "nvidia-nim"
         attrs[GENAI_ATTRS["operation"]] = "chat"
         attrs[GENAI_ATTRS["request_model"]] = span.model_id
         attrs[GENAI_ATTRS["response_model"]] = span.model_id

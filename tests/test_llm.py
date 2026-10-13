@@ -15,7 +15,7 @@ import pytest
 from forensics.config import ModelConfig
 from forensics.llm import (
     AuthError,
-    OpenRouterClient,
+    NIMClient,
     SpendCapExceededError,
     StructuredOutputError,
     TokenUsage,
@@ -49,11 +49,11 @@ def _completion(content: str, *, reasoning: str | None = None) -> dict:
     }
 
 
-def _client(handler: object, tmp_path: Path, **kw: object) -> OpenRouterClient:
+def _client(handler: object, tmp_path: Path, **kw: object) -> NIMClient:
     """Build a client whose HTTP layer is a mock transport."""
     transport = httpx.MockTransport(handler)  # type: ignore[arg-type]
-    return OpenRouterClient(
-        api_key="sk-or-test-key",  # pragma: allowlist secret
+    return NIMClient(
+        api_key="nvapi-test-key",  # pragma: allowlist secret
         cache_dir=tmp_path / "cache",
         spend_file=tmp_path / "spend.json",
         dry_run=False,
@@ -377,7 +377,7 @@ async def test_traced_step_does_not_serialize_self() -> None:
 
     class Holder:
         def __init__(self) -> None:
-            self.secret = "sk-or-super-secret-key"  # pragma: allowlist secret
+            self.secret = "nvapi-super-secret-key"  # pragma: allowlist secret
 
         @traced_step("bound_step")
         async def go(self, value: int) -> int:
@@ -388,7 +388,7 @@ async def test_traced_step_does_not_serialize_self() -> None:
 
     assert ctx.trace is not None
     payload = ctx.trace.spans[0].input_json
-    assert "sk-or-super-secret-key" not in payload, "instance attribute leaked into span"
+    assert "nvapi-super-secret-key" not in payload, "instance attribute leaked into span"
     assert "Holder object at" not in payload, "self was serialized into the span"
 
 

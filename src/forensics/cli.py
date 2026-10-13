@@ -37,7 +37,7 @@ def _setup() -> None:
 
 @app.command()
 def ping() -> None:
-    """Test OpenRouter connectivity and print model info."""
+    """Test NIM connectivity and print model info."""
     _setup()
     settings = get_settings()
 

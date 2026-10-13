@@ -15,11 +15,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class ModelConfig(BaseModel):
     """Configuration for a single model."""
 
-    model_id: str = Field(..., description="OpenRouter model slug (e.g., 'openai/gpt-4o-mini')")
-    provider: str = Field(..., description="Pinned provider routing (e.g., 'openai')")
+    model_id: str = Field(..., description="NIM model slug (e.g., 'nvidia/nemotron-4-mini-vl-8b')")
+    provider: str = Field(
+        ...,
+        description="Model author/vendor prefix of the slug (e.g. 'nvidia', 'meta', 'google')",
+    )
     family: str = Field(
         ...,
-        description="Provider family for bias separation (e.g., 'openai', 'anthropic', 'google')",
+        description="Model family for bias separation (e.g., 'nvidia', 'meta', 'google')",
     )
     price_in_per_1m: float = Field(..., ge=0, description="Input price per 1M tokens (USD)")
     price_out_per_1m: float = Field(..., ge=0, description="Output price per 1M tokens (USD)")
@@ -57,7 +60,16 @@ class Settings(BaseSettings):
     # --- Secrets ---
     # SecretStr so the key is masked in repr()/logs/tracebacks instead of being
     # printed in plaintext by any accidental repr of Settings.
-    openrouter_api_key: SecretStr = Field(..., description="OpenRouter API key")
+    api_key: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias="NVIDIA_API_KEY",
+        description="NVIDIA NIM API key (sent as a bearer token)",
+    )
+    api_base_url: str = Field(
+        default="https://integrate.api.nvidia.com/v1",
+        validation_alias="NVIDIA_BASE_URL",
+        description="OpenAI-compatible NIM endpoint base URL",
+    )
 
     # --- Models (flat env vars, assembled in validator) ---
     pipeline_model_id: str = Field(default="")
@@ -140,12 +152,12 @@ class Settings(BaseSettings):
     judge_model: ModelConfig = Field(default=None, exclude=True)  # type: ignore[assignment]
     cheap_model: ModelConfig = Field(default=None, exclude=True)  # type: ignore[assignment]
 
-    @field_validator("openrouter_api_key")
+    @field_validator("api_key")
     @classmethod
     def validate_api_key(cls, v: SecretStr) -> SecretStr:
         secret = v.get_secret_value() if isinstance(v, SecretStr) else str(v)
         if not secret or secret.strip() == "":
-            raise ValueError("OPENROUTER_API_KEY must be set and non-empty")
+            raise ValueError("NVIDIA_API_KEY must be set and non-empty")
         return SecretStr(secret.strip())
 
     @field_validator("traces_dir", "cache_dir", mode="before")
@@ -232,7 +244,7 @@ def get_settings() -> Settings:
     """Get the global settings instance (singleton)."""
     global _settings
     if _settings is None:
-        _settings = Settings()  # type: ignore[call-arg]
+        _settings = Settings()
     return _settings
 
 
@@ -247,13 +259,15 @@ def validate_startup() -> None:
     settings = get_settings()
 
     # Validate API key format (basic check)
-    key = settings.openrouter_api_key
+    key = settings.api_key
     key_str = key.get_secret_value() if isinstance(key, SecretStr) else str(key)
-    if not key_str.startswith(("sk-or-", "sk-")):
+    if not key_str.startswith(("nvapi-", "sk-")):
         raise ValueError(
-            "OPENROUTER_API_KEY does not look like a valid OpenRouter key "
-            "(expected 'sk-or-' or 'sk-' prefix)"
+            "NVIDIA_API_KEY does not look like a valid NVIDIA NIM key "
+            "(expected 'nvapi-' or 'sk-' prefix)"
         )
+    if not settings.api_base_url.startswith("https://"):
+        raise ValueError("NVIDIA_BASE_URL must be an https:// URL")
 
     # Ensure directories exist
     settings.traces_dir.mkdir(parents=True, exist_ok=True)
