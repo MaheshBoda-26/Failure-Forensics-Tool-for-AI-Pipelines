@@ -602,10 +602,12 @@ class NIMClient:
         data = await self._make_request(model_config, messages, response_format=response_format)
 
         content, _reasoning, _rt = self._extract_content(data)
-        try:
-            parsed = response_model.model_validate_json(content)
-        except PydanticValidationError as e:
-            raise StructuredOutputError(f"Tier 1 native output invalid: {e}", cause=e) from e
+        # Parse tolerantly even on the native path. Models served under
+        # response_format do not all honour it: poolside/laguna-xs-2.1 returns
+        # `[{"entities": [...]}]`, wrapping the object in a single-element
+        # array, which model_validate_json rejects. _parse_tolerant slices from
+        # the first `{` to the last `}` and recovers it.
+        parsed = self._parse_tolerant(content, response_model)
 
         return self._build_structured_response(model_config, data, parsed)
 
@@ -810,7 +812,13 @@ class NIMClient:
                 primary, prompt, response_model, system, prompt_version, step
             )
         except (RateLimitError, ServerError, ModelNotFoundError):
-            # Log fallback trigger
+            if fallback.model_id == primary.model_id:
+                # Re-requesting the same weights cannot succeed where the first
+                # attempt failed. On NIM's free tier it actively hurts: a 503
+                # means the 32-request quota is spent, and the fallback attempt
+                # burns another one against an already exhausted budget while
+                # doubling the time to the real error.
+                raise
             return await self.structured(
                 fallback, prompt, response_model, system, prompt_version, step
             )

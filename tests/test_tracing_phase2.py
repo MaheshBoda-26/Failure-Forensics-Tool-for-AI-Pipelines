@@ -375,8 +375,13 @@ async def test_pipeline_trace_records_real_llm_telemetry(tmp_path: Path) -> None
 
     assert ctx.trace is not None
     extraction = next(s for s in ctx.trace.spans if s.step_name == "extraction")
-    assert extraction.model_id == "nvidia/nemotron-3-super-120b-a12b"
-    assert extraction.provider == "nvidia"
+    # Read the expectation from settings rather than hardcoding a slug: this
+    # assertion broke on every .env model change without testing anything.
+    from forensics.config import get_settings
+
+    _settings = get_settings()
+    assert extraction.model_id == _settings.pipeline_model.model_id
+    assert extraction.provider == _settings.pipeline_model.provider
     assert extraction.prompt_tokens == 1000
     assert extraction.completion_tokens == 100
     assert len(extraction.prompt) > 100, "span recorded a placeholder prompt, not the real one"

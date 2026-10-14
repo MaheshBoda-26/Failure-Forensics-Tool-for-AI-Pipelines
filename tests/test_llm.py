@@ -300,6 +300,30 @@ async def test_cached_response_rehydrates_usage(tmp_path: Path) -> None:
     assert cached.usage.total_tokens == cached.usage.prompt_tokens + cached.usage.completion_tokens
 
 
+async def test_native_tier_recovers_array_wrapped_object(tmp_path: Path) -> None:
+    """Tier 1 must tolerate a model that wraps its JSON in a single-item array.
+
+    poolside/laguna-xs-2.1 answers a response_format request with
+    `[{"entities": [...]}]` instead of `{"entities": [...]}`. Feeding that
+    straight to model_validate_json failed tier 1, and on NIM's free tier each
+    failed tier costs another request against a 32-request quota.
+    """
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        payload = _completion('[{"entities": [], "raw_response": ""}]')
+        return httpx.Response(200, json=payload)
+
+    client = _client(handler, tmp_path)
+    result = await client.structured(_model(), "Extract entities.", ExtractionOutput)
+
+    assert calls == 1, "the array wrapper should not cost a second attempt"
+    assert result.parsed is not None
+    assert isinstance(result.parsed, ExtractionOutput)
+
+
 async def test_cache_key_separates_different_prompts(tmp_path: Path) -> None:
     """Different prompts must not collide in the cache."""
     calls = 0
