@@ -16,9 +16,12 @@ from forensics.config import ModelConfig
 from forensics.llm import (
     AuthError,
     NIMClient,
+    QuotaExhaustedError,
+    ServerError,
     SpendCapExceededError,
     StructuredOutputError,
     TokenUsage,
+    sanitize_json_schema,
 )
 from forensics.models import ClassificationOutput, DocumentType, ExtractionOutput
 
@@ -298,6 +301,126 @@ async def test_cached_response_rehydrates_usage(tmp_path: Path) -> None:
     assert isinstance(cached.usage, TokenUsage)
     assert cached.usage.prompt_tokens == _completion("{}")["usage"]["prompt_tokens"]
     assert cached.usage.total_tokens == cached.usage.prompt_tokens + cached.usage.completion_tokens
+
+
+async def test_cache_hit_parses_array_wrapped_content(tmp_path: Path) -> None:
+    """A wrapped cached response must be a hit, not a silent quota-burning re-fetch."""
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            json=_completion('[{"entities": [], "raw_response": ""}]'),
+        )
+
+    client = _client(handler, tmp_path)
+    # Unique prompt: pytest retains recent tmp_path trees, so a prompt shared
+    # with another test can hit a leftover entry and mask what is under test.
+    prompt = "Extract entities. (cache-hit-wrapper probe)"
+
+    first = await client.structured(_model(), prompt, ExtractionOutput)
+    second = await client.structured(_model(), prompt, ExtractionOutput)
+
+    assert first.cached is False
+    assert second.cached is True, "second call should be served from cache"
+    assert calls == 1, f"cache hit re-fetched, burning quota ({calls} requests)"
+
+
+async def test_quota_exhaustion_is_not_retried(tmp_path: Path) -> None:
+    """A spent shared-worker quota must fail fast, not burn the retry budget.
+
+    Retrying cannot help: the budget belongs to a worker shared with other
+    tenants and does not refill on the timescale of a backoff.
+    """
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            503,
+            json={
+                "error": {
+                    "message": "ResourceExhausted: Worker local total request limit reached (61/32)"
+                }
+            },
+        )
+
+    client = _client(handler, tmp_path)
+    with pytest.raises(QuotaExhaustedError) as excinfo:
+        await client.structured(_model(), "prompt", ClassificationOutput)
+
+    assert calls == 1, f"quota failure must not be retried, made {calls} attempts"
+    assert "quota exhausted" in str(excinfo.value).lower()
+
+
+async def test_server_error_message_keeps_response_body(tmp_path: Path) -> None:
+    """The body carries the cause; a bare status code hides it."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            500,
+            json={"error": {"message": "ValueError: schema features not supported"}},
+        )
+
+    client = _client(handler, tmp_path)
+    with pytest.raises(ServerError) as excinfo:
+        await client.structured(_model(), "prompt", ClassificationOutput)
+
+    assert "schema features not supported" in str(excinfo.value)
+
+
+def test_sanitize_strips_property_names_recursively() -> None:
+    """xgrammar rejects `propertyNames`; every occurrence must go, at any depth."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "scores": {
+                "type": "object",
+                "additionalProperties": {"type": "number"},
+                "propertyNames": {"enum": ["a", "b"]},
+            },
+            "nested": {"items": [{"type": "object", "propertyNames": {"type": "string"}}]},
+        },
+    }
+    cleaned = sanitize_json_schema(schema)
+
+    assert "propertyNames" not in repr(cleaned)
+    assert cleaned["properties"]["scores"]["additionalProperties"] == {"type": "number"}
+    # Input must not be mutated: model_json_schema() results get cached by callers.
+    assert "propertyNames" in repr(schema)
+
+
+def test_sanitize_keeps_refs_and_defs() -> None:
+    """`$ref`/`$defs` are supported by the backend and must survive intact."""
+    schema = ClassificationOutput.model_json_schema()
+    assert "$ref" in repr(schema), "precondition: this model does use $ref"
+
+    cleaned = sanitize_json_schema(schema)
+
+    assert cleaned["$defs"] == schema["$defs"]
+    assert cleaned["properties"]["document_type"] == schema["properties"]["document_type"]
+    assert "propertyNames" not in repr(cleaned)
+
+
+async def test_native_tier_sends_sanitized_schema(tmp_path: Path) -> None:
+    """The schema on the wire must not carry keywords the backend rejects."""
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json=_completion('{"document_type": "invoice", "confidence": 0.9}'),
+        )
+
+    client = _client(handler, tmp_path)
+    await client.structured(_model(), "Classify.", ClassificationOutput)
+
+    schema = sent[0]["response_format"]["json_schema"]["schema"]
+    assert "propertyNames" not in repr(schema)
 
 
 async def test_native_tier_recovers_array_wrapped_object(tmp_path: Path) -> None:

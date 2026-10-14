@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Generator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import httpx
 from pydantic import BaseModel
@@ -32,6 +32,42 @@ from forensics.models import (
 )
 
 T = TypeVar("T", bound=BaseModel)
+
+# Keywords that NIM's structured-output backend (xgrammar) rejects outright.
+# Empirically verified against https://integrate.api.nvidia.com/v1: sending a
+# schema containing `propertyNames` returns
+#   500 {"error":{"message":"ValueError: The provided JSON schema contains
+#   features not supported by xgrammar."}}
+# while the same schema without it returns 200. `$ref`/`$defs` are supported and
+# are left alone -- verified separately, so this is not a blanket rewrite.
+_UNSUPPORTED_SCHEMA_KEYWORDS = frozenset({"propertyNames"})
+
+
+def sanitize_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Strip schema keywords the structured-output backend cannot compile.
+
+    Pydantic emits ``propertyNames`` when a model has a dict with constrained
+    keys, which is exactly what ``ClassificationOutput.all_scores`` is
+    (``Dict[DocumentType, float]``). Dropping it loses a key constraint the
+    backend was never able to enforce anyway; the value type and the prompt's
+    instruction to use ``DocumentType`` keys are unaffected.
+
+    Returns a deep copy, so the caller's schema is never mutated.
+    """
+    return cast(dict[str, Any], _sanitize_node(schema))
+
+
+def _sanitize_node(node: Any) -> Any:
+    if isinstance(node, dict):
+        return {
+            key: _sanitize_node(value)
+            for key, value in node.items()
+            if key not in _UNSUPPORTED_SCHEMA_KEYWORDS
+        }
+    if isinstance(node, list):
+        return [_sanitize_node(item) for item in node]
+    return node
+
 
 NIM_DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
@@ -115,6 +151,32 @@ class ServerError(LLMError):
 
     def __init__(self, message: str, status_code: int = 500):
         super().__init__(message, retryable=True, status_code=status_code)
+
+
+class QuotaExhaustedError(RateLimitError):
+    """The backend's shared request quota is spent (NIM `ResourceExhausted`).
+
+    NIM reports this as 503 rather than 429, and the budget belongs to a worker
+    shared with every other tenant, so it does not recover on the timescale of
+    a retry backoff. Retrying immediately just consumes the few requests that
+    remain, then reports the same failure more slowly.
+    """
+
+    def __init__(self, message: str, status_code: int = 503) -> None:
+        super().__init__(message, status_code=status_code)
+
+
+def _is_quota_exhausted(status_code: int, body: str) -> bool:
+    """Detect NIM's shared-worker quota rejection.
+
+    Observed shapes:
+      503 {"error":{"message":"ResourceExhausted: Worker local total request
+           limit reached (61/32)"}}
+    """
+    if status_code not in (429, 503):
+        return False
+    lowered = body.lower()
+    return "resourceexhausted" in lowered or "request limit reached" in lowered
 
 
 class TransportError(LLMError):
@@ -231,8 +293,10 @@ class ResponseCache:
         key = self._cache_key(model, provider, prompt_version, prompt)
         path = self._cache_path(key)
         try:
-            # Mark as cached for future retrievals
-            response.cached = True
+            # Do not mutate `response.cached` here. It means "this came from
+            # cache", so flipping it in set() made every freshly fetched
+            # response report itself as a hit. The stored copy is marked in the
+            # payload below instead.
             with open(path, "w") as f:
                 json.dump(
                     {
@@ -513,8 +577,22 @@ class NIMClient:
                 last_error = RateLimitError("Rate limit exceeded", 429, retry_after)
                 continue
             if 500 <= response.status_code < 600:
+                body = response.text
+                if _is_quota_exhausted(response.status_code, body):
+                    # Do not burn the remaining retry budget on a shared quota
+                    # that cannot refill within a backoff window.
+                    raise QuotaExhaustedError(
+                        f"NIM request quota exhausted ({response.status_code}): "
+                        f"{body.strip()[:200]}. This is a per-worker budget shared "
+                        f"across tenants; wait for it to refill or reduce the "
+                        f"number of requests."
+                    )
+                # Keep the body: NIM puts the actual cause there, and a bare
+                # "Server error: 500" hides it (this masked a schema-compilation
+                # failure that was reproducible and fixable).
                 last_error = ServerError(
-                    f"Server error: {response.status_code}", response.status_code
+                    f"Server error: {response.status_code} - {body.strip()[:300]}",
+                    response.status_code,
                 )
                 continue
             if response.status_code != 200:
@@ -592,7 +670,7 @@ class NIMClient:
                 f"Skipping Tier 1 for reasoning model {model_config.model_id}; "
                 f"native structured output does not work with reasoning models."
             )
-        schema = response_model.model_json_schema()
+        schema = sanitize_json_schema(response_model.model_json_schema())
         response_format = {
             "type": "json_schema",
             "json_schema": {"name": response_model.__name__, "schema": schema},
@@ -619,7 +697,7 @@ class NIMClient:
         system: str | None = None,
     ) -> StructuredResponse:
         """Tier 2: schema in the prompt, with tolerant parsing."""
-        schema = response_model.model_json_schema()
+        schema = sanitize_json_schema(response_model.model_json_schema())
         structured_prompt = self._build_structured_prompt(prompt, schema)
 
         messages = self._build_messages(structured_prompt, system)
@@ -639,7 +717,7 @@ class NIMClient:
         last_error: Exception | None = None,
     ) -> StructuredResponse:
         """Tier 3: feed the validation error back once and re-ask."""
-        schema = response_model.model_json_schema()
+        schema = sanitize_json_schema(response_model.model_json_schema())
         structured_prompt = self._build_structured_prompt(prompt, schema)
 
         if last_error:
@@ -704,7 +782,11 @@ class NIMClient:
         )
         if cached:
             try:
-                parsed = response_model.model_validate_json(cached.content)
+                # Tolerant parse for the same reason as tier 1: a cached response
+                # can hold `[{"entities": [...]}]`. Strict parsing here failed
+                # silently and fell through to a fresh request, spending the
+                # quota on a re-fetch of something already on disk.
+                parsed = self._parse_tolerant(cached.content, response_model)
                 return StructuredResponse(
                     content=cached.content,
                     model=cached.model,
@@ -715,7 +797,7 @@ class NIMClient:
                     parsed=parsed,
                     cached=True,
                 )
-            except PydanticValidationError:
+            except (PydanticValidationError, StructuredOutputError):
                 # Corrupt or stale cache entry: fall through and re-fetch.
                 pass
 
