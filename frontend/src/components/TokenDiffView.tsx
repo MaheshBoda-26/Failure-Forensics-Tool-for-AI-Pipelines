@@ -1,5 +1,5 @@
 import React from "react";
-import { Trace, Diagnosis } from "../api/types";
+import { Trace, Diagnosis, Span } from "../api/types";
 import { GitCompare, Plus, Minus } from "lucide-react";
 
 interface TokenDiffViewProps {
@@ -8,6 +8,22 @@ interface TokenDiffViewProps {
 }
 
 export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }) => {
+  // Find the root cause span
+  const rootCauseStep = diagnosis?.root_cause_step;
+  const rootCauseSpan = rootCauseStep ? trace.spans.find(s => s.step_name === rootCauseStep) : trace.spans[2] || trace.spans[0];
+  const groundTruthType = diagnosis?.category === "misclassification" ? "INVOICE" : "UNKNOWN";
+
+  const parseJson = (jsonStr: string) => {
+    try {
+      return JSON.parse(jsonStr);
+    } catch {
+      return { raw: jsonStr };
+    }
+  };
+
+  const inputJson = rootCauseSpan ? parseJson(rootCauseSpan.input_json) : {};
+  const outputJson = rootCauseSpan ? parseJson(rootCauseSpan.output_json) : {};
+
   return (
     <div
       style={{
@@ -92,23 +108,17 @@ export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }
               overflowX: "auto",
             }}
           >
-{`{
-  "trace_id": "golden_${trace.document_id}",
-  "document_type": `}<span style={{ backgroundColor: "var(--color-copper-tint)", color: "var(--color-copper)", fontWeight: 700, padding: "2px 4px" }}>"INVOICE"</span>{`,
-  "confidence_threshold": 0.70,
-  "expected_entities": {
-    "vendor": "Acme Industrial Supplies",
-    "invoice_number": "INV-2026-081",
-    "total_amount": 1420.50
-  },
-  "grounded_token_spans": [
-    { "start": 0, "end": 11, "token": "TAX INVOICE" }
-  ],
-  "validation_status": "VALID"
-}`}
+{JSON.stringify({
+  trace_id: `golden_${trace.document_id}`,
+  document_type: groundTruthType || "UNKNOWN",
+  confidence_threshold: 0.70,
+  expected_entities: inputJson.entities || {},
+  grounded_token_spans: inputJson.grounded_token_spans || [],
+  validation_status: "VALID"
+}, null, 2)}
           </pre>
           <div style={{ fontSize: "12px", color: "var(--color-ink-3)", lineHeight: 1.5 }}>
-            Ground truth requires document classification to match enum key <code>INVOICE</code> with confidence above 0.70 grounded in text tokens.
+            Ground truth requires document classification to match enum key <code>{groundTruthType || "UNKNOWN"}</code> with confidence above 0.70 grounded in text tokens.
           </div>
         </div>
 
@@ -129,7 +139,7 @@ export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }
           >
             <span>ACTUAL EXECUTION (TRACE {trace.trace_id})</span>
             <span style={{ backgroundColor: "var(--color-cinnabar-tint)", padding: "2px 6px", borderRadius: "2px" }}>
-              BREAK DETECTED
+              {diagnosis?.root_cause_step ? "ROOT CAUSE" : "BREAK DETECTED"}
             </span>
           </div>
 
@@ -147,21 +157,19 @@ export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }
               overflowX: "auto",
             }}
           >
-{`{
-  "trace_id": "${trace.trace_id}",
-  "document_type": `}<span style={{ backgroundColor: "var(--color-cinnabar)", color: "#FFFFFF", fontWeight: 700, padding: "2px 6px" }}>"invoice_receipt_v2"</span>{` /* ✗ INVALID ENUM */,
-  "confidence": 0.42 /* ✗ BELOW THRESHOLD */,
-  "expected_entities": {
-    "vendor": "Acme Industrial Supplies",
-    "invoice_number": "INV-2026-081",
-    "total_amount": 1420.50
-  },
-  "grounded_token_spans": [] /* ✗ UNGROUNDED */,
-  "validation_status": "SCHEMA_VIOLATION"
-}`}
+{JSON.stringify({
+  trace_id: trace.trace_id,
+  document_type: outputJson.document_type || "UNKNOWN",
+  confidence: outputJson.confidence || 0,
+  expected_entities: outputJson.entities || {},
+  grounded_token_spans: outputJson.grounded_token_spans || [],
+  validation_status: diagnosis ? "SCHEMA_VIOLATION" : "VALID"
+}, null, 2)}
           </pre>
           <div style={{ fontSize: "12px", color: "var(--color-cinnabar)", lineHeight: 1.5, fontWeight: 500 }}>
-            Model generated hallucinated composite type <code>"invoice_receipt_v2"</code> not present in Pydantic schema enum domain.
+            {diagnosis && diagnosis.root_cause_step !== "none"
+              ? `Root cause: ${diagnosis.category} at ${diagnosis.root_cause_step} (${(diagnosis.confidence * 100).toFixed(1)}% confidence)`
+              : "No deterministic failure detected."}
           </div>
         </div>
       </div>

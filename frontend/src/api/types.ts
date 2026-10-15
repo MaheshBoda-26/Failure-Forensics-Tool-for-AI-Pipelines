@@ -1,14 +1,11 @@
 export type TraceStatus = "success" | "failure";
 
 export type FailureCategory =
+  | "extraction_hallucination"
   | "misclassification"
-  | "extraction_omission"
-  | "schema_drift"
-  | "summary_hallucination"
+  | "propagation_error"
   | "prompt_failure"
-  | "token_limit"
-  | "tool_call_malformed"
-  | "unparseable_output"
+  | "context_loss"
   | "unknown";
 
 export interface CheckResult {
@@ -23,20 +20,20 @@ export interface Span {
   span_id: string;
   step_name: "intake" | "extraction" | "classification" | "summarization" | string;
   step_index: number;
-  input_data: Record<string, unknown> | string;
-  output_data: Record<string, unknown> | string;
-  status: "success" | "failure";
+  input_json: string;
+  output_json: string;
+  status: "success" | "failure" | "degraded";
   latency_ms: number;
-  token_usage: {
-    prompt_tokens: number;
-    completion_tokens: number;
-    total_tokens: number;
-    cost_usd: number;
-  } | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  reasoning_tokens: number;
+  model_id: string;
+  provider: string;
+  prompt: string;
+  raw_response: string;
+  confidence: number;
   error: string | null;
   checks: CheckResult[];
-  prompt: string | null;
-  raw_response: string | null;
 }
 
 export interface Trace {
@@ -45,21 +42,28 @@ export interface Trace {
   status: TraceStatus;
   start_time: string;
   end_time: string;
-  duration_ms: number;
+  total_latency_ms: number;
   spans: Span[];
   metadata: Record<string, unknown>;
   pipeline_version: string;
   prompt_version: string;
   schema_version: string;
+  final_output: Record<string, unknown> | null;
+  final_score: number | null;
+  created_at: string;
+  completed_at: string | null;
+  total_tokens: number;
+  total_cost_usd: number;
 }
 
-export interface EvidenceItem {
-  step: string;
-  check_name: string;
-  score: number;
-  threshold: number;
-  detail: string;
-  severity: "high" | "medium" | "low";
+export interface StepScore {
+  step_name: string;
+  local_fidelity: number;
+  global_fidelity: number;
+  local_pass: boolean;
+  global_pass: boolean;
+  evidence: string[];
+  deterministic_checks: Record<string, boolean>;
 }
 
 export interface Diagnosis {
@@ -68,8 +72,8 @@ export interface Diagnosis {
   root_cause_step: string;
   category: FailureCategory;
   confidence: number;
-  evidence_chain: EvidenceItem[];
-  step_scores: Record<string, number>;
+  evidence_chain: string[];
+  step_scores: StepScore[];
   analyzer_version: string;
   model_id: string;
   provider: string;
@@ -106,4 +110,15 @@ export interface Flag {
   user_id: string;
   note: string | null;
   created_at: string;
+}
+
+export interface EvalResult {
+  result_id: string;
+  run_id: string;
+  case_id: string;
+  step_name: string;
+  score: number;
+  fixed: boolean;
+  details: Record<string, unknown>;
+  evaluated_at: string;
 }

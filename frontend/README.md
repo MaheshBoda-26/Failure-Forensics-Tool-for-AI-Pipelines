@@ -1,32 +1,66 @@
-# Frontend — Phase 4 (Day 9)
+# Frontend — React + Vite + TypeScript Trace Explorer
 
-Not scaffolded yet. Deliberate: the prompt schedules the trace explorer for
-Days 9-11, and installing npm packages before the tracing layer exists buys
-nothing.
+Built for the Failure Forensics Tool. Runs as a dev server (`make run-web`) and
+is served by FastAPI in production (`frontend/dist`).
 
-## Decision (PROMPT.md decision #6)
+## Quickstart
 
-**Primary: React + Vite + TypeScript + React Flow.**
-Scored against the prompt's own axes — node-graph quality (React Flow gives a
-real DAG layout and clickable nodes, which the green/yellow/red trace view
-needs), diff view (needs side-by-side structured diff, so real components), and
-flag/confirm/override interaction (needs real client state). It also produces
-the stronger portfolio artifact.
+```bash
+# Install dependencies
+npm install
 
-**Fallback: Streamlit.** Switch on Day 9 if behind. Roughly four hours of work
-instead of two days; weaker graph and diff view, no custom layout. Acceptable
-for demonstrating the concept, weaker as an interview piece.
+# Start dev server (proxies API to FastAPI on :8000)
+npm run dev
 
-## Layout when built
+# Build for production
+npm run build
+```
+
+## Architecture
 
 ```
 frontend/
   src/
-    api/         typed client for the FastAPI endpoints
-    components/  TraceGraph, TraceNode, DiffView, FlagPanel, ConfirmPanel
+    api/         Typed client for FastAPI endpoints (client.ts, types.ts)
+    components/  TraceDetailView, DAGGraphView, TokenDiffView, TraceSpine, AnalyticsView, HonestyMatrix
     pages/       TraceList, TraceDetail, Analytics
-    state/       trace + diagnosis state
+    main.tsx     Entry point
+    App.tsx      Root component with routing
 ```
 
-FastAPI serves the built `frontend/dist` in production, so the Render deploy is
-a single service. See `Makefile` targets `run-ui` and `dev`.
+## Features
+
+- **Trace List** — Table with trace ID, document, status, spans, latency
+- **Trace Detail** — Color-coded spans (🟢 pass, 🟡 tainted, 🔴 fail)
+- **DAG Graph** — Dynamic execution graph built from trace spans and diagnosis
+- **Evidence Chain** — Failed checks with per-step scores
+- **Token Diff** — Expected vs actual classification/entity grounding from real trace data
+- **Flag/Confirm/Override** — Creates Flag in SQLite, triggers analyzer, shows diagnosis
+- **Analytics** — Stage vulnerability map, regression table from real eval data
+
+## Tech Stack
+
+- React 19 + TypeScript
+- Vite 6 (dev server + build)
+- React Flow (DAG visualization)
+- Lucide React (icons)
+- CSS variables for theming
+
+## API Contract
+
+Frontend types in `src/api/types.ts` must match FastAPI Pydantic models in `src/forensics/models.py`:
+
+- `FailureCategory` enum: `extraction_hallucination`, `misclassification`, `propagation_error`, `prompt_failure`, `context_loss`, `unknown`
+- `Span` fields: `input_json`, `output_json`, `prompt_tokens`, `completion_tokens`, `reasoning_tokens`, `model_id`, `provider`
+- `Trace` fields: `total_latency_ms`, `total_tokens`, `total_cost_usd`
+- `Diagnosis.evidence_chain` is `string[]` (not objects)
+- `Diagnosis.step_scores` is `StepScore[]` with `deterministic_checks`
+
+## Commands
+
+```bash
+make run-web        # From project root: starts Vite + FastAPI
+npm run dev         # From frontend/: just Vite dev server
+npm run build       # Build to frontend/dist for FastAPI static serving
+npm run lint        # ESLint + TypeScript check
+```

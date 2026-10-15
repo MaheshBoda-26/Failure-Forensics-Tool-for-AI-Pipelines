@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Trace, Diagnosis, Span, FailureCategory } from "../api/types";
+import { Trace, Diagnosis, Span, FailureCategory, StepScore } from "../api/types";
 import { TraceSpine } from "./TraceSpine";
 import {
   Download,
@@ -21,18 +21,15 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
   const [selectedStep, setSelectedStep] = useState<string>("classification");
   const [isConfirming, setIsConfirming] = useState<boolean>(false);
   const [showOverrideMenu, setShowOverrideMenu] = useState<boolean>(false);
-  const [overrideCategory, setOverrideCategory] = useState<FailureCategory>("misclassification");
+  const [overrideCategory, setOverrideCategory] = useState<FailureCategory>("extraction_hallucination");
   const [actionMessage, setActionMessage] = useState<string | null>(null);
 
   // Calculate telemetry
-  const totalTokens = trace.spans.reduce(
-    (acc, s) => acc + (s.token_usage?.total_tokens || 0),
+  const totalTokens = trace.total_tokens || trace.spans.reduce(
+    (acc, s) => acc + (s.prompt_tokens + s.completion_tokens + s.reasoning_tokens),
     0
   );
-  const totalCost = trace.spans.reduce(
-    (acc, s) => acc + (s.token_usage?.cost_usd || 0),
-    0
-  );
+  const totalCost = trace.total_cost_usd;
   const allChecks = trace.spans.flatMap((s) => s.checks || []);
   const passedChecks = allChecks.filter((c) => c.passed).length;
 
@@ -55,18 +52,19 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
     }
   };
 
-  const handleOverride = async () => {
+  const handleOverride = async (cat?: FailureCategory) => {
     if (!diagnosis) return;
+    const category = cat || overrideCategory;
     try {
       setIsConfirming(true);
       await api.confirmDiagnosis(
         diagnosis.diagnosis_id,
         false,
-        overrideCategory,
+        category,
         "Engineer manual override from trace inspector"
       );
       setShowOverrideMenu(false);
-      setActionMessage(`✓ Overridden to ${overrideCategory}!`);
+      setActionMessage(`✓ Overridden to ${category}!`);
       await onRefreshTrace();
     } catch (err: unknown) {
       setActionMessage(`Error: ${(err as Error).message}`);
@@ -234,7 +232,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
         <div>
           <span>DURATION: </span>
           <span style={{ color: "var(--color-ink)", fontWeight: 600 }}>
-            {trace.duration_ms ? `${Math.round(trace.duration_ms)}ms` : "1,247ms"}
+            {trace.total_latency_ms ? `${Math.round(trace.total_latency_ms)}ms` : "1,247ms"}
           </span>
         </div>
         <div>
@@ -429,10 +427,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                         }}
                       >
                         <div style={{ fontWeight: 600 }}>
-                          [FAIL] {item.check_name} — Score: {item.score} (threshold: {item.threshold})
-                        </div>
-                        <div style={{ fontSize: "11px", color: "var(--color-ink-2)", marginTop: "4px" }}>
-                          {item.detail}
+                          [FAIL] {item}
                         </div>
                       </div>
                     ))
@@ -449,6 +444,47 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                       }}
                     >
                       [FAIL] label_grounding: Expected document category did not ground in text tokens.
+                    </div>
+                  )}
+
+                  {/* Per-Step Scores */}
+                  {diagnosis.step_scores && diagnosis.step_scores.length > 0 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "8px" }}>
+                      <div
+                        style={{
+                          fontFamily: "var(--font-mono)",
+                          fontSize: "11px",
+                          fontWeight: 600,
+                          letterSpacing: "var(--tracking-label)",
+                          color: "var(--color-ink-3)",
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        PER-STEP SCORES
+                      </div>
+                      {diagnosis.step_scores.map((stepScore: StepScore, idx: number) => (
+                        <div
+                          key={idx}
+                          style={{
+                            border: `1px solid ${stepScore.local_pass ? "var(--color-copper)" : "var(--color-cinnabar)"}`,
+                            backgroundColor: stepScore.local_pass ? "var(--color-copper-tint)" : "var(--color-cinnabar-tint)",
+                            padding: "10px 14px",
+                            borderRadius: "var(--radius-1)",
+                            fontFamily: "var(--font-mono)",
+                            fontSize: "12px",
+                            color: stepScore.local_pass ? "var(--color-copper)" : "var(--color-cinnabar)",
+                          }}
+                        >
+                          <div style={{ fontWeight: 600 }}>
+                            {stepScore.local_pass ? "[PASS]" : "[FAIL]"} {stepScore.step_name} — Local: {(stepScore.local_fidelity * 100).toFixed(0)}%, Global: {(stepScore.global_fidelity * 100).toFixed(0)}%
+                          </div>
+                          {Object.entries(stepScore.deterministic_checks).map(([check, passed]) => (
+                            <div key={check} style={{ fontSize: "11px", marginTop: "4px", opacity: 0.8 }}>
+                              {passed ? "✓" : "✗"} {check}
+                            </div>
+                          ))}
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -517,19 +553,17 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                         </div>
                         {(
                           [
+                            "extraction_hallucination",
                             "misclassification",
-                            "extraction_omission",
-                            "schema_drift",
-                            "summary_hallucination",
+                            "propagation_error",
                             "prompt_failure",
+                            "context_loss",
+                            "unknown",
                           ] as FailureCategory[]
                         ).map((cat) => (
                           <div
                             key={cat}
-                            onClick={() => {
-                              setOverrideCategory(cat);
-                              handleOverride();
-                            }}
+                            onClick={() => handleOverride(cat)}
                             style={{
                               padding: "6px 8px",
                               fontFamily: "var(--font-mono)",
@@ -586,7 +620,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                 </span>
               </div>
               <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)" }}>
-                MODEL: anthropic/claude-3.5-haiku
+                MODEL: {currentSpan?.model_id || "unknown"}
               </span>
             </div>
 
@@ -628,10 +662,12 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                 >
                   {currentSpan?.prompt ||
                     JSON.stringify(
-                      currentSpan?.input_data || {
-                        document_id: trace.document_id,
-                        step: selectedStep,
-                      },
+                      currentSpan?.input_json
+                        ? JSON.parse(currentSpan.input_json)
+                        : {
+                            document_id: trace.document_id,
+                            step: selectedStep,
+                          },
                       null,
                       2
                     )}
@@ -677,11 +713,13 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                 >
                   {currentSpan?.raw_response ||
                     JSON.stringify(
-                      currentSpan?.output_data || {
-                        classification: "invoice_receipt_v2",
-                        confidence: 0.42,
-                        error: "label not in DocumentType enum",
-                      },
+                      currentSpan?.output_json
+                        ? JSON.parse(currentSpan.output_json)
+                        : {
+                            classification: "invoice_receipt_v2",
+                            confidence: 0.42,
+                            error: "label not in DocumentType enum",
+                          },
                       null,
                       2
                     )}

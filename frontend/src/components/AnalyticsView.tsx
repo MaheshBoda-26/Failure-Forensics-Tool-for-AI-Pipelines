@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { AnalyticsSnapshot, EvalRun } from "../api/types";
+import React, { useState, useMemo, useEffect } from "react";
+import { AnalyticsSnapshot, EvalRun, EvalResult } from "../api/types";
 import { api } from "../api/client";
 import { Play, TrendingUp, AlertTriangle, ShieldCheck, Clock } from "lucide-react";
 
@@ -16,6 +16,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
 }) => {
   const [isRunningEval, setIsRunningEval] = useState<boolean>(false);
   const [evalNotice, setEvalNotice] = useState<string | null>(null);
+  const [evalResults, setEvalResults] = useState<EvalResult[]>([]);
 
   const handleRunEval = async () => {
     try {
@@ -23,6 +24,11 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       const res = await api.triggerEvalRun();
       setEvalNotice(`✓ Eval run ${res.run_id} completed: ${Math.round(res.current_accuracy * 100)}% accuracy`);
       await onRefreshAnalytics();
+      // Fetch results for the new run
+      if (res.run_id) {
+        const results = await api.getEvalResults(res.run_id);
+        setEvalResults(results);
+      }
     } catch (err: unknown) {
       setEvalNotice(`Error running eval: ${(err as Error).message}`);
     } finally {
@@ -31,11 +37,43 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     }
   };
 
+  // Fetch eval results for latest run on mount and when evalRuns change
+  useEffect(() => {
+    const latestRun = evalRuns[0];
+    if (latestRun) {
+      api.getEvalResults(latestRun.run_id).then(setEvalResults).catch(() => setEvalResults([]));
+    } else {
+      setEvalResults([]);
+    }
+  }, [evalRuns]);
+
   const passRate = analytics ? Math.round((1 - analytics.failure_rate) * 100) : 84;
   const totalTraces = analytics?.total_traces || 15;
   const topCategory = analytics?.failures_by_category
     ? Object.entries(analytics.failures_by_category).sort((a, b) => b[1] - a[1])[0]?.[0] || "misclassification"
     : "misclassification";
+
+  // Compute stage vulnerability percentages from real data
+  const stageVulnerability = useMemo(() => {
+    const steps = ["intake", "extraction", "classification", "summarization"];
+    const failuresByStep = analytics?.failures_by_step || {};
+    const totalFailures = Object.values(failuresByStep).reduce((a, b) => a + b, 0);
+    return steps.map((step, idx) => {
+      const count = failuresByStep[step] || 0;
+      const pct = totalFailures > 0 ? (count / totalFailures) * 100 : 0;
+      const colors = ["var(--color-copper)", "var(--color-ochre)", "var(--color-cinnabar)", "var(--color-ink-3)"];
+      return {
+        stage: `${String(idx + 1).padStart(2, "0")} ${step}`,
+        pct,
+        color: colors[idx],
+        label: `${pct.toFixed(1)}%`,
+      };
+    });
+  }, [analytics]);
+
+  // Get latest eval run for regression table
+  const latestRun = evalRuns[0];
+  const hasEvalData = latestRun && latestRun.total_cases > 0;
 
   return (
     <div
@@ -267,12 +305,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-          {[
-            { stage: "01 intake", pct: 0.2, color: "var(--color-copper)", label: "0.2%" },
-            { stage: "02 extraction", pct: 14.1, color: "var(--color-ochre)", label: "14.1%" },
-            { stage: "03 classification", pct: 68.3, color: "var(--color-cinnabar)", label: "68.3%" },
-            { stage: "04 summarization", pct: 17.4, color: "var(--color-ink-3)", label: "17.4%" },
-          ].map((item) => (
+          {stageVulnerability.map((item) => (
             <div key={item.stage} style={{ display: "flex", alignItems: "center", gap: "16px" }}>
               <span
                 style={{
@@ -345,7 +378,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             GOLDEN EVAL BENCHMARK REGRESSION TABLE
           </div>
           <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-cinnabar)", fontWeight: 700 }}>
-            2 REGRESSIONS FLAGGED
+            {evalResults.filter(r => !r.fixed).length} REGRESSIONS FLAGGED
           </span>
         </div>
 
@@ -362,33 +395,36 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             </tr>
           </thead>
           <tbody>
-            <tr style={{ borderBottom: "1px solid var(--color-rule)", backgroundColor: "var(--color-cinnabar-tint)" }}>
-              <td style={{ padding: "12px 20px", fontWeight: 600, color: "var(--color-ink)" }}>invoice_multipage_tax</td>
-              <td style={{ padding: "12px 20px", color: "var(--color-cinnabar)" }}>misclassification</td>
-              <td style={{ padding: "12px 20px" }}>03 classification</td>
-              <td style={{ padding: "12px 20px" }}>98.0%</td>
-              <td style={{ padding: "12px 20px", fontWeight: 700, color: "var(--color-cinnabar)" }}>82.0%</td>
-              <td style={{ padding: "12px 20px", color: "var(--color-cinnabar)", fontWeight: 700 }}>-16.0%</td>
-              <td style={{ padding: "12px 20px", color: "var(--color-cinnabar)", fontWeight: 700 }}>REGRESSION</td>
-            </tr>
-            <tr style={{ borderBottom: "1px solid var(--color-rule)" }}>
-              <td style={{ padding: "12px 20px", fontWeight: 600, color: "var(--color-ink)" }}>legal_contract_jurisdiction</td>
-              <td style={{ padding: "12px 20px", color: "var(--color-ink-2)" }}>extraction_omission</td>
-              <td style={{ padding: "12px 20px" }}>02 extraction</td>
-              <td style={{ padding: "12px 20px" }}>91.5%</td>
-              <td style={{ padding: "12px 20px" }}>92.0%</td>
-              <td style={{ padding: "12px 20px", color: "var(--color-copper)" }}>+0.5%</td>
-              <td style={{ padding: "12px 20px", color: "var(--color-copper)" }}>PASSED</td>
-            </tr>
-            <tr style={{ borderBottom: "1px solid var(--color-rule)" }}>
-              <td style={{ padding: "12px 20px", fontWeight: 600, color: "var(--color-ink)" }}>financial_summary_grounding</td>
-              <td style={{ padding: "12px 20px", color: "var(--color-ink-2)" }}>summary_hallucination</td>
-              <td style={{ padding: "12px 20px" }}>04 summarization</td>
-              <td style={{ padding: "12px 20px" }}>88.0%</td>
-              <td style={{ padding: "12px 20px" }}>89.2%</td>
-              <td style={{ padding: "12px 20px", color: "var(--color-copper)" }}>+1.2%</td>
-              <td style={{ padding: "12px 20px", color: "var(--color-copper)" }}>PASSED</td>
-            </tr>
+            {evalResults.length > 0 ? (
+              evalResults.map((result) => {
+                const category = result.details?.category || "unknown";
+                const isFixed = result.fixed;
+                const delta = isFixed ? "+0.0%" : "-0.0%"; // Would need baseline data for real delta
+                return (
+                  <tr key={result.result_id} style={{ borderBottom: "1px solid var(--color-rule)", backgroundColor: isFixed ? "transparent" : "var(--color-cinnabar-tint)" }}>
+                    <td style={{ padding: "12px 20px", fontWeight: 600, color: "var(--color-ink)" }}>{result.case_id.slice(0, 14)}</td>
+                    <td style={{ padding: "12px 20px", color: isFixed ? "var(--color-ink-2)" : "var(--color-cinnabar)" }}><span>{String(category)}</span></td>
+                    <td style={{ padding: "12px 20px" }}>{result.step_name}</td>
+                    <td style={{ padding: "12px 20px" }}>100%</td>
+                    <td style={{ padding: "12px 20px", fontWeight: 700, color: isFixed ? "var(--color-copper)" : "var(--color-cinnabar)" }}>
+                      {isFixed ? "100%" : "0%"}
+                    </td>
+                    <td style={{ padding: "12px 20px", color: isFixed ? "var(--color-copper)" : "var(--color-cinnabar)", fontWeight: 700 }}>
+                      {delta}
+                    </td>
+                    <td style={{ padding: "12px 20px", color: isFixed ? "var(--color-copper)" : "var(--color-cinnabar)", fontWeight: 700 }}>
+                      {isFixed ? "FIXED" : "REGRESSION"}
+                    </td>
+                  </tr>
+                );
+              })
+            ) : (
+              <tr style={{ borderBottom: "1px solid var(--color-rule)" }}>
+                <td colSpan={7} style={{ padding: "20px", textAlign: "center", color: "var(--color-ink-2)" }}>
+                  No eval results available. Run eval suite to populate.
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

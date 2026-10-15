@@ -62,7 +62,7 @@
       "should_fail": true,
       "failure_step": "summarization",
       "failure_category": "propagation_error",
-      "notes": "Seeded failure: intake context loss"
+      "notes": "Seeded failure: summarization uses contract/invoice terminology instead of correspondence (propagation_error)"
     },
     {
       "doc_id": "correspondence_002",
@@ -80,7 +80,7 @@
       "should_fail": true,
       "failure_step": "classification",
       "failure_category": "misclassification",
-      "notes": "Seeded failure: propagation error from upstream"
+      "notes": "Seeded failure: mixed document misclassified as single type (misclassification)"
     },
     {
       "doc_id": "mixed_002",

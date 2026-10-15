@@ -18,6 +18,7 @@ from forensics.models import (
     AnalyticsSnapshot,
     Diagnosis,
     EvalCase,
+    EvalResult,
     EvalRun,
     FailureCategory,
     Flag,
@@ -167,6 +168,21 @@ def confirm_diagnosis(diagnosis_id: str, request: ConfirmDiagnosisRequest) -> Di
         override_reason=request.override_reason,
     )
 
+    # Auto-create flag if none exists for this trace
+    storage = get_storage()
+    flags = storage.list_flags_for_trace(diagnosis.trace_id)
+    if not flags:
+        flag = Flag(trace_id=diagnosis.trace_id, user_id="api_user", note="Auto-created on diagnosis confirm")
+        storage.create_flag(flag)
+        flags = [flag]
+
+    # Auto-create eval case from confirmed diagnosis
+    from forensics.eval_simple import flag_to_eval_case
+    for flag in flags:
+        case = flag_to_eval_case(flag, diagnosis, storage)
+        if case:
+            storage.create_eval_case(case)
+
     updated_diagnosis = get_storage().get_diagnosis(diagnosis_id)
     if not updated_diagnosis:
         raise HTTPException(status_code=404, detail="Diagnosis not found after update")
@@ -189,6 +205,14 @@ def get_eval_run(run_id: str) -> EvalRun:
     if not run:
         raise HTTPException(status_code=404, detail="Eval run not found")
     return run
+
+
+@app.get("/eval/runs/{run_id}/results")
+def get_eval_results(run_id: str) -> list[EvalResult]:
+    run = get_storage().get_eval_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Eval run not found")
+    return get_storage().get_eval_results_for_run(run_id)
 
 
 @app.post("/eval/run")
@@ -218,16 +242,16 @@ async def trigger_eval_run() -> dict[str, object]:
             "passed_count": run.passed_count,
             "failed_count": run.failed_count,
             "current_accuracy": (
-                (run.passed_count / run.total_cases) if run.total_cases > 0 else 0.88
+                (run.passed_count / run.total_cases) if run.total_cases > 0 else 0.0
             ),
         }
     return {
         "status": "ok",
         "run_id": "eval_benchmark_suite",
-        "total_cases": 15,
-        "passed_count": 13,
-        "failed_count": 2,
-        "current_accuracy": 0.867,
+        "total_cases": 0,
+        "passed_count": 0,
+        "failed_count": 0,
+        "current_accuracy": 0.0,
     }
 
 
@@ -294,6 +318,9 @@ def get_analytics() -> AnalyticsSnapshot:
     failure_traces = 0
     root_cause_latencies: list[float] = []
 
+    # Group traces by date for failure_rate_over_time
+    traces_by_date: dict[str, dict] = {}
+
     for trace in traces:
         diagnosis = storage.get_diagnosis_for_trace(trace.trace_id)
         has_semantic_failure = diagnosis is not None and diagnosis.root_cause_step not in (
@@ -302,9 +329,19 @@ def get_analytics() -> AnalyticsSnapshot:
         )
         is_run_failure = trace.status == TraceStatus.FAILURE
 
+        # Get trace date
+        trace_date = trace.created_at.date().isoformat() if trace.created_at else "unknown"
+
+        if trace_date not in traces_by_date:
+            traces_by_date[trace_date] = {"total": 0, "failures": 0}
+
+        traces_by_date[trace_date]["total"] += 1
+
         if not (is_run_failure or has_semantic_failure):
             continue
+
         failure_traces += 1
+        traces_by_date[trace_date]["failures"] += 1
 
         if diagnosis is not None and diagnosis.root_cause_step not in ("", "none"):
             category = diagnosis.override_category or diagnosis.category
@@ -326,12 +363,19 @@ def get_analytics() -> AnalyticsSnapshot:
         sum(root_cause_latencies) / len(root_cause_latencies) if root_cause_latencies else None
     )
 
+    # Build failure_rate_over_time sorted by date
+    failure_rate_over_time = []
+    for date_str in sorted(traces_by_date.keys()):
+        day_data = traces_by_date[date_str]
+        day_failure_rate = day_data["failures"] / day_data["total"] if day_data["total"] > 0 else 0.0
+        failure_rate_over_time.append({"timestamp": date_str, "failure_rate": day_failure_rate})
+
     return AnalyticsSnapshot(
         total_traces=total_traces,
         failure_rate=failure_rate,
         failures_by_category=failures_by_category,
         failures_by_step=failures_by_step,
-        failure_rate_over_time=[],
+        failure_rate_over_time=failure_rate_over_time,
         avg_time_to_root_cause_seconds=avg_time_to_root_cause,
     )
 

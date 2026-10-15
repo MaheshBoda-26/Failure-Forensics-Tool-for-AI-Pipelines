@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { Trace, Diagnosis } from "../api/types";
+import React, { useState, useMemo } from "react";
+import { Trace, Diagnosis, StepScore } from "../api/types";
 import { ZoomIn, ZoomOut, Maximize2, Share2, Layers } from "lucide-react";
 
 interface DAGGraphViewProps {
@@ -11,48 +11,61 @@ export const DAGGraphView: React.FC<DAGGraphViewProps> = ({ trace, diagnosis }) 
   const [selectedNode, setSelectedNode] = useState<string>("classification");
   const [zoomLevel, setZoomLevel] = useState<number>(1);
 
-  const nodes = [
-    {
-      id: "intake",
-      stage: "STAGE 01",
-      name: "intake",
-      desc: "Document normalization · UTF-8 validation",
-      tokens: "0 tokens",
-      duration: "42ms",
-      status: "PASSED",
-      checks: "3/3 checks passed",
-    },
-    {
-      id: "extraction",
-      stage: "STAGE 02",
-      name: "extraction",
-      desc: "Grounded entity extraction (7 entities)",
-      tokens: "820 tokens",
-      duration: "385ms",
-      status: "PASSED",
-      checks: "7/7 checks passed",
-    },
-    {
-      id: "classification",
-      stage: "STAGE 03 · ROOT CAUSE",
-      name: "classification",
-      desc: "DocumentType strict enum mapping",
-      tokens: "410 tokens",
-      duration: "512ms",
-      status: "FAILED",
-      checks: "2 checks failed (label_enum, label_grounding)",
-    },
-    {
-      id: "summarization",
-      stage: "STAGE 04",
-      name: "summarization",
-      desc: "Context synthesis & downstream consumption",
-      tokens: "612 tokens",
-      duration: "308ms",
-      status: "TAINTED",
-      checks: "Corrupted input propagation check failed",
-    },
-  ];
+  // Build nodes dynamically from trace spans and diagnosis step_scores
+  const nodes = useMemo(() => {
+    if (!trace.spans || trace.spans.length === 0) return [];
+
+    const stepScoresMap = new Map<string, StepScore>();
+    if (diagnosis?.step_scores) {
+      diagnosis.step_scores.forEach((ss) => stepScoresMap.set(ss.step_name, ss));
+    }
+
+    // Order: intake, extraction, classification, summarization
+    const stepOrder = ["intake", "extraction", "classification", "summarization"];
+
+    return trace.spans
+      .sort((a, b) => stepOrder.indexOf(a.step_name) - stepOrder.indexOf(b.step_name))
+      .map((span, idx) => {
+        const stepScore = stepScoresMap.get(span.step_name);
+        const isFailed = stepScore && !stepScore.local_pass;
+        const isTainted = stepScore && stepScore.local_pass && !stepScore.global_pass;
+
+        // Get check count
+        const totalChecks = stepScore ? Object.keys(stepScore.deterministic_checks).length : 0;
+        const passedChecks = stepScore ? Object.values(stepScore.deterministic_checks).filter(Boolean).length : 0;
+
+        // Get root cause stage marker
+        const isRootCause = diagnosis?.root_cause_step === span.step_name;
+
+        return {
+          id: span.step_name,
+          stage: `STAGE ${String(idx + 1).padStart(2, "0")}${isRootCause ? " · ROOT CAUSE" : ""}`,
+          name: span.step_name,
+          desc: getStepDescription(span.step_name),
+          tokens: `${span.prompt_tokens + span.completion_tokens + span.reasoning_tokens} tokens`,
+          duration: `${span.latency_ms}ms`,
+          status: isFailed ? "FAILED" : isTainted ? "TAINTED" : "PASSED",
+          checks: totalChecks > 0 ? `${passedChecks}/${totalChecks} checks ${isFailed ? "failed" : "passed"}` : "No checks",
+        };
+      });
+  }, [trace, diagnosis]);
+
+  const getStepDescription = (stepName: string): string => {
+    switch (stepName) {
+      case "intake":
+        return "Document normalization · UTF-8 validation";
+      case "extraction":
+        return "Grounded entity extraction";
+      case "classification":
+        return "DocumentType strict enum mapping";
+      case "summarization":
+        return "Context synthesis & downstream consumption";
+      default:
+        return "Processing step";
+    }
+  };
+
+  const selectedNodeData = nodes.find(n => n.id === selectedNode);
 
   return (
     <div
@@ -306,13 +319,9 @@ export const DAGGraphView: React.FC<DAGGraphViewProps> = ({ trace, diagnosis }) 
           </span>
         </div>
         <p style={{ margin: 0, fontSize: "13px", color: "var(--color-ink-2)" }}>
-          {selectedNode === "classification"
-            ? "Stage 03 executed Anthropic Claude 3.5 Haiku. The model returned 'invoice_receipt_v2', which violated the strict enum domain. Backward trace analysis isolated this node with 92.4% confidence as the single root cause."
-            : selectedNode === "extraction"
-            ? "Stage 02 extracted 7 key entities (vendor, invoice_number, total_amount, tax_id) from the intake buffer. All 7 grounding checks passed cleanly."
-            : selectedNode === "intake"
-            ? "Stage 01 sanitized input text, validated UTF-8 encoding, and computed character count. Zero LLM calls made."
-            : "Stage 04 generated document summary. Because input classification failed at Stage 03, the generated summary contains tainted semantics."}
+          {selectedNodeData
+            ? `${selectedNodeData.stage}: ${selectedNodeData.tokens}, ${selectedNodeData.duration}. ${selectedNodeData.checks}. ${diagnosis?.root_cause_step === selectedNode ? "Identified as root cause by backward trace analysis." : selectedNodeData.status === "TAINTED" ? "Downstream of failed step - output may be corrupted." : "All checks passed."}`
+            : "Select a node to view its metadata."}
         </p>
       </div>
     </div>

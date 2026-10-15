@@ -7,11 +7,16 @@ Runs deterministic checks per span:
 - Context preservation: entities from extraction must appear in summarization
 - Propagation check: downstream steps must correctly read upstream outputs
 - Schema validity: LLM outputs must conform to expected structure
+- Label grounding: classification matches ground truth (when available)
 
 First span with ANY failed check = root cause.
+
+Checks are registered via the @check_plugin decorator in forensics.checks,
+so developers can add custom domain checks in 10 lines of code.
 """
 
 import contextlib
+import difflib
 import json
 import re
 from dataclasses import dataclass
@@ -20,6 +25,7 @@ from typing import Any
 
 from pydantic import ValidationError as PydanticValidationError
 
+from forensics.checks import register_builtin_checks, run_registered_checks
 from forensics.models import (
     Diagnosis,
     DocumentType,
@@ -53,6 +59,9 @@ DATE_FORMATS = (
     re.compile(r"^[A-Za-z]{3,9}\.?\s+\d{1,2}$"),
     re.compile(r"^\d{1,2}\s+[A-Za-z]{3,9}\.?$"),
 )
+
+# Register built-in checks on module import
+register_builtin_checks()
 
 
 def is_recognisable_date(value: str) -> bool:
@@ -120,7 +129,12 @@ def _extract_string_field(output_data: dict[str, Any], field: str) -> str:
 
 
 def check_entity_grounding(span: Span, document_text: str) -> list[CheckResult]:
-    """Check that all extracted entities appear in the source document."""
+    """Check that all extracted entities appear in the source document.
+
+    Uses exact substring match first, then falls back to case-insensitive
+    whitespace-normalized match, and finally to difflib.SequenceMatcher
+    with ratio >= 0.85 for minor formatting differences.
+    """
     results: list[CheckResult] = []
 
     if span.step_name != "extraction":
@@ -144,8 +158,36 @@ def check_entity_grounding(span: Span, document_text: str) -> list[CheckResult]:
         if not value:
             continue
 
+        # Exact match (fast path)
         if value in document_text:
             msg = f"Entity '{value}' ({entity_type}) found in document"
+            results.append(CheckResult("entity_grounding", True, msg, span.step_name))
+            continue
+
+        # Case-insensitive + whitespace-normalized match
+        norm_value = " ".join(value.split())
+        norm_doc = " ".join(document_text.split())
+        if norm_value.lower() in norm_doc.lower():
+            msg = f"Entity '{value}' ({entity_type}) found in document (case/whitespace normalized)"
+            results.append(CheckResult("entity_grounding", True, msg, span.step_name))
+            continue
+
+        # Fuzzy match with SequenceMatcher (ratio >= 0.85)
+        # Search for the best matching substring in the document
+        matcher = difflib.SequenceMatcher(None, value.lower(), document_text.lower())
+        best_ratio = matcher.ratio()
+
+        # Also check substrings of the document for better fuzzy matching
+        if best_ratio < 0.85 and len(value) > 3:
+            # Slide a window over the document to find best match
+            for i in range(len(document_text) - len(value) + 1):
+                sub = document_text[i:i + len(value)]
+                ratio = difflib.SequenceMatcher(None, value.lower(), sub.lower()).ratio()
+                if ratio > best_ratio:
+                    best_ratio = ratio
+
+        if best_ratio >= 0.85:
+            msg = f"Entity '{value}' ({entity_type}) fuzzy-matched in document (ratio: {best_ratio:.2f})"
             results.append(CheckResult("entity_grounding", True, msg, span.step_name))
         else:
             msg = f"Entity '{value}' ({entity_type}) NOT found in document (hallucination)"
@@ -498,15 +540,8 @@ def run_deterministic_checks(
     all_results: dict[str, list[CheckResult]] = {}
 
     for span in trace.spans:
-        step_results: list[CheckResult] = []
-
-        step_results.extend(check_entity_grounding(span, document_text))
-        step_results.extend(check_label_enum(span))
-        step_results.extend(check_label_grounding(span, expected_type))
-        step_results.extend(check_date_regex(span))
-        step_results.extend(check_context_preservation(span, trace, document_text))
-        step_results.extend(check_propagation(span, trace))
-        step_results.extend(check_prompt_schema(span))
+        # Run all registered checks for this span's step
+        step_results = run_registered_checks(span, trace, document_text)
 
         if step_results:
             all_results[span.span_id] = step_results
@@ -521,11 +556,16 @@ def build_step_scores(
 
     Repeated check kinds are aggregated with AND via `aggregate_checks`, so the
     verdict for a step cannot depend on the order its checks were produced in.
-    `document_text` is accepted for call-site symmetry but unused: global
-    fidelity is not separated from local fidelity in v0 (see the limitations doc).
+    Global fidelity accounts for upstream failures: a step that passes its own
+    checks but consumes corrupted upstream output gets global_fidelity=0.0.
     """
-    del document_text
     step_scores = []
+
+    # Step order for determining upstream/downstream relationships
+    step_order = ["intake", "extraction", "classification", "summarization"]
+
+    # Track if any upstream step has failed
+    upstream_failed = False
 
     for span in trace.spans:
         step_results = check_results.get(span.span_id, [])
@@ -534,10 +574,13 @@ def build_step_scores(
         local_pass = all(local_checks.values()) if local_checks else True
         evidence = [result.evidence for result in step_results]
 
-        # Local fidelity: all checks for this step pass.
-        # Global fidelity: identical to local in v0 (no cross-step attribution).
+        # Local fidelity: all checks for this step pass
         local_fidelity = 1.0 if local_pass else 0.0
-        global_fidelity = 1.0 if local_pass else 0.0
+
+        # Global fidelity: local fidelity AND no upstream failures
+        # If upstream failed, this step's output is tainted even if locally correct
+        global_pass = local_pass and not upstream_failed
+        global_fidelity = 1.0 if global_pass else 0.0
 
         step_scores.append(
             StepScore(
@@ -545,11 +588,15 @@ def build_step_scores(
                 local_fidelity=local_fidelity,
                 global_fidelity=global_fidelity,
                 local_pass=local_pass,
-                global_pass=local_pass,
+                global_pass=global_pass,
                 evidence=evidence,
                 deterministic_checks=local_checks,
             )
         )
+
+        # Update upstream_failed for downstream steps
+        if not local_pass:
+            upstream_failed = True
 
     return step_scores
 

@@ -1,4 +1,4 @@
-import { Trace, Diagnosis, AnalyticsSnapshot, EvalRun, Flag, FailureCategory } from "./types";
+import { Trace, Diagnosis, AnalyticsSnapshot, EvalRun, Flag, FailureCategory, EvalResult } from "./types";
 
 const API_BASE = "";
 
@@ -68,6 +68,11 @@ export const api = {
   async getEvalRuns(): Promise<EvalRun[]> {
     const res = await fetch(`${API_BASE}/eval/runs`);
     return handleResponse<EvalRun[]>(res);
+  },
+
+  async getEvalResults(runId: string): Promise<EvalResult[]> {
+    const res = await fetch(`${API_BASE}/eval/runs/${encodeURIComponent(runId)}/results`);
+    return handleResponse<EvalResult[]>(res);
   },
 
   async triggerEvalRun(): Promise<EvalRun> {

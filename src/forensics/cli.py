@@ -349,6 +349,84 @@ def analytics() -> None:
             typer.secho(f"  {entry['date']}: {rate_str}", fg=typer.colors.YELLOW)
 
 
+@app.command(name="benchmark-analyzer")
+def benchmark_analyzer() -> None:
+    """Run fault injection scorecard against a baseline trace."""
+    _setup()
+    import asyncio
+
+    from forensics.faults import score_all_faults
+    from forensics.llm import using_llm_client
+    from forensics.pipeline import Pipeline
+    from forensics.storage import Storage
+    from forensics.tracing import trace_context
+
+    # Find a clean trace to use as baseline
+    storage = Storage()
+    traces = storage.list_traces(limit=20)
+    if not traces:
+        typer.secho("No traces found. Run `demo` first.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    # Use the first trace that has no diagnosis (clean baseline)
+    baseline_trace = None
+    for trace in traces:
+        diag = storage.get_diagnosis_for_trace(trace.trace_id)
+        if diag is None or diag.root_cause_step in ("", "none"):
+            baseline_trace = trace
+            break
+
+    if baseline_trace is None:
+        baseline_trace = traces[0]
+
+    doc_path = get_settings().dataset_dir / "documents" / f"{baseline_trace.document_id}.txt"
+    if not doc_path.exists():
+        typer.secho(f"Document not found: {doc_path}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    doc_text = doc_path.read_text()
+    expected_type = None
+    labels_path = get_settings().dataset_dir / "labels.json"
+    if labels_path.exists():
+        with open(labels_path) as f:
+            labels = json.load(f)
+        for entry in labels.get("documents", []):
+            if entry.get("doc_id") == baseline_trace.document_id:
+                expected_type = entry.get("doc_type")
+                break
+
+    typer.secho(f"\n📊 Benchmark Analyzer — Fault Injection Scorecard", fg=typer.colors.BLUE, bold=True)
+    typer.secho(f"Baseline trace: {baseline_trace.trace_id} ({baseline_trace.document_id})", fg=typer.colors.CYAN)
+    typer.secho(f"Expected type: {expected_type or 'unknown'}", fg=typer.colors.CYAN)
+
+    results = score_all_faults(baseline_trace, doc_text, expected_type)
+
+    # Print header
+    typer.echo()
+    typer.secho(f"{'Fault':<25} {'Step':<18} {'Expected':<25} {'Actual Step':<18} {'Actual Cat':<25} {'Step':<6} {'Cat':<6} {'Conf':<6}",
+                fg=typer.colors.BLUE, bold=True)
+    typer.secho("─" * 140, fg=typer.colors.BLUE)
+
+    for r in results["results"]:
+        step_ok = "✓" if r["step_correct"] else "✗"
+        cat_ok = "✓" if r["category_correct"] else "✗"
+        step_color = typer.colors.GREEN if r["step_correct"] else typer.colors.RED
+        cat_color = typer.colors.GREEN if r["category_correct"] else typer.colors.RED
+
+        typer.secho(f"{r['fault']:<25} {r['expected_step']:<18} {r['expected_category']:<25} ", nl=False)
+        typer.secho(f"{r['actual_step']:<18} ", nl=False)
+        typer.secho(f"{r['actual_category']:<25} ", nl=False)
+        typer.secho(f"{step_ok:<6} ", fg=step_color, nl=False)
+        typer.secho(f"{cat_ok:<6} ", fg=cat_color, nl=False)
+        typer.secho(f"{r['confidence']:.2f}")
+
+    typer.echo()
+    typer.secho("─" * 140, fg=typer.colors.BLUE)
+    typer.secho(f"Step-Localization Accuracy: {results['step_accuracy']:.1%}", fg=typer.colors.CYAN, bold=True)
+    typer.secho(f"Category Accuracy:           {results['category_accuracy']:.1%}", fg=typer.colors.CYAN, bold=True)
+    typer.secho(f"Total Faults Tested:         {results['total']}", fg=typer.colors.CYAN)
+
+
 @app.command()
 def validate_config() -> None:
     """Validate configuration without running anything."""

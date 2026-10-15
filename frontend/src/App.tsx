@@ -545,7 +545,7 @@ export const App: React.FC = () => {
                         </div>
                         <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "var(--color-ink-3)", marginTop: "6px", fontFamily: "var(--font-mono)" }}>
                           <span>{t.spans?.length || 4} spans</span>
-                          <span>{t.duration_ms ? `${Math.round(t.duration_ms)}ms` : "1,247ms"}</span>
+                          <span>{t.total_latency_ms ? `${Math.round(t.total_latency_ms)}ms` : "1,247ms"}</span>
                         </div>
                       </div>
                     );
