@@ -172,12 +172,17 @@ def confirm_diagnosis(diagnosis_id: str, request: ConfirmDiagnosisRequest) -> Di
     storage = get_storage()
     flags = storage.list_flags_for_trace(diagnosis.trace_id)
     if not flags:
-        flag = Flag(trace_id=diagnosis.trace_id, user_id="api_user", note="Auto-created on diagnosis confirm")
+        flag = Flag(
+            trace_id=diagnosis.trace_id,
+            user_id="api_user",
+            note="Auto-created on diagnosis confirm",
+        )
         storage.create_flag(flag)
         flags = [flag]
 
     # Auto-create eval case from confirmed diagnosis
     from forensics.eval_simple import flag_to_eval_case
+
     for flag in flags:
         case = flag_to_eval_case(flag, diagnosis, storage)
         if case:
@@ -367,7 +372,9 @@ def get_analytics() -> AnalyticsSnapshot:
     failure_rate_over_time = []
     for date_str in sorted(traces_by_date.keys()):
         day_data = traces_by_date[date_str]
-        day_failure_rate = day_data["failures"] / day_data["total"] if day_data["total"] > 0 else 0.0
+        day_failure_rate = (
+            day_data["failures"] / day_data["total"] if day_data["total"] > 0 else 0.0
+        )
         failure_rate_over_time.append({"timestamp": date_str, "failure_rate": day_failure_rate})
 
     return AnalyticsSnapshot(

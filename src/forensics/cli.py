@@ -353,13 +353,9 @@ def analytics() -> None:
 def benchmark_analyzer() -> None:
     """Run fault injection scorecard against a baseline trace."""
     _setup()
-    import asyncio
 
     from forensics.faults import score_all_faults
-    from forensics.llm import using_llm_client
-    from forensics.pipeline import Pipeline
     from forensics.storage import Storage
-    from forensics.tracing import trace_context
 
     # Find a clean trace to use as baseline
     storage = Storage()
@@ -395,16 +391,25 @@ def benchmark_analyzer() -> None:
                 expected_type = entry.get("doc_type")
                 break
 
-    typer.secho(f"\n📊 Benchmark Analyzer — Fault Injection Scorecard", fg=typer.colors.BLUE, bold=True)
-    typer.secho(f"Baseline trace: {baseline_trace.trace_id} ({baseline_trace.document_id})", fg=typer.colors.CYAN)
+    typer.secho(
+        "\n📊 Benchmark Analyzer — Fault Injection Scorecard", fg=typer.colors.BLUE, bold=True
+    )
+    typer.secho(
+        f"Baseline trace: {baseline_trace.trace_id} ({baseline_trace.document_id})",
+        fg=typer.colors.CYAN,
+    )
     typer.secho(f"Expected type: {expected_type or 'unknown'}", fg=typer.colors.CYAN)
 
     results = score_all_faults(baseline_trace, doc_text, expected_type)
 
     # Print header
     typer.echo()
-    typer.secho(f"{'Fault':<25} {'Step':<18} {'Expected':<25} {'Actual Step':<18} {'Actual Cat':<25} {'Step':<6} {'Cat':<6} {'Conf':<6}",
-                fg=typer.colors.BLUE, bold=True)
+    typer.secho(
+        f"{'Fault':<25} {'Step':<18} {'Expected':<25} {'Actual Step':<18} "
+        f"{'Actual Cat':<25} {'Step':<6} {'Cat':<6} {'Conf':<6}",
+        fg=typer.colors.BLUE,
+        bold=True,
+    )
     typer.secho("─" * 140, fg=typer.colors.BLUE)
 
     for r in results["results"]:
@@ -413,7 +418,9 @@ def benchmark_analyzer() -> None:
         step_color = typer.colors.GREEN if r["step_correct"] else typer.colors.RED
         cat_color = typer.colors.GREEN if r["category_correct"] else typer.colors.RED
 
-        typer.secho(f"{r['fault']:<25} {r['expected_step']:<18} {r['expected_category']:<25} ", nl=False)
+        typer.secho(
+            f"{r['fault']:<25} {r['expected_step']:<18} {r['expected_category']:<25} ", nl=False
+        )
         typer.secho(f"{r['actual_step']:<18} ", nl=False)
         typer.secho(f"{r['actual_category']:<25} ", nl=False)
         typer.secho(f"{step_ok:<6} ", fg=step_color, nl=False)
@@ -422,8 +429,16 @@ def benchmark_analyzer() -> None:
 
     typer.echo()
     typer.secho("─" * 140, fg=typer.colors.BLUE)
-    typer.secho(f"Step-Localization Accuracy: {results['step_accuracy']:.1%}", fg=typer.colors.CYAN, bold=True)
-    typer.secho(f"Category Accuracy:           {results['category_accuracy']:.1%}", fg=typer.colors.CYAN, bold=True)
+    typer.secho(
+        f"Step-Localization Accuracy: {results['step_accuracy']:.1%}",
+        fg=typer.colors.CYAN,
+        bold=True,
+    )
+    typer.secho(
+        f"Category Accuracy:           {results['category_accuracy']:.1%}",
+        fg=typer.colors.CYAN,
+        bold=True,
+    )
     typer.secho(f"Total Faults Tested:         {results['total']}", fg=typer.colors.CYAN)
 
 

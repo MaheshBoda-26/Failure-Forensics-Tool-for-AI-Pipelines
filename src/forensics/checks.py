@@ -12,8 +12,8 @@ Usage:
         ...
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Any
 
 from forensics.analyzer_simple import CheckResult
 from forensics.models import Span, Trace
@@ -22,6 +22,7 @@ from forensics.models import Span, Trace
 @dataclass(frozen=True)
 class CheckPlugin:
     """Metadata for a registered check."""
+
     name: str
     step: str | None  # None = all steps
     func: Callable[[Span, Trace, str], list[CheckResult]]
@@ -36,7 +37,10 @@ def check_plugin(
     name: str,
     step: str | None = None,
     description: str = "",
-) -> Callable[[Callable[[Span, Trace, str], list[CheckResult]]], Callable[[Span, Trace, str], list[CheckResult]]]:
+) -> Callable[
+    [Callable[[Span, Trace, str], list[CheckResult]]],
+    Callable[[Span, Trace, str], list[CheckResult]],
+]:
     """Decorator to register a deterministic check.
 
     Args:
@@ -48,6 +52,7 @@ def check_plugin(
     Returns:
         The original function, unchanged, for use as a normal function.
     """
+
     def decorator(
         func: Callable[[Span, Trace, str], list[CheckResult]],
     ) -> Callable[[Span, Trace, str], list[CheckResult]]:
@@ -73,14 +78,13 @@ def get_all_checks() -> list[CheckPlugin]:
 def get_checks_for_step(step_name: str) -> list[CheckPlugin]:
     """Get all checks that apply to a specific step."""
     return [
-        plugin for plugin in _CHECK_REGISTRY.values()
+        plugin
+        for plugin in _CHECK_REGISTRY.values()
         if plugin.step is None or plugin.step == step_name
     ]
 
 
-def run_registered_checks(
-    span: Span, trace: Trace, document_text: str
-) -> list[CheckResult]:
+def run_registered_checks(span: Span, trace: Trace, document_text: str) -> list[CheckResult]:
     """Run all registered checks for a span's step."""
     results: list[CheckResult] = []
     for plugin in get_checks_for_step(span.step_name):
@@ -88,12 +92,14 @@ def run_registered_checks(
             results.extend(plugin.func(span, trace, document_text))
         except Exception as e:
             # A misbehaving check should not crash the analyzer
-            results.append(CheckResult(
-                check_name=plugin.name,
-                passed=False,
-                evidence=f"Check raised exception: {e}",
-                step_name=span.step_name,
-            ))
+            results.append(
+                CheckResult(
+                    check_name=plugin.name,
+                    passed=False,
+                    evidence=f"Check raised exception: {e}",
+                    step_name=span.step_name,
+                )
+            )
     return results
 
 
@@ -101,26 +107,47 @@ def run_registered_checks(
 def register_builtin_checks() -> None:
     """Register the 7 built-in deterministic checks."""
     from forensics.analyzer_simple import (
+        check_context_preservation,
+        check_date_regex,
         check_entity_grounding,
         check_label_enum,
         check_label_grounding,
-        check_date_regex,
-        check_context_preservation,
-        check_propagation,
         check_prompt_schema,
+        check_propagation,
     )
 
-    check_plugin("entity_grounding", step="extraction",
-                 description="Extracted entity value must appear in source document")(check_entity_grounding)
-    check_plugin("label_enum", step="classification",
-                 description="Classification output must be a valid DocumentType")(check_label_enum)
-    check_plugin("label_grounding", step="classification",
-                 description="Classification must match ground-truth label when available")(check_label_grounding)
-    check_plugin("date_regex", step="extraction",
-                 description="Date entities must match YYYY-MM-DD or recognized formats")(check_date_regex)
-    check_plugin("context_preservation", step="summarization",
-                 description="Extraction entities must appear in summarization output")(check_context_preservation)
-    check_plugin("propagation", step="summarization",
-                 description="Downstream steps must correctly consume upstream outputs")(check_propagation)
-    check_plugin("prompt_schema", step=None,
-                 description="LLM outputs must conform to expected schema structure")(check_prompt_schema)
+    check_plugin(
+        "entity_grounding",
+        step="extraction",
+        description="Extracted entity value must appear in source document",
+    )(check_entity_grounding)
+    check_plugin(
+        "label_enum",
+        step="classification",
+        description="Classification output must be a valid DocumentType",
+    )(check_label_enum)
+    check_plugin(
+        "label_grounding",
+        step="classification",
+        description="Classification must match ground-truth label when available",
+    )(check_label_grounding)
+    check_plugin(
+        "date_regex",
+        step="extraction",
+        description="Date entities must match YYYY-MM-DD or recognized formats",
+    )(check_date_regex)
+    check_plugin(
+        "context_preservation",
+        step="summarization",
+        description="Extraction entities must appear in summarization output",
+    )(check_context_preservation)
+    check_plugin(
+        "propagation",
+        step="summarization",
+        description="Downstream steps must correctly consume upstream outputs",
+    )(check_propagation)
+    check_plugin(
+        "prompt_schema",
+        step=None,
+        description="LLM outputs must conform to expected schema structure",
+    )(check_prompt_schema)

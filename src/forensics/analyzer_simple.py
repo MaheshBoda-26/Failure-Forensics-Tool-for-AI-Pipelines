@@ -181,13 +181,16 @@ def check_entity_grounding(span: Span, document_text: str) -> list[CheckResult]:
         if best_ratio < 0.85 and len(value) > 3:
             # Slide a window over the document to find best match
             for i in range(len(document_text) - len(value) + 1):
-                sub = document_text[i:i + len(value)]
+                sub = document_text[i : i + len(value)]
                 ratio = difflib.SequenceMatcher(None, value.lower(), sub.lower()).ratio()
                 if ratio > best_ratio:
                     best_ratio = ratio
 
         if best_ratio >= 0.85:
-            msg = f"Entity '{value}' ({entity_type}) fuzzy-matched in document (ratio: {best_ratio:.2f})"
+            msg = (
+                f"Entity '{value}' ({entity_type}) fuzzy-matched in document "
+                f"(ratio: {best_ratio:.2f})"
+            )
             results.append(CheckResult("entity_grounding", True, msg, span.step_name))
         else:
             msg = f"Entity '{value}' ({entity_type}) NOT found in document (hallucination)"
@@ -560,9 +563,6 @@ def build_step_scores(
     checks but consumes corrupted upstream output gets global_fidelity=0.0.
     """
     step_scores = []
-
-    # Step order for determining upstream/downstream relationships
-    step_order = ["intake", "extraction", "classification", "summarization"]
 
     # Track if any upstream step has failed
     upstream_failed = False

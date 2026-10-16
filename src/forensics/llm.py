@@ -753,11 +753,22 @@ class NIMClient:
             # Detect document type from prompt content
             doc_type = DocumentType.CONTRACT
             prompt_lower = prompt.lower()
-            if "invoice" in prompt_lower or "tax invoice" in prompt_lower or "bill to" in prompt_lower:
+            if (
+                "invoice" in prompt_lower
+                or "tax invoice" in prompt_lower
+                or "bill to" in prompt_lower
+            ):
                 doc_type = DocumentType.INVOICE
-            elif "report" in prompt_lower or "analysis" in prompt_lower or "findings" in prompt_lower:
+            elif (
+                "report" in prompt_lower or "analysis" in prompt_lower or "findings" in prompt_lower
+            ):
                 doc_type = DocumentType.REPORT
-            elif "dear" in prompt_lower or "email" in prompt_lower or "letter" in prompt_lower or "memo" in prompt_lower:
+            elif (
+                "dear" in prompt_lower
+                or "email" in prompt_lower
+                or "letter" in prompt_lower
+                or "memo" in prompt_lower
+            ):
                 doc_type = DocumentType.CORRESPONDENCE
             elif "mixed" in prompt_lower or "proposal" in prompt_lower:
                 doc_type = DocumentType.MIXED
@@ -765,9 +776,22 @@ class NIMClient:
             # Seeded failure document IDs and their expected behaviors
             seeded_failures: dict[str, dict] = {
                 "contract_001": {"doc_type": DocumentType.INVOICE},  # misclassification
-                "invoice_001": {"entities": [Entity(value="Fake Vendor Inc", entity_type="organization", start_offset=0, end_offset=10)]},  # extraction_hallucination
-                "report_001": {"summary": "This is a contract agreement between parties..."},  # prompt_failure (wrong doc type terminology)
-                "correspondence_001": {"summary": "The invoice total is $5000 per the contract terms."},  # propagation_error
+                "invoice_001": {
+                    "entities": [
+                        Entity(
+                            value="Fake Vendor Inc",
+                            entity_type="organization",
+                            start_offset=0,
+                            end_offset=10,
+                        )
+                    ]
+                },  # extraction_hallucination
+                "report_001": {
+                    "summary": "This is a contract agreement between parties..."
+                },  # prompt_failure (wrong doc type terminology)
+                "correspondence_001": {
+                    "summary": "The invoice total is $5000 per the contract terms."
+                },  # propagation_error
                 "mixed_001": {"doc_type": DocumentType.CONTRACT},  # misclassification
             }
 
@@ -790,12 +814,18 @@ class NIMClient:
                 )
             elif response_model == ClassificationOutput:
                 parsed = ClassificationOutput(
-                    document_type=matched_failure.get("doc_type", doc_type) if matched_failure else doc_type,
-                    confidence=0.42 if matched_failure and matched_failure.get("doc_type") else 0.95,
+                    document_type=matched_failure.get("doc_type", doc_type)
+                    if matched_failure
+                    else doc_type,
+                    confidence=0.42
+                    if matched_failure and matched_failure.get("doc_type")
+                    else 0.95,
                 )
             elif response_model == SummaryOutput:
                 parsed = SummaryOutput(
-                    summary=matched_failure.get("summary", f"Dry run summary for {doc_type}") if matched_failure else f"Dry run summary for {doc_type}",
+                    summary=matched_failure.get("summary", f"Dry run summary for {doc_type}")
+                    if matched_failure
+                    else f"Dry run summary for {doc_type}",
                     key_points=[],
                 )
             else:
@@ -821,7 +851,7 @@ class NIMClient:
                 raw_response={},
                 parsed=parsed,
                 cached=True,
-            );
+            )
 
         # Check cache first
         cached = self.cache.get(
