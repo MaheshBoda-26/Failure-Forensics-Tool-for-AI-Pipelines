@@ -9,6 +9,7 @@ import json
 import signal
 import sys
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
@@ -16,7 +17,7 @@ from forensics.analyzer_simple import analyze_trace
 from forensics.auth import AuthManager
 from forensics.config import get_settings, validate_startup
 from forensics.llm import using_llm_client
-from forensics.models import Document, DocumentType, FailureCategory
+from forensics.models import DEFAULT_TENANT_ID, Document, DocumentType, FailureCategory
 from forensics.pipeline import Pipeline
 from forensics.storage import Storage
 from forensics.tracing import trace_context
@@ -638,6 +639,146 @@ def scheduler_status() -> None:
             )
     else:
         typer.secho("\n  No eval runs yet.", fg=typer.colors.YELLOW)
+
+
+# ─── worker + queue (spec 07) ───────────────────────────────────────────────
+
+worker_app = typer.Typer(help="Pipeline worker (spec 07)", no_args_is_help=True)
+app.add_typer(worker_app, name="worker")
+queue_app = typer.Typer(help="Enqueue and inspect pipeline jobs (spec 07)", no_args_is_help=True)
+app.add_typer(queue_app, name="queue")
+
+
+@worker_app.command("start")
+def worker_start() -> None:
+    """Run a worker in the foreground until SIGTERM/SIGINT.
+
+    `_setup()` runs first: a worker that cannot call a model has nothing to do,
+    so failing on a bad configuration here is better than failing per job.
+    """
+    import asyncio
+
+    from forensics.queue import get_queue
+    from forensics.worker import PipelineWorker
+
+    _setup()
+    settings = get_settings()
+    typer.secho(
+        f"Worker starting (concurrency={settings.queue_worker_concurrency}, "
+        f"poll={settings.queue_poll_interval}s). Stop with Ctrl-C.",
+        fg=typer.colors.GREEN,
+        err=True,
+    )
+    worker = PipelineWorker(Storage(), get_queue())
+    try:
+        asyncio.run(worker.run())
+    except KeyboardInterrupt:
+        worker.stop()
+
+
+@queue_app.command("enqueue")
+def queue_enqueue(
+    # `Annotated` for this parameter alone because it is a `Path`: ruff's B008
+    # exemption for Typer only covers immutable annotations (str/int/bool/...),
+    # and `exists=True` is worth keeping for validation and the generated --help.
+    file: Annotated[Path, typer.Option("--file", exists=True, dir_okay=False)],
+    doc_id: str = typer.Option(None, "--doc-id", help="Document id (defaults to the file stem)"),
+    expected: str = typer.Option(None, "--expected", help="Expected document type (ground truth)"),
+    priority: int = typer.Option(0, "--priority", help="Higher runs first"),
+) -> None:
+    """Queue a document for asynchronous processing."""
+    from forensics.queue import get_queue
+
+    expected_type: str | None = None
+    if expected is not None:
+        valid = [member.value for member in DocumentType]
+        if expected not in valid:
+            typer.secho(
+                f"Unknown --expected {expected!r}. Valid values: {', '.join(valid)}",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        expected_type = expected
+
+    resolved_doc_id = doc_id or file.stem
+    job = get_queue().enqueue(
+        DEFAULT_TENANT_ID,
+        {
+            "doc_id": resolved_doc_id,
+            "doc_text": file.read_text(),
+            "expected_type": expected_type,
+        },
+        priority=priority,
+    )
+    typer.secho(f"Queued job {job.job_id} for {resolved_doc_id}", fg=typer.colors.GREEN, err=True)
+    typer.echo(job.job_id)
+
+
+@queue_app.command("status")
+def queue_status(job_id: str = typer.Option(..., "--job-id", help="Job to inspect")) -> None:
+    """Show one job's status, result, and error."""
+    from forensics.queue import get_queue
+
+    job = get_queue().get_job(job_id)
+    if job is None:
+        typer.secho(f"No job with id {job_id}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    color = {
+        "completed": typer.colors.GREEN,
+        "failed": typer.colors.RED,
+    }.get(job.status.value, typer.colors.YELLOW)
+    typer.secho(f"\nJob {job.job_id}", fg=typer.colors.BLUE, bold=True)
+    typer.secho(f"  Status: {job.status.value}", fg=color, bold=True)
+    typer.echo(f"  Tenant: {job.tenant_id}")
+    typer.echo(f"  Priority: {job.priority}  Attempts: {job.attempts}/{job.max_attempts}")
+    typer.echo(f"  Created: {job.created_at}")
+    typer.echo(f"  Started: {job.started_at or '-'}  Completed: {job.completed_at or '-'}")
+    typer.echo(f"  Worker: {job.worker_id or '-'}")
+    if job.error:
+        typer.secho(f"  Error: {job.error}", fg=typer.colors.RED)
+    if job.result:
+        typer.echo(f"  Result: {json.dumps(job.result)}")
+
+
+@queue_app.command("list")
+def queue_list(
+    status: str = typer.Option(None, "--status", help="Filter: pending|running|completed|failed"),
+    tenant: str = typer.Option(None, "--tenant", help="Filter by tenant id"),
+    limit: int = typer.Option(50, "--limit", help="Maximum rows"),
+) -> None:
+    """List queued jobs, newest first."""
+    from forensics.queue import JobStatus, get_queue
+
+    job_status: JobStatus | None = None
+    if status is not None:
+        try:
+            job_status = JobStatus(status)
+        except ValueError:
+            valid = ", ".join(member.value for member in JobStatus)
+            typer.secho(
+                f"Unknown --status {status!r}. Valid values: {valid}", fg=typer.colors.RED, err=True
+            )
+            raise typer.Exit(code=1) from None
+
+    jobs = get_queue().list_jobs(tenant_id=tenant, status=job_status, limit=limit)
+    if not jobs:
+        typer.secho("No jobs match.", fg=typer.colors.YELLOW, err=True)
+        return
+
+    typer.secho(f"{'job_id':<18} {'status':<10} {'attempts':<9} {'doc_id':<20} created", bold=True)
+    for job in jobs:
+        doc_id = job.payload.get("doc_id", "-")
+        typer.echo(
+            f"{job.job_id:<18} {job.status.value:<10} "
+            f"{f'{job.attempts}/{job.max_attempts}':<9} {doc_id!s:<20} {job.created_at}"
+        )
+    counts = get_queue().counts()
+    typer.secho(
+        "\n  Totals: " + ", ".join(f"{name}={count}" for name, count in sorted(counts.items())),
+        fg=typer.colors.BLUE,
+    )
 
 
 def main() -> None:

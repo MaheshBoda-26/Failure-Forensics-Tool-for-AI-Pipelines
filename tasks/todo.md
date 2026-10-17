@@ -92,9 +92,32 @@ Decisions worth recording:
   duplicate criterion number, `SCHEDULER_DB_PATH`, dependency list, and an
   "Implementation notes" section recording the four deliberate divergences.
 
-## Phase 5 — 07-worker-queue
-- [ ] T14. `queue.py` + `worker.py`
-- [ ] T15. API/CLI + `tests/test_queue.py`
+## Phase 5 — 07-worker-queue  ✅
+- [x] T14. `queue.py` + `worker.py`
+- [x] T15. API (`POST /pipeline/run`, `GET /jobs`, `GET /jobs/{id}`) + CLI (`worker start`,
+      `queue enqueue|status|list`) + `tests/test_queue.py` (43 tests, all 8 acceptance criteria)
+
+Decisions worth recording:
+- **One `process_document` for both modes.** The API's synchronous path and the worker call
+  the same function, so inline and queued runs cannot drift. It stamps `tenant_id` on the
+  trace *and* the diagnosis — the spec's worker sketch stamped neither, which would have
+  leaked every queued job's records into `default`.
+- **A finished job's payload is cleared.** The payload carries the raw document text, and
+  spec 03 promises the unredacted original never reaches disk; retaining it for
+  `QUEUE_JOB_TTL` (24h) broke that promise for every queued job. Retries keep it.
+- **`busy_timeout=5000` on every connection.** Without it the second worker to write gets
+  `database is locked` instead of waiting, so criterion 6 would be false in practice even
+  though the claim itself is atomic.
+- **`Job` is a pydantic model** (not the sketch's dataclass) so the API has a real response
+  schema, and `status` is an enum, which gives `?status=` its validation.
+- **`run_once(pipeline)` is the seam.** `run()` owns the LLM client and the loop; signal
+  handlers are best-effort, so the loop is always stoppable via `stop()`.
+- `expected_type` on the API is constrained to `DocumentType`: an arbitrary string would
+  silently disable the analyzer's ground-truth check.
+- Concurrency is tested two ways: sequential claims (3+3 distinct) and 4 threads racing for
+  20 jobs, asserting each job is claimed exactly once.
+- Spec 07 corrected: it used `datetime`/`UTC` with no import, built the queue at import
+  time, and its criteria/call shapes are now annotated with what actually ships.
 
 ## Phase 6 — Deploy
 - [ ] T16. render.yaml / Dockerfile + persistent disk

@@ -193,6 +193,9 @@ PROTECTED_ENDPOINTS: list[tuple[str, str, dict[str, object] | None]] = [
     ("POST", "/eval/run", None),
     ("GET", "/analytics", None),
     ("POST", "/pipeline/run-demo", None),
+    ("POST", "/pipeline/run", {"doc_id": "d", "doc_text": "x"}),
+    ("GET", "/jobs", None),
+    ("GET", "/jobs/j1", None),
     ("GET", "/scheduler/status", None),
 ]
 

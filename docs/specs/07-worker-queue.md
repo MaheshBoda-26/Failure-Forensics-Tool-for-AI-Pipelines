@@ -321,56 +321,71 @@ async def run_worker():
 
 ### `src/forensics/api.py`
 ```python
-from forensics.queue import JobQueue, Job
-
-queue = JobQueue(get_settings().db_path)
-
-
-@app.post("/pipeline/run", response_model=Job)
-def enqueue_pipeline(request: PipelineRunRequest, tenant: Tenant = Depends(get_current_tenant)):
-    """Enqueue a document for async pipeline processing."""
-    payload = {
-        "doc_id": request.doc_id,
-        "doc_text": request.doc_text,
-        "expected_type": request.expected_type,
-    }
-    job = queue.enqueue(tenant.tenant_id, payload, priority=request.priority)
-    return job
-
-
-@app.get("/jobs/{job_id}", response_model=Job)
-def get_job(job_id: str, tenant: Tenant = Depends(get_current_tenant)):
-    job = queue.get_job(job_id)
-    if not job or job.tenant_id != tenant.tenant_id:
-        raise HTTPException(404, "Job not found")
-    return job
-
-
-@app.get("/jobs", response_model=list[Job])
-def list_jobs(tenant: Tenant = Depends(get_current_tenant), status: str | None = None):
-    return queue.list_jobs(tenant.tenant_id, status=status)
+# POST /pipeline/run                          -> runs inline, or 202 + job_id
+# GET  /jobs?status=pending                   -> this tenant's jobs
+# GET  /jobs/{job_id}                         -> 404 for another tenant's job
 ```
+
+`POST /pipeline/run` is the switch between the two modes: with
+`QUEUE_ENABLED=false` it processes the document inline and returns the finished
+trace, and with `QUEUE_ENABLED=true` it enqueues and answers 202 with a `job_id`.
 
 ### `src/forensics/cli.py`
 ```bash
-forensics worker start          # run worker (foreground)
-forensics queue enqueue --doc-id X --file path.txt --expected invoice
+forensics worker start                              # run worker (foreground)
+forensics queue enqueue --file path.txt --expected invoice
 forensics queue status --job-id X
 forensics queue list --status pending
 ```
 
+## Implementation notes
+
+The sketch above is a design sketch; the shipped code differs in five places.
+
+1. **`Job` is a pydantic model, not a dataclass.** The API returns jobs directly,
+   so the response needs a real schema rather than pydantic guessing at an
+   untyped `payload: dict`. `status` is a `JobStatus` enum, which also gives
+   `GET /jobs?status=` its validation for free.
+2. **A finished job's payload is cleared.** The payload carries the raw document
+   text, and spec 03 promises the unredacted original never reaches disk. Keeping
+   it for `QUEUE_JOB_TTL` (24h by default) would break that promise for every
+   queued job. Retries keep the payload; `completed`/`failed` do not.
+3. **`busy_timeout=5000` is set on every connection.** Without it, the second
+   worker to write raises `database is locked` instead of waiting, which makes
+   the "multiple workers" criterion false in practice even though the claim is
+   atomic.
+4. **One `process_document` serves both modes.** The API's synchronous path and
+   the worker call the same function, so an inline run and a queued run cannot
+   drift apart. It stamps `tenant_id` on both the trace and the diagnosis, which
+   the sketch omitted — a job enqueued by tenant A must not write records tenant
+   B can read.
+5. **`run_once(pipeline)` is the testable seam.** `run()` owns the LLM client
+   lifecycle and the loop; `run_once` claims and processes exactly one batch.
+   Signal handlers are installed best-effort (`loop.add_signal_handler` only
+   works on the main thread and is not available on Windows), so the loop is
+   always stoppable via `stop()`.
+
+Also: `datetime`/`UTC` were used without an import in the sketch; the API's
+`PipelineRunRequest.expected_type` is constrained to `DocumentType` so a typo
+cannot silently switch the analyzer's ground-truth check off; and the queue is
+built lazily (`get_queue()`), because constructing it at import time creates the
+SQLite file as an import side effect.
+
 ## Acceptance Criteria
-1. `QUEUE_ENABLED=false`: API runs pipeline synchronously (current behavior)
-2. `QUEUE_ENABLED=true`: `POST /pipeline/run` returns `job_id` immediately (202)
-3. Worker picks up job, processes pipeline, saves trace + diagnosis
-4. `GET /jobs/{id}` returns job with result (trace_id) or error
-5. Retry on failure (max 3 attempts), then status=failed
-6. Multiple workers can run (each claims distinct jobs via atomic UPDATE)
-7. `forensics worker start` runs until SIGTERM
-8. Job TTL cleanup (optional): delete completed/failed > 24h
+1. `QUEUE_ENABLED=false`: `POST /pipeline/run` runs the pipeline synchronously
+2. `QUEUE_ENABLED=true`: `POST /pipeline/run` returns 202 with a `job_id`
+3. Worker picks up a job, processes the pipeline, saves the trace + diagnosis
+   (both stamped with the job's tenant)
+4. `GET /jobs/{id}` returns the job with its result (`trace_id`) or error;
+   another tenant's job is a 404
+5. Retry on failure (up to `max_attempts`, default 3), then `status=failed`
+6. Multiple workers claim distinct jobs (one atomic `UPDATE ... RETURNING`)
+7. `forensics worker start` runs until SIGTERM/SIGINT
+8. Job TTL cleanup deletes finished jobs older than `QUEUE_JOB_TTL`
 
 ## Effort
-- **Files**: 2 new (`queue.py`, `worker.py`), 2 modified
+- **Files**: 2 new (`queue.py`, `worker.py`), 3 modified (`config.py`, `api.py`, `cli.py`)
+- **Deps**: none new (SQLite + stdlib)
 - **Time**: ~5 hours
 - **Risk**: Medium (concurrency, async worker, atomic claims)
 
@@ -378,4 +393,5 @@ forensics queue list --status pending
 1. Deploy queue schema (backward compatible)
 2. Enable `QUEUE_ENABLED=true` with workers running
 3. API returns 202 + job_id; clients poll `/jobs/{id}`
-4. Later: add callback/webhook on job completion
+4. Later: add callback/webhook on job completion, and a reaper for jobs whose
+   worker died mid-run (currently they stay `running`; see `docs/limitations.md`)

@@ -11,10 +11,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from forensics.analyzer_simple import analyze_trace
 from forensics.auth import AuthManager
@@ -23,6 +23,7 @@ from forensics.models import (
     DEFAULT_TENANT_ID,
     AnalyticsSnapshot,
     Diagnosis,
+    DocumentType,
     EvalCase,
     EvalResult,
     EvalRun,
@@ -32,6 +33,7 @@ from forensics.models import (
     Trace,
     TraceStatus,
 )
+from forensics.queue import Job, JobStatus, get_queue
 from forensics.storage import Storage
 
 
@@ -165,6 +167,30 @@ class ConfirmDiagnosisRequest(BaseModel):
     confirmed: bool
     override_category: FailureCategory | None = None
     override_reason: str | None = None
+
+
+class PipelineRunRequest(BaseModel):
+    """Body for POST /pipeline/run.
+
+    `expected_type` is constrained to the known document types because it is
+    ground truth for the analyzer's label check: an arbitrary string would be
+    silently accepted and then never match.
+    """
+
+    doc_id: str = Field(..., min_length=1)
+    doc_text: str = Field(..., min_length=1)
+    expected_type: DocumentType | None = None
+    priority: int = Field(default=0, description="Higher runs first")
+
+
+class PipelineRunResponse(BaseModel):
+    """Either a finished run (synchronous mode) or a queued one (`QUEUE_ENABLED`)."""
+
+    status: str
+    trace_id: str | None = None
+    diagnosis_id: str | None = None
+    root_cause_step: str | None = None
+    job_id: str | None = None
 
 
 @app.get("/health")
@@ -475,6 +501,76 @@ async def trigger_pipeline_demo(
                     traces_saved += 1
 
     return {"status": "ok", "traces_saved": traces_saved}
+
+
+@app.post("/pipeline/run", response_model=PipelineRunResponse)
+async def run_pipeline(
+    request: PipelineRunRequest,
+    response: Response,
+    authorization: Annotated[str | None, Header()] = None,
+) -> PipelineRunResponse:
+    """Process one document — inline, or on a worker when `QUEUE_ENABLED` is true.
+
+    With the queue disabled this is the previous behaviour: a synchronous run
+    that returns the finished trace. With it enabled the document is queued and
+    the request answers 202 with a `job_id` to poll.
+    """
+    tenant = get_current_tenant(authorization)
+    expected_type = request.expected_type.value if request.expected_type else None
+
+    if get_settings().queue_enabled:
+        job = get_queue().enqueue(
+            tenant.tenant_id,
+            {
+                "doc_id": request.doc_id,
+                "doc_text": request.doc_text,
+                "expected_type": expected_type,
+            },
+            priority=request.priority,
+        )
+        response.status_code = 202
+        return PipelineRunResponse(status="queued", job_id=job.job_id)
+
+    from forensics.llm import using_llm_client
+    from forensics.pipeline import Pipeline
+    from forensics.worker import process_document
+
+    async with using_llm_client() as client:
+        result = await process_document(
+            Pipeline(client=client),
+            get_storage(),
+            doc_id=request.doc_id,
+            doc_text=request.doc_text,
+            expected_type=expected_type,
+            tenant_id=tenant.tenant_id,
+        )
+    return PipelineRunResponse(
+        status="completed",
+        trace_id=result["trace_id"],
+        diagnosis_id=result["diagnosis_id"],
+        root_cause_step=result["root_cause_step"],
+    )
+
+
+@app.get("/jobs", response_model=list[Job])
+def list_jobs(
+    status: JobStatus | None = None,
+    limit: int = 100,
+    authorization: Annotated[str | None, Header()] = None,
+) -> list[Job]:
+    """List queued jobs, newest first."""
+    tenant = get_current_tenant(authorization)
+    return get_queue().list_jobs(tenant_id=tenant_scope(tenant), status=status, limit=limit)
+
+
+@app.get("/jobs/{job_id}", response_model=Job)
+def get_job(job_id: str, authorization: Annotated[str | None, Header()] = None) -> Job:
+    """Fetch one job. Another tenant's job is indistinguishable from a missing one."""
+    tenant = get_current_tenant(authorization)
+    job = get_queue().get_job(job_id, tenant_id=tenant_scope(tenant))
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
 
 
 @app.get("/analytics")

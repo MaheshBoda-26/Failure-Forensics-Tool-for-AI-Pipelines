@@ -219,6 +219,21 @@ class Settings(BaseSettings):
         default=True, description="Also alert when a previously failing case now passes"
     )
 
+    # --- Worker queue (spec 07) ---
+    queue_enabled: bool = Field(
+        default=False,
+        description="Process pipeline runs on workers instead of inline (QUEUE_ENABLED)",
+    )
+    queue_worker_concurrency: int = Field(
+        default=2, ge=1, le=32, description="Jobs a worker claims per poll"
+    )
+    queue_poll_interval: float = Field(
+        default=1.0, gt=0.0, description="Seconds between polls when the queue is empty"
+    )
+    queue_job_ttl: int = Field(
+        default=86400, ge=0, description="Seconds a finished job is retained before cleanup"
+    )
+
     # --- Versions ---
     pipeline_version: str = Field(default="0.1.0")
     schema_version: int = Field(default=1)
