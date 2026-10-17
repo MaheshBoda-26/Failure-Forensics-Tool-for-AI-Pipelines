@@ -31,7 +31,9 @@ class Redaction:
 
 # Pre-compiled patterns (fast, no backtracking)
 PATTERNS: dict[str, Pattern] = {
-    "api_key": re.compile(r"(sk|pk|rk)_(or|live|test)_[a-zA-Z0-9]{32,}"),
+    "api_key": re.compile(
+        r"\b(?:nvapi-[A-Za-z0-9_-]{16,}|(?:sk|pk|rk)[-_](?:or|live|test)[-_][A-Za-z0-9_-]{16,})\b"
+    ),
     "email": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"),
     "phone": re.compile(r"(\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"),
     "credit_card": re.compile(r"\b(?:\d{4}[-.\s]?){3}\d{4}\b"),
@@ -141,11 +143,11 @@ pii_redaction_char: str = Field(default="█")
 
 ## Acceptance Criteria
 1. `PII_REDACTION_ENABLED=false`: zero overhead, no redaction
-2. `PII_REDACTION_ENABLED=true`: `sk-or-abc123...` → `████████████████████████████████`
-3. Email `user@company.com` → `██████████████████`
-4. Phone `+1-555-123-4567` → `█████████████████`
-5. Credit card `4111 1111 1111 1111` → `████ ████ ████ ████`
-6. SSN `123-45-6789` → `███-██-████`
+2. `PII_REDACTION_ENABLED=true`: `sk-or-v1-…` (73 chars) → 73 `█`
+3. Email `user@company.com` → 16 `█`
+4. Phone `+1-555-123-4567` → 15 `█`
+5. Credit card `4111 1111 1111 1111` → 19 `█` (separators are masked too)
+6. SSN `123-45-6789` → 11 `█` (separators are masked too)
 7. JWT tokens fully redacted
 8. Custom patterns work: `{"name": "internal_id", "pattern": "INT-\\d{8}", "replacement": "[REDACTED]"}` → `INT-12345678` → `[REDACTED]`
 9. Redaction happens **before** JSON + SQLite write; original never hits disk

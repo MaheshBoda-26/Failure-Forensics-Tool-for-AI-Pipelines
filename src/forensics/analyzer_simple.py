@@ -25,7 +25,6 @@ from typing import Any
 
 from pydantic import ValidationError as PydanticValidationError
 
-from forensics.checks import register_builtin_checks, run_registered_checks
 from forensics.models import (
     Diagnosis,
     DocumentType,
@@ -60,8 +59,12 @@ DATE_FORMATS = (
     re.compile(r"^\d{1,2}\s+[A-Za-z]{3,9}\.?$"),
 )
 
-# Register built-in checks on module import
-register_builtin_checks()
+# Built-in checks are registered by `forensics.checks` when it is first
+# imported. That import is deliberately NOT done here at module scope:
+# `checks` imports `CheckResult` and the built-in implementations from this
+# module, so importing it here would re-create the import cycle that made the
+# CLI, API and analyzer unimportable. The runner is imported lazily inside
+# `run_deterministic_checks`, which is the first place it is actually needed.
 
 
 def is_recognisable_date(value: str) -> bool:
@@ -542,9 +545,14 @@ def run_deterministic_checks(
     """
     all_results: dict[str, list[CheckResult]] = {}
 
+    # Imported lazily: `checks` imports this module, so a module-level import
+    # here would be a cycle. By the time a trace is analyzed the registry is
+    # imported and the built-ins are registered.
+    from forensics.checks import run_registered_checks
+
     for span in trace.spans:
         # Run all registered checks for this span's step
-        step_results = run_registered_checks(span, trace, document_text)
+        step_results = run_registered_checks(span, trace, document_text, expected_type)
 
         if step_results:
             all_results[span.span_id] = step_results

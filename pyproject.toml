@@ -14,6 +14,9 @@ dependencies = [
     "typer>=0.27",
     "streamlit>=1.38",
     "plotly>=5.20",
+    # Required, not optional: `forensics.auth` is imported by `forensics.api`
+    # and `forensics.cli`, so the package cannot be imported without it.
+    "bcrypt>=4.1",
 ]
 
 [project.optional-dependencies]
@@ -32,9 +35,6 @@ otel = [
 scheduler = [
     "apscheduler>=3.10",
     "httpx>=0.27",
-]
-auth = [
-    "bcrypt>=4.1",
 ]
 
 [project.scripts]
@@ -67,3 +67,13 @@ strict = true
 packages = ["forensics"]
 mypy_path = "src"
 warn_unreachable = true
+
+# OTLP export is a genuine optional extra: `make install` pulls it in, but the
+# package must typecheck and import without it (the import is lazy inside
+# `otel_export._create_exporter`, and a missing exporter degrades to
+# "not configured"). A per-module override is required instead of a
+# `type: ignore` on the import line, because that ignore would be reported as
+# unused — and fail strict mode — once the extra *is* installed.
+[[tool.mypy.overrides]]
+module = ["opentelemetry.exporter.*"]
+ignore_missing_imports = true

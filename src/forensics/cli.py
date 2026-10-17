@@ -12,6 +12,7 @@ from pathlib import Path
 import typer
 
 from forensics.analyzer_simple import analyze_trace
+from forensics.auth import AuthManager
 from forensics.config import get_settings, validate_startup
 from forensics.llm import using_llm_client
 from forensics.models import Document, DocumentType, FailureCategory
@@ -344,9 +345,12 @@ def analytics() -> None:
 
     if analytics.failure_rate_over_time:
         typer.secho("\n  Failure Rate Over Time:", fg=typer.colors.BLUE, bold=True)
+        # Entries are {"timestamp": "YYYY-MM-DD", "failure_rate": float} —
+        # matching the aggregation in `api.get_analytics`. Reading `rate`,
+        # `failures` and `total` from them raised KeyError on real data.
         for entry in analytics.failure_rate_over_time[-10:]:  # Last 10 days
-            rate_str = f"{entry['rate']:.1%} ({entry['failures']}/{entry['total']})"
-            typer.secho(f"  {entry['date']}: {rate_str}", fg=typer.colors.YELLOW)
+            rate_str = f"{entry['failure_rate']:.1%}"
+            typer.secho(f"  {entry['timestamp']}: {rate_str}", fg=typer.colors.YELLOW)
 
 
 @app.command(name="benchmark-analyzer")
@@ -447,6 +451,121 @@ def validate_config() -> None:
     """Validate configuration without running anything."""
     _setup()
     typer.secho("Configuration valid", fg=typer.colors.GREEN)
+
+
+# ─── auth (spec 04) ─────────────────────────────────────────────────────────
+
+auth_app = typer.Typer(help="Manage tenants and API keys (spec 04)", no_args_is_help=True)
+app.add_typer(auth_app, name="auth")
+
+
+def _auth_manager() -> AuthManager:
+    """Build an AuthManager for CLI use.
+
+    Deliberately does *not* call `_setup()`: minting a key must not require a
+    valid `NVIDIA_API_KEY` or a reachable model config, and an operator who is
+    locking the API down may well be running this on a machine with no model
+    credentials.
+
+    Always ensures the `default` tenant exists, so `--tenant default` works for a
+    deployment that wants to put an API key in front of the data it already has.
+    """
+    settings = get_settings()
+    manager = AuthManager(
+        Storage(),
+        prefix=settings.auth_api_key_prefix,
+        rounds=settings.auth_bcrypt_rounds,
+    )
+    manager.ensure_default_tenant()
+    return manager
+
+
+@auth_app.command("create-tenant")
+def auth_create_tenant(
+    name: str = typer.Option(..., "--name", help="Human-readable tenant name"),
+) -> None:
+    """Create a tenant. Prints the new tenant_id on stdout."""
+    manager = _auth_manager()
+    try:
+        tenant = manager.create_tenant(name)
+    except ValueError as e:
+        typer.secho(f"Error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from e
+
+    typer.secho(f"Created tenant '{tenant.name}'", fg=typer.colors.GREEN, err=True)
+    typer.echo(tenant.tenant_id)
+
+
+@auth_app.command("list-tenants")
+def auth_list_tenants() -> None:
+    """List every tenant."""
+    tenants = _auth_manager().list_tenants()
+    if not tenants:
+        typer.secho("No tenants.", fg=typer.colors.YELLOW, err=True)
+        return
+    typer.secho(f"{'tenant_id':<14} {'name':<24} {'active':<7} created", bold=True)
+    for t in tenants:
+        typer.echo(
+            f"{t.tenant_id:<14} {t.name:<24} {'yes' if t.active else 'no':<7} "
+            f"{t.created_at.isoformat()}"
+        )
+
+
+@auth_app.command("create-key")
+def auth_create_key(
+    tenant: str = typer.Option(..., "--tenant", help="tenant_id that will own the key"),
+    name: str | None = typer.Option(None, "--name", help="Label, e.g. 'ci-cd'"),
+) -> None:
+    """Mint an API key. The plaintext key is printed once and never stored."""
+    manager = _auth_manager()
+    try:
+        api_key, plaintext = manager.create_api_key(tenant, name=name)
+    except ValueError as e:
+        typer.secho(f"Error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from e
+
+    typer.secho(
+        f"Created key {api_key.key_id} ({api_key.prefix}…) for tenant {api_key.tenant_id}",
+        fg=typer.colors.GREEN,
+        err=True,
+    )
+    typer.secho(
+        "Store this now — only the bcrypt hash is kept, so it cannot be shown again.",
+        fg=typer.colors.YELLOW,
+        err=True,
+    )
+    typer.echo(plaintext)
+
+
+@auth_app.command("list-keys")
+def auth_list_keys(
+    tenant: str = typer.Option(..., "--tenant", help="tenant_id whose keys to list"),
+) -> None:
+    """List a tenant's keys. Key hashes and plaintext are never printed."""
+    keys = _auth_manager().list_keys(tenant)
+    if not keys:
+        typer.secho(f"No keys for tenant {tenant}.", fg=typer.colors.YELLOW, err=True)
+        return
+    typer.secho(f"{'key_id':<14} {'prefix':<14} {'name':<16} {'status':<9} last_used", bold=True)
+    for k in keys:
+        status = "revoked" if k.revoked_at else "active"
+        last_used = k.last_used_at.isoformat() if k.last_used_at else "never"
+        typer.echo(f"{k.key_id:<14} {k.prefix:<14} {k.name or '-':<16} {status:<9} {last_used}")
+
+
+@auth_app.command("revoke-key")
+def auth_revoke_key(
+    key_id: str = typer.Option(..., "--key-id", help="key_id to revoke"),
+) -> None:
+    """Revoke a key. It stops validating immediately; the row is kept for audit."""
+    if not _auth_manager().revoke_key(key_id):
+        typer.secho(
+            f"No active key with id {key_id} (unknown or already revoked).",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    typer.secho(f"Revoked key {key_id}", fg=typer.colors.GREEN, err=True)
 
 
 def main() -> None:

@@ -15,7 +15,7 @@ Attribute keys follow the OTel GenAI semantic conventions where they exist and
 a contract with whatever collector eventually receives them.
 """
 
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from opentelemetry import trace as otel_trace
 from opentelemetry.sdk.trace import TracerProvider
@@ -185,15 +185,13 @@ class ForensicsSpanProcessor:
         return True
 
 
-_configured: tuple[TracerProvider, bool] | None = None
+_configured: tuple[TracerProvider, bool, SpanExporter | None] | None = None
 
 
 def _create_exporter(
     exporter_type: Literal["none", "otlp", "console"], endpoint: str
 ) -> SpanExporter | None:
     """Create the appropriate span exporter based on type."""
-    if exporter_type == "none":
-        return None
     if exporter_type == "console":
         return ConsoleSpanExporter()
     if exporter_type == "otlp":
@@ -205,7 +203,8 @@ def _create_exporter(
                 "OTLP exporter requires 'opentelemetry-exporter-otlp-proto-http'. "
                 "Install with: pip install 'forensics[otel]'"
             ) from e
-        return OTLPSpanExporter(endpoint=endpoint)
+        return cast(SpanExporter, OTLPSpanExporter(endpoint=endpoint))
+    # exporter_type == "none"
     return None
 
 

@@ -166,6 +166,31 @@ class Settings(BaseSettings):
         default=False, description="Force judge to run even if deterministic passes"
     )
 
+    # --- Custom check plugins (spec 05) ---
+    check_plugins: str = Field(
+        default="",
+        description=(
+            "Comma-separated 'module:attr' import paths for custom deterministic "
+            "checks, e.g. 'my_checks:check_pii_in_summary,other:MyCheck'"
+        ),
+    )
+
+    # --- Auth / multi-tenancy (spec 04) ---
+    auth_enabled: bool = Field(
+        default=False,
+        description="Require an API key on every data endpoint (AUTH_ENABLED)",
+    )
+    auth_api_key_prefix: str = Field(
+        default="ffk_",
+        description="Prefix for generated API keys, used to identify a key (AUTH_API_KEY_PREFIX)",
+    )
+    auth_bcrypt_rounds: int = Field(
+        default=12,
+        ge=4,
+        le=16,
+        description="bcrypt cost factor for API key hashing (AUTH_BCRYPT_ROUNDS)",
+    )
+
     # --- Versions ---
     pipeline_version: str = Field(default="0.1.0")
     schema_version: int = Field(default=1)
@@ -330,6 +355,12 @@ def validate_startup() -> None:
     settings.cache_dir.mkdir(parents=True, exist_ok=True)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.dataset_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load custom check plugins (spec 05). A bad spec raises here, naming the
+    # offending value, so the operator learns at startup instead of at analysis.
+    from forensics.checks import load_plugins_from_config
+
+    load_plugins_from_config(settings.check_plugins)
 
 
 __all__ = [

@@ -13,7 +13,12 @@ from typing import Any
 # Pre-compiled patterns (fast, no backtracking)
 # Ordered by specificity to avoid partial matches
 PATTERNS: dict[str, re.Pattern[str]] = {
-    "api_key": re.compile(r"\b(?:sk|pk|rk)_(?:or|live|test)_[a-zA-Z0-9]{32,}\b"),
+    # Accepts both underscore and hyphen separators: the spec's example
+    # (`sk-or-abc123…`) and real OpenRouter keys (`sk-or-v1-…`) are hyphenated,
+    # so a pattern requiring `sk_or_` silently redacted nothing.
+    "api_key": re.compile(
+        r"\b(?:nvapi-[A-Za-z0-9_-]{16,}|(?:sk|pk|rk)[-_](?:or|live|test)[-_][A-Za-z0-9_-]{16,})\b"
+    ),
     "email": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"),
     "phone": re.compile(r"(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"),
     "credit_card": re.compile(r"\b(?:\d{4}[-.\s]?){3}\d{4}\b"),
@@ -56,14 +61,20 @@ class PIIRedactor:
         self.enabled = enabled
         self.entity_types = entity_types or DEFAULT_ENTITY_TYPES
         self.replacement_char = replacement_char
-        self._patterns: dict[str, re.Pattern] = {
+        self._patterns: dict[str, re.Pattern[str]] = {
             k: v for k, v in PATTERNS.items() if k in self.entity_types
         }
+        # Custom patterns may pin an explicit replacement string; without one
+        # they fall back to the block character like the built-ins.
+        self._custom_replacements: dict[str, str] = {}
         if custom_patterns:
             for cp in custom_patterns:
                 name = cp["name"]
                 pattern = cp["pattern"]
                 self._patterns[name] = re.compile(pattern)
+                replacement = cp.get("replacement")
+                if replacement:
+                    self._custom_replacements[name] = replacement
 
     def redact(self, text: str) -> tuple[str, list[Redaction]]:
         """Redact PII from a string.
@@ -83,7 +94,8 @@ class PIIRedactor:
             for match in pattern.finditer(text):
                 start, end = match.span()
                 original = match.group()
-                replacement = self.replacement_char * len(original)
+                custom = self._custom_replacements.get(entity_type)
+                replacement = custom if custom else self.replacement_char * len(original)
                 redactions.append(
                     Redaction(
                         entity_type=entity_type,

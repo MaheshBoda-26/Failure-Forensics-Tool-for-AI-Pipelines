@@ -5,7 +5,7 @@ help:
 
 install: ## create venv and install all deps
 	uv venv --python 3.12
-	uv pip install -e ".[dev]"
+	uv pip install -e ".[dev,otel]"
 	cd frontend && npm install
 
 check: lint typecheck test ## lint + typecheck + test

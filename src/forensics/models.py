@@ -21,6 +21,12 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+#: Tenant that owns every record created before multi-tenancy existed, and every
+#: record created while auth is disabled. It must match the `DEFAULT 'default'`
+#: in the SQLite migration, or freshly migrated rows would be unreachable.
+DEFAULT_TENANT_ID = "default"
+
+
 class FailureCategory(StrEnum):
     """Failure taxonomy categories."""
 
@@ -148,7 +154,21 @@ class VersionedModel(BaseModel):
     schema_version: int = Field(default=1, description="Schema version")
 
 
-class Span(VersionedModel):
+class TenantScoped(BaseModel):
+    """Mixin for records that belong to exactly one tenant.
+
+    `tenant_id` defaults to ``"default"`` so every record created before
+    multi-tenancy existed — and every record created in dev mode, where auth is
+    off — lands in one well-known tenant instead of becoming invisible.
+    """
+
+    tenant_id: str = Field(
+        default=DEFAULT_TENANT_ID,
+        description="Owning tenant; matches the SQLite migration default",
+    )
+
+
+class Span(VersionedModel, TenantScoped):
     """Single step trace span."""
 
     span_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
@@ -190,7 +210,7 @@ class TraceStatus(StrEnum):
     DEGRADED = "degraded"
 
 
-class Trace(VersionedModel):
+class Trace(VersionedModel, TenantScoped):
     """Complete execution trace."""
 
     trace_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
@@ -218,7 +238,7 @@ class StepScore(BaseModel):
     deterministic_checks: dict[str, bool] = Field(default_factory=dict)
 
 
-class Diagnosis(VersionedModel):
+class Diagnosis(VersionedModel, TenantScoped):
     """Root cause diagnosis from backward trace analysis."""
 
     diagnosis_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
@@ -243,7 +263,7 @@ class Diagnosis(VersionedModel):
     )
 
 
-class Flag(BaseModel):
+class Flag(TenantScoped):
     """Human flag on a trace."""
 
     flag_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
@@ -254,7 +274,7 @@ class Flag(BaseModel):
     diagnosis_id: str | None = None
 
 
-class EvalCase(BaseModel):
+class EvalCase(TenantScoped):
     """Evaluation case generated from a confirmed flag."""
 
     case_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
@@ -268,7 +288,7 @@ class EvalCase(BaseModel):
     prompt_version: str
 
 
-class EvalRun(BaseModel):
+class EvalRun(TenantScoped):
     """Single evaluation run against the current pipeline."""
 
     run_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
@@ -281,7 +301,7 @@ class EvalRun(BaseModel):
     failed_count: int = 0
 
 
-class EvalResult(BaseModel):
+class EvalResult(TenantScoped):
     """Result of evaluating one case in a run."""
 
     result_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
@@ -318,20 +338,59 @@ class StepJudgeScore(BaseModel):
     )
 
 
-class JudgeAnalysis(BaseModel):
-    """Structured analysis from the judge model."""
+class JudgeVerdict(BaseModel):
+    """The verdict the judge model is actually asked to produce.
+
+    Deliberately excludes ``model_id``, ``provider`` and ``cost_usd``: those are
+    facts about the call, not the verdict. Requiring them of the model meant the
+    prompt never asked for them and *every* judge reply failed validation, so the
+    judge could never run at all.
+    """
 
     step_scores: list[StepJudgeScore]
     root_cause_step: str
     category: FailureCategory
     confidence: float = Field(..., ge=0.0, le=1.0)
+
+
+class JudgeAnalysis(JudgeVerdict):
+    """A stored judge verdict plus the provenance of the call that produced it."""
+
     cost_usd: float = Field(default=0.0, ge=0.0)
     model_id: str
     provider: str
     created_at: datetime = Field(default_factory=_utc_now)
 
 
+class Tenant(BaseModel):
+    """A billing/isolation boundary owning traces, flags and eval data."""
+
+    tenant_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    name: str
+    created_at: datetime = Field(default_factory=_utc_now)
+    active: bool = True
+
+
+class APIKey(BaseModel):
+    """A tenant's API key. Only the bcrypt hash is stored, never the key.
+
+    `prefix` exists so a key can be identified (in a log, in `list-keys`) without
+    holding the plaintext or attempting a bcrypt comparison against every row.
+    """
+
+    key_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    tenant_id: str
+    key_hash: str = Field(..., description="bcrypt hash of the plaintext key")
+    prefix: str = Field(..., description="Leading characters, for identification only")
+    name: str | None = None
+    created_at: datetime = Field(default_factory=_utc_now)
+    revoked_at: datetime | None = None
+    last_used_at: datetime | None = None
+
+
 __all__ = [
+    "DEFAULT_TENANT_ID",
+    "APIKey",
     "AnalyticsSnapshot",
     "ClassificationOutput",
     "Diagnosis",
@@ -346,11 +405,14 @@ __all__ = [
     "Flag",
     "IntakeOutput",
     "JudgeAnalysis",
+    "JudgeVerdict",
     "PipelineOutput",
     "Span",
     "StepJudgeScore",
     "StepScore",
     "SummaryOutput",
+    "Tenant",
+    "TenantScoped",
     "Trace",
     "TraceStatus",
 ]

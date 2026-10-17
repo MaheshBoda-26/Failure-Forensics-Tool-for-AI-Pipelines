@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from forensics.migrations import migrate
 from forensics.models import (
     Diagnosis,
     EvalCase,
@@ -71,7 +72,8 @@ class Storage:
                     total_tokens INTEGER DEFAULT 0,
                     total_cost_usd REAL DEFAULT 0.0,
                     pipeline_version TEXT,
-                    schema_version INTEGER DEFAULT 1
+                    schema_version INTEGER DEFAULT 1,
+                    tenant_id TEXT NOT NULL DEFAULT 'default'
                 )
             """
             )
@@ -89,6 +91,7 @@ class Storage:
                     error TEXT,
                     started_at TEXT,
                     ended_at TEXT,
+                    tenant_id TEXT NOT NULL DEFAULT 'default',
                     FOREIGN KEY (trace_id) REFERENCES traces(trace_id)
                 )
             """
@@ -104,6 +107,7 @@ class Storage:
                     note TEXT,
                     created_at TEXT NOT NULL,
                     diagnosis_id TEXT,
+                    tenant_id TEXT NOT NULL DEFAULT 'default',
                     FOREIGN KEY (trace_id) REFERENCES traces(trace_id)
                 )
             """
@@ -128,6 +132,7 @@ class Storage:
                     overridden BOOLEAN DEFAULT 0,
                     override_category TEXT,
                     override_reason TEXT,
+                    tenant_id TEXT NOT NULL DEFAULT 'default',
                     FOREIGN KEY (trace_id) REFERENCES traces(trace_id)
                 )
             """
@@ -146,6 +151,7 @@ class Storage:
                     created_at TEXT NOT NULL,
                     pipeline_version TEXT,
                     prompt_version TEXT,
+                    tenant_id TEXT NOT NULL DEFAULT 'default',
                     FOREIGN KEY (trace_id) REFERENCES traces(trace_id)
                 )
             """
@@ -162,7 +168,8 @@ class Storage:
                     completed_at TEXT,
                     total_cases INTEGER DEFAULT 0,
                     passed_count INTEGER DEFAULT 0,
-                    failed_count INTEGER DEFAULT 0
+                    failed_count INTEGER DEFAULT 0,
+                    tenant_id TEXT NOT NULL DEFAULT 'default'
                 )
             """
             )
@@ -179,6 +186,7 @@ class Storage:
                     fixed BOOLEAN NOT NULL,
                     details TEXT,
                     evaluated_at TEXT NOT NULL,
+                    tenant_id TEXT NOT NULL DEFAULT 'default',
                     FOREIGN KEY (run_id) REFERENCES eval_runs(run_id),
                     FOREIGN KEY (case_id) REFERENCES eval_cases(case_id)
                 )
@@ -199,6 +207,11 @@ class Storage:
             )
 
             conn.commit()
+
+        # Close the gap for a database created before multi-tenancy (or by
+        # `tracing.init_db`, which only knows about traces and spans).
+        with self._conn() as conn:
+            migrate(conn)
 
     @contextmanager
     def _conn(self) -> Generator[sqlite3.Connection, None, None]:
@@ -241,19 +254,33 @@ class Storage:
         return Trace.model_validate(data)
 
     def list_traces(
-        self, status: TraceStatus | None = None, limit: int = 100, offset: int = 0
+        self,
+        status: TraceStatus | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        tenant_id: str | None = None,
     ) -> list[Trace]:
-        """List traces from SQLite index."""
+        """List traces from SQLite index.
+
+        `tenant_id=None` means "no filter" — that is what dev mode (auth
+        disabled) and the CLI operators want. When a tenant is given the filter
+        is applied in SQL, not in Python, so `limit`/`offset` stay meaningful.
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if tenant_id is not None:
+            clauses.append("tenant_id = ?")
+            params.append(tenant_id)
+        if status:
+            clauses.append("status = ?")
+            params.append(status.value)
+
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = f"SELECT trace_id FROM traces{where} ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
         with self._conn() as conn:
-            if status:
-                sql = (
-                    "SELECT trace_id FROM traces WHERE status = ? "
-                    "ORDER BY created_at DESC LIMIT ? OFFSET ?"
-                )
-                rows = conn.execute(sql, (status.value, limit, offset)).fetchall()
-            else:
-                sql = "SELECT trace_id FROM traces ORDER BY created_at DESC LIMIT ? OFFSET ?"
-                rows = conn.execute(sql, (limit, offset)).fetchall()
+            rows = conn.execute(sql, params).fetchall()
 
         traces = []
         for (trace_id,) in rows:
@@ -262,8 +289,20 @@ class Storage:
                 traces.append(trace)
         return traces
 
-    def get_trace(self, trace_id: str) -> Trace | None:
-        """Get a single trace by ID."""
+    def get_trace(self, trace_id: str, tenant_id: str | None = None) -> Trace | None:
+        """Get a single trace by ID, optionally scoped to one tenant.
+
+        The tenant check reads the SQLite index rather than the JSON payload,
+        because the index is the authority on ownership and a trace whose JSON
+        file exists but whose index row is gone must not be served to anyone.
+        """
+        if tenant_id is not None:
+            with self._conn() as conn:
+                row = conn.execute(
+                    "SELECT tenant_id FROM traces WHERE trace_id = ?", (trace_id,)
+                ).fetchone()
+            if row is None or row[0] != tenant_id:
+                return None
         return self.load_trace(trace_id)
 
     # --- Flag operations ---
@@ -273,8 +312,9 @@ class Storage:
         with self._conn() as conn:
             conn.execute(
                 """
-                INSERT INTO flags (flag_id, trace_id, user_id, note, created_at, diagnosis_id)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO flags
+                (flag_id, trace_id, user_id, note, created_at, diagnosis_id, tenant_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     flag.flag_id,
@@ -283,26 +323,36 @@ class Storage:
                     flag.note,
                     flag.created_at.isoformat(),
                     flag.diagnosis_id,
+                    flag.tenant_id,
                 ),
             )
         return flag
 
-    def get_flag(self, flag_id: str) -> Flag | None:
+    def get_flag(self, flag_id: str, tenant_id: str | None = None) -> Flag | None:
         """Get a flag by ID."""
+        sql = "SELECT * FROM flags WHERE flag_id = ?"
+        params: list[Any] = [flag_id]
+        if tenant_id is not None:
+            sql += " AND tenant_id = ?"
+            params.append(tenant_id)
         with self._conn() as conn:
-            cursor = conn.execute("SELECT * FROM flags WHERE flag_id = ?", (flag_id,))
+            cursor = conn.execute(sql, params)
             row = cursor.fetchone()
             if not row:
                 return None
             cols = [d[0] for d in cursor.description]
             return Flag.model_validate(dict(zip(cols, row, strict=False)))
 
-    def list_flags_for_trace(self, trace_id: str) -> list[Flag]:
+    def list_flags_for_trace(self, trace_id: str, tenant_id: str | None = None) -> list[Flag]:
         """List all flags for a trace."""
+        sql = "SELECT * FROM flags WHERE trace_id = ?"
+        params: list[Any] = [trace_id]
+        if tenant_id is not None:
+            sql += " AND tenant_id = ?"
+            params.append(tenant_id)
+        sql += " ORDER BY created_at DESC"
         with self._conn() as conn:
-            cursor = conn.execute(
-                "SELECT * FROM flags WHERE trace_id = ? ORDER BY created_at DESC", (trace_id,)
-            )
+            cursor = conn.execute(sql, params)
             rows = cursor.fetchall()
             cols = [d[0] for d in cursor.description]
             return [Flag.model_validate(dict(zip(cols, r, strict=False))) for r in rows]
@@ -319,8 +369,9 @@ class Storage:
                 INSERT INTO diagnoses
                 (diagnosis_id, trace_id, root_cause_step, category, confidence,
                  evidence_chain, step_scores, analyzer_version, model_id, provider,
-                 created_at, confirmed, overridden, override_category, override_reason)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 created_at, confirmed, overridden, override_category, override_reason,
+                 tenant_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     diagnosis.diagnosis_id,
@@ -338,48 +389,52 @@ class Storage:
                     int(diagnosis.overridden),
                     diagnosis.override_category.value if diagnosis.override_category else None,
                     diagnosis.override_reason,
+                    diagnosis.tenant_id,
                 ),
             )
         return diagnosis
 
-    def get_diagnosis(self, diagnosis_id: str) -> Diagnosis | None:
+    def _load_diagnosis_row(self, row: Any, cols: list[str]) -> Diagnosis:
+        import json
+
+        from forensics.models import StepScore
+
+        data = dict(zip(cols, row, strict=False))
+        data["evidence_chain"] = json.loads(data["evidence_chain"] or "[]")
+        data["step_scores"] = json.loads(data["step_scores"] or "[]")
+        data["step_scores"] = [StepScore.model_validate(s) for s in data["step_scores"]]
+        return Diagnosis.model_validate(data)
+
+    def get_diagnosis(self, diagnosis_id: str, tenant_id: str | None = None) -> Diagnosis | None:
         """Get a diagnosis by ID."""
-        import json
-
+        sql = "SELECT * FROM diagnoses WHERE diagnosis_id = ?"
+        params: list[Any] = [diagnosis_id]
+        if tenant_id is not None:
+            sql += " AND tenant_id = ?"
+            params.append(tenant_id)
         with self._conn() as conn:
-            cursor = conn.execute("SELECT * FROM diagnoses WHERE diagnosis_id = ?", (diagnosis_id,))
+            cursor = conn.execute(sql, params)
             row = cursor.fetchone()
             if not row:
                 return None
-            cols = [d[0] for d in cursor.description]
-            data = dict(zip(cols, row, strict=False))
-            data["evidence_chain"] = json.loads(data["evidence_chain"] or "[]")
-            data["step_scores"] = json.loads(data["step_scores"] or "[]")
-            from forensics.models import StepScore
+            return self._load_diagnosis_row(row, [d[0] for d in cursor.description])
 
-            data["step_scores"] = [StepScore.model_validate(s) for s in data["step_scores"]]
-            return Diagnosis.model_validate(data)
-
-    def get_diagnosis_for_trace(self, trace_id: str) -> Diagnosis | None:
+    def get_diagnosis_for_trace(
+        self, trace_id: str, tenant_id: str | None = None
+    ) -> Diagnosis | None:
         """Get the diagnosis for a trace (latest)."""
-        import json
-
+        sql = "SELECT * FROM diagnoses WHERE trace_id = ?"
+        params: list[Any] = [trace_id]
+        if tenant_id is not None:
+            sql += " AND tenant_id = ?"
+            params.append(tenant_id)
+        sql += " ORDER BY created_at DESC LIMIT 1"
         with self._conn() as conn:
-            cursor = conn.execute(
-                "SELECT * FROM diagnoses WHERE trace_id = ? ORDER BY created_at DESC LIMIT 1",
-                (trace_id,),
-            )
+            cursor = conn.execute(sql, params)
             row = cursor.fetchone()
             if not row:
                 return None
-            cols = [d[0] for d in cursor.description]
-            data = dict(zip(cols, row, strict=False))
-            data["evidence_chain"] = json.loads(data["evidence_chain"] or "[]")
-            data["step_scores"] = json.loads(data["step_scores"] or "[]")
-            from forensics.models import StepScore
-
-            data["step_scores"] = [StepScore.model_validate(s) for s in data["step_scores"]]
-            return Diagnosis.model_validate(data)
+            return self._load_diagnosis_row(row, [d[0] for d in cursor.description])
 
     def update_diagnosis_confirmation(
         self,
@@ -411,8 +466,8 @@ class Storage:
                 """
                 INSERT INTO eval_cases
                 (case_id, trace_id, failing_step, bad_output, corrected_output,
-                 category, created_at, pipeline_version, prompt_version)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 category, created_at, pipeline_version, prompt_version, tenant_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     case.case_id,
@@ -424,41 +479,50 @@ class Storage:
                     case.created_at.isoformat(),
                     case.pipeline_version,
                     case.prompt_version,
+                    case.tenant_id,
                 ),
             )
         return case
 
-    def get_eval_case(self, case_id: str) -> EvalCase | None:
-        """Get an eval case by ID."""
+    @staticmethod
+    def _load_eval_case_row(row: Any, cols: list[str]) -> EvalCase:
         import json
 
+        data = dict(zip(cols, row, strict=False))
+        data["bad_output"] = json.loads(data["bad_output"])
+        data["corrected_output"] = json.loads(data["corrected_output"])
+        return EvalCase.model_validate(data)
+
+    def get_eval_case(self, case_id: str, tenant_id: str | None = None) -> EvalCase | None:
+        """Get an eval case by ID."""
+        sql = "SELECT * FROM eval_cases WHERE case_id = ?"
+        params: list[Any] = [case_id]
+        if tenant_id is not None:
+            sql += " AND tenant_id = ?"
+            params.append(tenant_id)
         with self._conn() as conn:
-            cursor = conn.execute("SELECT * FROM eval_cases WHERE case_id = ?", (case_id,))
+            cursor = conn.execute(sql, params)
             row = cursor.fetchone()
             if not row:
                 return None
-            cols = [d[0] for d in cursor.description]
-            data = dict(zip(cols, row, strict=False))
-            data["bad_output"] = json.loads(data["bad_output"])
-            data["corrected_output"] = json.loads(data["corrected_output"])
-            return EvalCase.model_validate(data)
+            return self._load_eval_case_row(row, [d[0] for d in cursor.description])
 
-    def list_eval_cases(self, limit: int = 100, offset: int = 0) -> list[EvalCase]:
+    def list_eval_cases(
+        self, limit: int = 100, offset: int = 0, tenant_id: str | None = None
+    ) -> list[EvalCase]:
         """List all eval cases."""
-        import json
-
+        sql = "SELECT * FROM eval_cases"
+        params: list[Any] = []
+        if tenant_id is not None:
+            sql += " WHERE tenant_id = ?"
+            params.append(tenant_id)
+        sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
         with self._conn() as conn:
-            sql = "SELECT * FROM eval_cases ORDER BY created_at DESC LIMIT ? OFFSET ?"
-            cursor = conn.execute(sql, (limit, offset))
+            cursor = conn.execute(sql, params)
             rows = cursor.fetchall()
             cols = [d[0] for d in cursor.description]
-            cases = []
-            for row in rows:
-                data = dict(zip(cols, row, strict=False))
-                data["bad_output"] = json.loads(data["bad_output"])
-                data["corrected_output"] = json.loads(data["corrected_output"])
-                cases.append(EvalCase.model_validate(data))
-            return cases
+            return [self._load_eval_case_row(row, cols) for row in rows]
 
     # --- Eval Run operations ---
 
@@ -471,8 +535,8 @@ class Storage:
                 """
                 INSERT INTO eval_runs
                 (run_id, pipeline_version, prompt_versions, started_at, completed_at,
-                 total_cases, passed_count, failed_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 total_cases, passed_count, failed_count, tenant_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     run.run_id,
@@ -483,6 +547,7 @@ class Storage:
                     run.total_cases,
                     run.passed_count,
                     run.failed_count,
+                    run.tenant_id,
                 ),
             )
         return run
@@ -519,39 +584,46 @@ class Storage:
             params.append(run_id)
             conn.execute(f"UPDATE eval_runs SET {', '.join(updates)} WHERE run_id = ?", params)
 
-    def get_eval_run(self, run_id: str) -> EvalRun | None:
-        """Get an eval run by ID."""
+    @staticmethod
+    def _load_eval_run_row(row: Any, cols: list[str]) -> EvalRun:
         import json
 
+        data = dict(zip(cols, row, strict=False))
+        # The table stores NULL (not "") for an incomplete run; loading
+        # "" back failed datetime validation on EvalRun.
+        data["prompt_versions"] = json.loads(data["prompt_versions"] or "{}")
+        return EvalRun.model_validate(data)
+
+    def get_eval_run(self, run_id: str, tenant_id: str | None = None) -> EvalRun | None:
+        """Get an eval run by ID."""
+        sql = "SELECT * FROM eval_runs WHERE run_id = ?"
+        params: list[Any] = [run_id]
+        if tenant_id is not None:
+            sql += " AND tenant_id = ?"
+            params.append(tenant_id)
         with self._conn() as conn:
-            cursor = conn.execute("SELECT * FROM eval_runs WHERE run_id = ?", (run_id,))
+            cursor = conn.execute(sql, params)
             row = cursor.fetchone()
             if not row:
                 return None
-            cols = [d[0] for d in cursor.description]
-            data = dict(zip(cols, row, strict=False))
-            # The table stores NULL (not "") for an incomplete run; loading
-            # "" back failed datetime validation on EvalRun.
-            data["prompt_versions"] = json.loads(data["prompt_versions"] or "{}")
-            return EvalRun.model_validate(data)
+            return self._load_eval_run_row(row, [d[0] for d in cursor.description])
 
-    def list_eval_runs(self, limit: int = 100, offset: int = 0) -> list[EvalRun]:
+    def list_eval_runs(
+        self, limit: int = 100, offset: int = 0, tenant_id: str | None = None
+    ) -> list[EvalRun]:
         """List all eval runs."""
-        import json
-
+        sql = "SELECT * FROM eval_runs"
+        params: list[Any] = []
+        if tenant_id is not None:
+            sql += " WHERE tenant_id = ?"
+            params.append(tenant_id)
+        sql += " ORDER BY started_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
         with self._conn() as conn:
-            sql = "SELECT * FROM eval_runs ORDER BY started_at DESC LIMIT ? OFFSET ?"
-            cursor = conn.execute(sql, (limit, offset))
+            cursor = conn.execute(sql, params)
             rows = cursor.fetchall()
             cols = [d[0] for d in cursor.description]
-            runs = []
-            for row in rows:
-                data = dict(zip(cols, row, strict=False))
-                # The table stores NULL (not "") for an incomplete run; loading
-                # "" back failed datetime validation on EvalRun.
-                data["prompt_versions"] = json.loads(data["prompt_versions"] or "{}")
-                runs.append(EvalRun.model_validate(data))
-            return runs
+            return [self._load_eval_run_row(row, cols) for row in rows]
 
     # --- Eval Result operations ---
 
@@ -563,8 +635,9 @@ class Storage:
             conn.execute(
                 """
                 INSERT INTO eval_results
-                (result_id, run_id, case_id, step_name, score, fixed, details, evaluated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (result_id, run_id, case_id, step_name, score, fixed, details, evaluated_at,
+                 tenant_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     result.result_id,
@@ -575,16 +648,24 @@ class Storage:
                     int(result.fixed),
                     json.dumps(result.details),
                     result.evaluated_at.isoformat(),
+                    result.tenant_id,
                 ),
             )
         return result
 
-    def get_eval_results_for_run(self, run_id: str) -> list[EvalResult]:
+    def get_eval_results_for_run(
+        self, run_id: str, tenant_id: str | None = None
+    ) -> list[EvalResult]:
         """Get all eval results for a run."""
         import json
 
+        sql = "SELECT * FROM eval_results WHERE run_id = ?"
+        params: list[Any] = [run_id]
+        if tenant_id is not None:
+            sql += " AND tenant_id = ?"
+            params.append(tenant_id)
         with self._conn() as conn:
-            cursor = conn.execute("SELECT * FROM eval_results WHERE run_id = ?", (run_id,))
+            cursor = conn.execute(sql, params)
             rows = cursor.fetchall()
             cols = [d[0] for d in cursor.description]
             results = []

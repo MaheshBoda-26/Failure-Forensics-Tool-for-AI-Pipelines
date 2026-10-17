@@ -12,6 +12,7 @@ from typing import Any
 from forensics.analyzer_simple import analyze_trace
 from forensics.config import get_settings
 from forensics.models import (
+    DEFAULT_TENANT_ID,
     Diagnosis,
     Document,
     EvalCase,
@@ -159,6 +160,7 @@ def flag_to_eval_case(flag: Flag, diagnosis: Diagnosis, storage: Storage) -> Eva
         category=category,
         pipeline_version=trace.pipeline_version,
         prompt_version=trace.prompt_version,
+        tenant_id=flag.tenant_id,
     )
 
     return case
@@ -201,16 +203,23 @@ async def run_eval_case(case: EvalCase, pipeline: Pipeline, doc_text: str) -> Ev
             "category": diagnosis.category.value,
             "confidence": diagnosis.confidence,
         },
+        # The result belongs to whoever owns the case, not to whoever happened to
+        # trigger the run.
+        tenant_id=case.tenant_id,
     )
 
 
-async def run_eval() -> EvalRun | None:
-    """Run all eval cases against current pipeline and return results."""
+async def run_eval(tenant_id: str | None = None) -> EvalRun | None:
+    """Run all eval cases against current pipeline and return results.
+
+    `tenant_id=None` evaluates every case (CLI and dev mode); when a tenant is
+    given, both the cases considered and the run record created are scoped to it.
+    """
     storage = Storage()
     pipeline = await Pipeline.create(cache_dir=_cache_dir())
 
     # Get all eval cases
-    cases = storage.list_eval_cases(limit=1000)
+    cases = storage.list_eval_cases(limit=1000, tenant_id=tenant_id)
     if not cases:
         print("No eval cases found. Create some by flagging traces and confirming.")
         return None
@@ -219,6 +228,7 @@ async def run_eval() -> EvalRun | None:
     run = EvalRun(
         pipeline_version=_pipeline_version(),
         prompt_versions=_prompt_versions(),
+        tenant_id=tenant_id or DEFAULT_TENANT_ID,
     )
     run = storage.create_eval_run(run)
 
@@ -301,7 +311,7 @@ def print_eval_results(run_id: str) -> None:
     print(f"{'=' * 80}")
 
 
-def create_eval_cases_from_confirmed_flags() -> int:
+def create_eval_cases_from_confirmed_flags(tenant_id: str | None = None) -> int:
     """Create eval cases from confirmed diagnoses.
 
     The previous version required `flag.diagnosis_id` to be set, but nothing
@@ -309,14 +319,16 @@ def create_eval_cases_from_confirmed_flags() -> int:
     `diagnosis.confirmed`: an unconfirmed analyzer verdict must not become a
     regression case, because a wrong category would bake a wrong expectation
     into the suite.
+
+    `tenant_id=None` sweeps every tenant (CLI and dev mode).
     """
     storage = Storage()
 
     created = 0
     seen: set[tuple[str, str]] = set()
 
-    for trace in storage.list_traces(limit=1000):
-        diagnosis = storage.get_diagnosis_for_trace(trace.trace_id)
+    for trace in storage.list_traces(limit=1000, tenant_id=tenant_id):
+        diagnosis = storage.get_diagnosis_for_trace(trace.trace_id, tenant_id=tenant_id)
         if diagnosis is None:
             continue
         if not diagnosis.confirmed:

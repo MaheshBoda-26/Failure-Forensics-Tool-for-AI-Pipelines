@@ -334,6 +334,10 @@ class SpendTracker:
         self.spend_file.parent.mkdir(parents=True, exist_ok=True)
         self._run_spend_usd = 0.0
         self._global_spend_usd = self._load_global_spend()
+        # Per-step attribution. `judge` is the tag the operator cares about:
+        # judge calls are optional and semantic, so their cost has to be
+        # separable from the pipeline's own spend.
+        self._step_spend_usd: dict[str, float] = {}
 
     def _load_global_spend(self) -> float:
         if self.spend_file.exists():
@@ -364,7 +368,12 @@ class SpendTracker:
     def global_spend_usd(self) -> float:
         return self._global_spend_usd
 
-    def check_and_add(self, cost_usd: float) -> None:
+    @property
+    def step_spend_usd(self) -> dict[str, float]:
+        """Cost attributed to each tagged step (e.g. ``{"judge": 0.012}``)."""
+        return dict(self._step_spend_usd)
+
+    def check_and_add(self, cost_usd: float, step: str = "") -> None:
         """Check caps and add cost. Raises SpendCapExceededError if exceeded.
 
         The cost is recorded *before* the cap raises: the call that trips the
@@ -374,6 +383,8 @@ class SpendTracker:
         """
         self._run_spend_usd += cost_usd
         self._global_spend_usd += cost_usd
+        if step:
+            self._step_spend_usd[step] = self._step_spend_usd.get(step, 0.0) + cost_usd
         self._save_global_spend()
 
         if self._run_spend_usd > self.cap_per_run_usd:
@@ -525,6 +536,7 @@ class NIMClient:
         response_format: dict[str, Any] | None = None,
         max_tokens: int | None = None,
         temperature: float = 0.0,
+        step: str = "",
     ) -> dict[str, Any]:
         """Make a request to the NIM API, retrying transient failures.
 
@@ -602,13 +614,15 @@ class NIMClient:
             data: dict[str, Any] = response.json()
             data["_latency_ms"] = latency_ms
 
-            self._record_spend(model_config, data)
+            self._record_spend(model_config, data, step)
             return data
 
         assert last_error is not None  # loop only exits via continue/raise/return
         raise last_error
 
-    def _record_spend(self, model_config: ModelConfig, data: dict[str, Any]) -> None:
+    def _record_spend(
+        self, model_config: ModelConfig, data: dict[str, Any], step: str = ""
+    ) -> None:
         """Account for a completed call and enforce the spend caps.
 
         Called before the response is handed back so an over-budget call is
@@ -618,7 +632,7 @@ class NIMClient:
         del content
         usage = self._usage_from(data, reasoning_tokens)
         cost = self._calculate_cost(model_config, usage)
-        self.spend_tracker.check_and_add(cost)
+        self.spend_tracker.check_and_add(cost, step)
 
     @staticmethod
     def _parse_tolerant(content: str, response_model: type[T]) -> T:
@@ -659,6 +673,7 @@ class NIMClient:
         prompt: str,
         response_model: type[T],
         system: str | None = None,
+        step: str = "",
     ) -> StructuredResponse:
         """Tier 1: native structured output via response_format.
 
@@ -677,7 +692,9 @@ class NIMClient:
         }
 
         messages = self._build_messages(prompt, system)
-        data = await self._make_request(model_config, messages, response_format=response_format)
+        data = await self._make_request(
+            model_config, messages, response_format=response_format, step=step
+        )
 
         content, _reasoning, _rt = self._extract_content(data)
         # Parse tolerantly even on the native path. Models served under
@@ -695,13 +712,14 @@ class NIMClient:
         prompt: str,
         response_model: type[T],
         system: str | None = None,
+        step: str = "",
     ) -> StructuredResponse:
         """Tier 2: schema in the prompt, with tolerant parsing."""
         schema = sanitize_json_schema(response_model.model_json_schema())
         structured_prompt = self._build_structured_prompt(prompt, schema)
 
         messages = self._build_messages(structured_prompt, system)
-        data = await self._make_request(model_config, messages)
+        data = await self._make_request(model_config, messages, step=step)
 
         content, _reasoning, _rt = self._extract_content(data)
         parsed = self._parse_tolerant(content, response_model)
@@ -715,6 +733,7 @@ class NIMClient:
         response_model: type[T],
         system: str | None = None,
         last_error: Exception | None = None,
+        step: str = "",
     ) -> StructuredResponse:
         """Tier 3: feed the validation error back once and re-ask."""
         schema = sanitize_json_schema(response_model.model_json_schema())
@@ -728,7 +747,7 @@ class NIMClient:
             )
 
         messages = self._build_messages(structured_prompt, system)
-        data = await self._make_request(model_config, messages)
+        data = await self._make_request(model_config, messages, step=step)
 
         content, _reasoning, _rt = self._extract_content(data)
         parsed = self._parse_tolerant(content, response_model)
@@ -774,7 +793,7 @@ class NIMClient:
                 doc_type = DocumentType.MIXED
 
             # Seeded failure document IDs and their expected behaviors
-            seeded_failures: dict[str, dict] = {
+            seeded_failures: dict[str, dict[str, Any]] = {
                 "contract_001": {"doc_type": DocumentType.INVOICE},  # misclassification
                 "invoice_001": {
                     "entities": [
@@ -803,7 +822,7 @@ class NIMClient:
                     break
 
             if response_model == IntakeOutput:
-                parsed = IntakeOutput(
+                parsed: BaseModel = IntakeOutput(
                     document=Document(content=prompt),
                     cleaned_text=prompt,
                     char_count=len(prompt),
@@ -830,17 +849,6 @@ class NIMClient:
                 )
             else:
                 raise ValueError(f"Unknown response model: {response_model}")
-
-            return StructuredResponse(
-                content="",
-                model=model_config.model_id,
-                provider=model_config.provider,
-                usage=TokenUsage(),
-                latency_ms=0,
-                raw_response={},
-                parsed=parsed,
-                cached=True,
-            )
 
             return StructuredResponse(
                 content="",
@@ -881,15 +889,19 @@ class NIMClient:
         last_error: Exception | None = None
 
         async def attempt_native() -> StructuredResponse:
-            return await self._try_native_structured(model_config, prompt, response_model, system)
+            return await self._try_native_structured(
+                model_config, prompt, response_model, system, step
+            )
 
         async def attempt_schema() -> StructuredResponse:
-            return await self._try_schema_in_prompt(model_config, prompt, response_model, system)
+            return await self._try_schema_in_prompt(
+                model_config, prompt, response_model, system, step
+            )
 
         async def attempt_repair() -> StructuredResponse:
             # Reads last_error at call time, so it sees the prior tier's failure.
             return await self._try_repair_roundtrip(
-                model_config, prompt, response_model, system, last_error
+                model_config, prompt, response_model, system, last_error, step
             )
 
         tiers: list[Callable[[], Awaitable[StructuredResponse]]] = [attempt_schema, attempt_repair]
@@ -1188,28 +1200,42 @@ class LLMClient:
             "evidence and semantic_issues are arrays of strings, not paragraphs."
         )
 
-        # Use structured output with JudgeAnalysis for proper validation and fallback
-        from forensics.models import JudgeAnalysis
+        # Use structured output with JudgeVerdict for proper validation and
+        # fallback. It is deliberately NOT JudgeAnalysis: model_id/provider are
+        # facts about this call, not things to ask the model for, and requiring
+        # them here made every judge reply fail validation.
+        from forensics.models import JudgeVerdict
 
+        judge_spend_before = self.nim.spend_tracker.step_spend_usd.get("judge", 0.0)
         response = await self.nim.structured(
             settings.judge_model,
             prompt,
-            JudgeAnalysis,
+            JudgeVerdict,
             system=None,
             prompt_version="judge-v1",
             step="judge",
         )
+        judge_cost_usd = round(
+            self.nim.spend_tracker.step_spend_usd.get("judge", 0.0) - judge_spend_before, 8
+        )
 
-        if response.parsed:
-            return response.parsed.model_dump()
-        # Fallback if structured parsing fails
+        if response.parsed is not None:
+            payload = response.parsed.model_dump()
+            payload["cost_usd"] = judge_cost_usd
+            payload["model_id"] = settings.judge_model.model_id
+            payload["provider"] = settings.judge_model.provider
+            return payload
+
+        # Defensive: `structured` either returns a parsed model or raises, so
+        # this is only reached if that contract changes. Returning a dict lets
+        # the caller fall back to the deterministic verdict instead of crashing.
         try:
             result = json.loads(_strip_code_fence(response.content))
             if isinstance(result, dict):
                 return result
-            return {"error": "Invalid response format", "raw": response.content}
         except Exception:
-            return {"error": "Failed to parse judge response", "raw": response.content}
+            pass
+        return {"error": "Failed to parse judge response", "raw": response.content}
 
 
 async def create_llm_client(

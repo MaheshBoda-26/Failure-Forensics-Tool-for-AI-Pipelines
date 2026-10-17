@@ -25,7 +25,8 @@ from typing import Any, TypeVar
 from pydantic import BaseModel
 
 from forensics.config import get_settings
-from forensics.models import Span, Trace, TraceStatus
+from forensics.migrations import migrate
+from forensics.models import DEFAULT_TENANT_ID, Span, Trace, TraceStatus
 from forensics.otel_export import DEFAULT_MAX_PROMPT_CHARS, ForensicsSpanProcessor, configure_otel
 from forensics.pii import create_redactor_from_settings
 
@@ -134,11 +135,13 @@ class TraceContext:
         document_id: str | None = None,
         traces_dir: Path | None = None,
         db_path: Path | None = None,
+        tenant_id: str = DEFAULT_TENANT_ID,
     ):
         self.trace_id = trace_id or _new_id()
         self.document_id = document_id or _new_id()
         self.traces_dir = traces_dir or _default_traces_dir()
         self.db_path = db_path or _default_db_path()
+        self.tenant_id = tenant_id
         self.traces_dir.mkdir(parents=True, exist_ok=True)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._trace: Trace | None = None
@@ -151,6 +154,7 @@ class TraceContext:
             document_id=self.document_id,
             spans=[],
             status=TraceStatus.SUCCESS,
+            tenant_id=self.tenant_id,
         )
         _current_trace.set(self._trace)
         return self
@@ -178,9 +182,10 @@ def trace_context(
     document_id: str | None = None,
     traces_dir: Path | None = None,
     db_path: Path | None = None,
+    tenant_id: str = DEFAULT_TENANT_ID,
 ) -> Any:
     """Context manager for a trace."""
-    ctx = TraceContext(trace_id, document_id, traces_dir, db_path)
+    ctx = TraceContext(trace_id, document_id, traces_dir, db_path, tenant_id)
     entered = ctx.__enter__()
     try:
         yield entered
@@ -515,7 +520,8 @@ def init_db(db_path: Path) -> sqlite3.Connection:
             total_tokens INTEGER DEFAULT 0,
             total_cost_usd REAL DEFAULT 0.0,
             pipeline_version TEXT,
-            schema_version INTEGER DEFAULT 1
+            schema_version INTEGER DEFAULT 1,
+            tenant_id TEXT NOT NULL DEFAULT 'default'
         )
     """
     )
@@ -535,6 +541,7 @@ def init_db(db_path: Path) -> sqlite3.Connection:
             error TEXT,
             started_at TEXT,
             ended_at TEXT,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
             FOREIGN KEY (trace_id) REFERENCES traces(trace_id)
         )
     """
@@ -546,6 +553,12 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_traces_status ON traces(status)")
 
     conn.commit()
+
+    # Add tenant_id to a database written before multi-tenancy, and create the
+    # auth tables. Both callers of `init_db` need this: `Storage()` creates the
+    # full schema, but the CLI's `finalize_trace` path only ever comes through
+    # here, and a trace written without a tenant would be invisible to its owner.
+    migrate(conn)
     return conn
 
 
@@ -555,8 +568,9 @@ def write_trace_to_db(trace: Trace, conn: sqlite3.Connection) -> None:
         """
         INSERT OR REPLACE INTO traces
         (trace_id, document_id, status, created_at, completed_at,
-         total_latency_ms, total_tokens, total_cost_usd, pipeline_version, schema_version)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         total_latency_ms, total_tokens, total_cost_usd, pipeline_version, schema_version,
+         tenant_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """,
         (
             trace.trace_id,
@@ -569,6 +583,7 @@ def write_trace_to_db(trace: Trace, conn: sqlite3.Connection) -> None:
             trace.total_cost_usd,
             trace.pipeline_version,
             trace.schema_version,
+            trace.tenant_id,
         ),
     )
 
@@ -577,8 +592,8 @@ def write_trace_to_db(trace: Trace, conn: sqlite3.Connection) -> None:
             """
             INSERT OR REPLACE INTO spans
             (span_id, trace_id, step_name, parent_span_id, model_id, provider,
-             latency_ms, status, error, started_at, ended_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             latency_ms, status, error, started_at, ended_at, tenant_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
                 span.span_id,
@@ -592,6 +607,7 @@ def write_trace_to_db(trace: Trace, conn: sqlite3.Connection) -> None:
                 span.error,
                 span.started_at.isoformat() if span.started_at else None,
                 span.ended_at.isoformat() if span.ended_at else None,
+                span.tenant_id,
             ),
         )
 

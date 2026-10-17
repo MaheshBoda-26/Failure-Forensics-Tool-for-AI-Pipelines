@@ -6,15 +6,21 @@ and trend data, fetch analytics.
 """
 
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from forensics.analyzer_simple import analyze_trace
+from forensics.auth import AuthManager
+from forensics.config import get_settings
 from forensics.models import (
+    DEFAULT_TENANT_ID,
     AnalyticsSnapshot,
     Diagnosis,
     EvalCase,
@@ -22,12 +28,24 @@ from forensics.models import (
     EvalRun,
     FailureCategory,
     Flag,
+    Tenant,
     Trace,
     TraceStatus,
 )
 from forensics.storage import Storage
 
-app = FastAPI(title="Failure Forensics API", version="0.1.0")
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Load custom check plugins at startup so a bad CHECK_PLUGINS fails fast."""
+    from forensics.checks import load_plugins_from_config
+    from forensics.config import get_settings
+
+    load_plugins_from_config(get_settings().check_plugins)
+    yield
+
+
+app = FastAPI(title="Failure Forensics API", version="0.1.0", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,6 +56,12 @@ app.add_middleware(
 )
 
 _storage: Storage | None = None
+_auth: AuthManager | None = None
+
+#: Tenant used for every record written while auth is disabled. It matches the
+#: SQLite migration default, so dev-mode data and pre-multi-tenancy data live in
+#: the same tenant rather than two invisible halves.
+DEFAULT_TENANT = Tenant(tenant_id=DEFAULT_TENANT_ID, name="default")
 
 
 def get_storage() -> Storage:
@@ -51,6 +75,64 @@ def get_storage() -> Storage:
     if _storage is None:
         _storage = Storage()
     return _storage
+
+
+def get_auth() -> AuthManager:
+    """Return the process-wide AuthManager, created on first use.
+
+    `AuthManager(get_storage())` at import time would open the SQLite file as an
+    import side effect, exactly as `get_storage` used to.
+    """
+    global _auth
+    if _auth is None:
+        settings = get_settings()
+        _auth = AuthManager(
+            get_storage(),
+            prefix=settings.auth_api_key_prefix,
+            rounds=settings.auth_bcrypt_rounds,
+        )
+    return _auth
+
+
+def get_current_tenant(authorization: str | None = None) -> Tenant:
+    """Resolve the calling tenant from the `Authorization` header.
+
+    With `AUTH_ENABLED=false` this is the shared default tenant and every request
+    succeeds — the documented dev mode, where the API behaves exactly as it did
+    before auth existed.
+
+    With auth on, a missing header, an unknown key, and a revoked key all answer
+    401; an inactive tenant answers 403. The header is read by FastAPI itself
+    (`authorization: Annotated[str | None, Header()]` on each endpoint) rather
+    than through `Depends`, because this codebase's tests call endpoint functions
+    directly and a `Depends` default would leak a `Depends` object into those
+    calls.
+    """
+    if not get_settings().auth_enabled:
+        return DEFAULT_TENANT
+
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+
+    key = get_auth().validate_api_key(authorization[len("Bearer ") :].strip())
+    if key is None:
+        raise HTTPException(status_code=401, detail="Invalid or revoked API key")
+
+    tenant = get_auth().get_tenant(key.tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=403, detail="Tenant not found or inactive")
+    return tenant
+
+
+def tenant_scope(tenant: Tenant) -> str | None:
+    """Tenant filter to apply on reads, or None for "no filter".
+
+    Dev mode deliberately does *not* filter: with auth disabled the API must
+    "work as before" (criterion 1), which means every trace, not just the ones
+    stamped `default`. Writes always stamp a concrete tenant (`tenant.tenant_id`,
+    which is `default` in dev mode).
+    """
+    return tenant.tenant_id if get_settings().auth_enabled else None
 
 
 class FlagRequest(BaseModel):
@@ -78,52 +160,79 @@ class ConfirmDiagnosisRequest(BaseModel):
 
 @app.get("/health")
 def health() -> dict[str, str]:
+    """Unauthenticated liveness probe.
+
+    Deliberately the one public route: a platform health check (and the deploy
+    smoke test) has no API key to present.
+    """
     return {"status": "ok"}
 
 
 @app.get("/traces", response_model=list[Trace])
 def list_traces(
-    status: TraceStatus | None = None, limit: int = 100, offset: int = 0
+    status: TraceStatus | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    authorization: Annotated[str | None, Header()] = None,
 ) -> list[Trace]:
-    return get_storage().list_traces(status=status, limit=limit, offset=offset)
+    tenant = get_current_tenant(authorization)
+    return get_storage().list_traces(
+        status=status, limit=limit, offset=offset, tenant_id=tenant_scope(tenant)
+    )
 
 
 @app.get("/traces/{trace_id}", response_model=Trace)
-def get_trace(trace_id: str) -> Trace:
-    trace = get_storage().get_trace(trace_id)
+def get_trace(trace_id: str, authorization: Annotated[str | None, Header()] = None) -> Trace:
+    tenant = get_current_tenant(authorization)
+    trace = get_storage().get_trace(trace_id, tenant_id=tenant_scope(tenant))
     if not trace:
         raise HTTPException(status_code=404, detail="Trace not found")
     return trace
 
 
 @app.get("/traces/{trace_id}/diagnosis", response_model=Diagnosis)
-def get_diagnosis_endpoint(trace_id: str) -> Diagnosis:
-    trace = get_storage().get_trace(trace_id)
+def get_diagnosis_endpoint(
+    trace_id: str, authorization: Annotated[str | None, Header()] = None
+) -> Diagnosis:
+    tenant = get_current_tenant(authorization)
+    scope = tenant_scope(tenant)
+    trace = get_storage().get_trace(trace_id, tenant_id=scope)
     if not trace:
         raise HTTPException(status_code=404, detail="Trace not found")
-    diag = get_storage().get_diagnosis_for_trace(trace_id)
+    diag = get_storage().get_diagnosis_for_trace(trace_id, tenant_id=scope)
     if diag:
         return diag
-    return diagnose_trace(trace_id)
+    return diagnose_trace(trace_id, authorization=authorization)
 
 
 @app.post("/traces/{trace_id}/flag", response_model=Flag)
-def create_flag(trace_id: str, request: FlagRequest) -> Flag:
-    trace = get_storage().get_trace(trace_id)
+def create_flag(
+    trace_id: str,
+    request: FlagRequest,
+    authorization: Annotated[str | None, Header()] = None,
+) -> Flag:
+    tenant = get_current_tenant(authorization)
+    trace = get_storage().get_trace(trace_id, tenant_id=tenant_scope(tenant))
     if not trace:
         raise HTTPException(status_code=404, detail="Trace not found")
 
-    flag = Flag(trace_id=trace_id, user_id=request.user_id, note=request.note)
+    flag = Flag(
+        trace_id=trace_id,
+        user_id=request.user_id,
+        note=request.note,
+        tenant_id=tenant.tenant_id,
+    )
     return get_storage().create_flag(flag)
 
 
 @app.post("/traces/{trace_id}/diagnose", response_model=Diagnosis)
-def diagnose_trace(trace_id: str) -> Diagnosis:
-    trace = get_storage().get_trace(trace_id)
+def diagnose_trace(
+    trace_id: str, authorization: Annotated[str | None, Header()] = None
+) -> Diagnosis:
+    tenant = get_current_tenant(authorization)
+    trace = get_storage().get_trace(trace_id, tenant_id=tenant_scope(tenant))
     if not trace:
         raise HTTPException(status_code=404, detail="Trace not found")
-
-    from forensics.config import get_settings
 
     dataset_dir = get_settings().dataset_dir
     doc_path = dataset_dir / "documents" / f"{trace.document_id}.txt"
@@ -147,6 +256,9 @@ def diagnose_trace(trace_id: str) -> Diagnosis:
             expected_type = None
 
     diagnosis = analyze_trace(trace, doc_text, expected_type)
+    # `analyze_trace` cannot know who called it; the tenant is assigned by the
+    # layer that does.
+    diagnosis.tenant_id = tenant.tenant_id
 
     # Save diagnosis
     get_storage().create_diagnosis(diagnosis)
@@ -154,13 +266,21 @@ def diagnose_trace(trace_id: str) -> Diagnosis:
 
 
 @app.post("/diagnoses/{diagnosis_id}/confirm")
-def confirm_diagnosis(diagnosis_id: str, request: ConfirmDiagnosisRequest) -> Diagnosis:
-    diagnosis = get_storage().get_diagnosis(diagnosis_id)
+def confirm_diagnosis(
+    diagnosis_id: str,
+    request: ConfirmDiagnosisRequest,
+    authorization: Annotated[str | None, Header()] = None,
+) -> Diagnosis:
+    tenant = get_current_tenant(authorization)
+    scope = tenant_scope(tenant)
+    storage = get_storage()
+
+    diagnosis = storage.get_diagnosis(diagnosis_id, tenant_id=scope)
     if not diagnosis:
         raise HTTPException(status_code=404, detail="Diagnosis not found")
 
     override_category = request.override_category.value if request.override_category else None
-    get_storage().update_diagnosis_confirmation(
+    storage.update_diagnosis_confirmation(
         diagnosis_id,
         request.confirmed,
         overridden=bool(request.override_category),
@@ -169,13 +289,13 @@ def confirm_diagnosis(diagnosis_id: str, request: ConfirmDiagnosisRequest) -> Di
     )
 
     # Auto-create flag if none exists for this trace
-    storage = get_storage()
-    flags = storage.list_flags_for_trace(diagnosis.trace_id)
+    flags = storage.list_flags_for_trace(diagnosis.trace_id, tenant_id=scope)
     if not flags:
         flag = Flag(
             trace_id=diagnosis.trace_id,
             user_id="api_user",
             note="Auto-created on diagnosis confirm",
+            tenant_id=tenant.tenant_id,
         )
         storage.create_flag(flag)
         flags = [flag]
@@ -188,57 +308,81 @@ def confirm_diagnosis(diagnosis_id: str, request: ConfirmDiagnosisRequest) -> Di
         if case:
             storage.create_eval_case(case)
 
-    updated_diagnosis = get_storage().get_diagnosis(diagnosis_id)
+    updated_diagnosis = storage.get_diagnosis(diagnosis_id, tenant_id=scope)
     if not updated_diagnosis:
         raise HTTPException(status_code=404, detail="Diagnosis not found after update")
     return updated_diagnosis
 
 
 @app.get("/eval/cases")
-def list_eval_cases(limit: int = 100, offset: int = 0) -> list[EvalCase]:
-    return get_storage().list_eval_cases(limit=limit, offset=offset)
+def list_eval_cases(
+    limit: int = 100,
+    offset: int = 0,
+    authorization: Annotated[str | None, Header()] = None,
+) -> list[EvalCase]:
+    tenant = get_current_tenant(authorization)
+    return get_storage().list_eval_cases(limit=limit, offset=offset, tenant_id=tenant_scope(tenant))
 
 
 @app.get("/eval/runs")
-def list_eval_runs(limit: int = 100, offset: int = 0) -> list[EvalRun]:
-    return get_storage().list_eval_runs(limit=limit, offset=offset)
+def list_eval_runs(
+    limit: int = 100,
+    offset: int = 0,
+    authorization: Annotated[str | None, Header()] = None,
+) -> list[EvalRun]:
+    tenant = get_current_tenant(authorization)
+    return get_storage().list_eval_runs(limit=limit, offset=offset, tenant_id=tenant_scope(tenant))
 
 
 @app.get("/eval/runs/{run_id}")
-def get_eval_run(run_id: str) -> EvalRun:
-    run = get_storage().get_eval_run(run_id)
+def get_eval_run(run_id: str, authorization: Annotated[str | None, Header()] = None) -> EvalRun:
+    tenant = get_current_tenant(authorization)
+    run = get_storage().get_eval_run(run_id, tenant_id=tenant_scope(tenant))
     if not run:
         raise HTTPException(status_code=404, detail="Eval run not found")
     return run
 
 
 @app.get("/eval/runs/{run_id}/results")
-def get_eval_results(run_id: str) -> list[EvalResult]:
-    run = get_storage().get_eval_run(run_id)
+def get_eval_results(
+    run_id: str, authorization: Annotated[str | None, Header()] = None
+) -> list[EvalResult]:
+    tenant = get_current_tenant(authorization)
+    scope = tenant_scope(tenant)
+    run = get_storage().get_eval_run(run_id, tenant_id=scope)
     if not run:
         raise HTTPException(status_code=404, detail="Eval run not found")
-    return get_storage().get_eval_results_for_run(run_id)
+    return get_storage().get_eval_results_for_run(run_id, tenant_id=scope)
 
 
 @app.post("/eval/run")
-async def trigger_eval_run() -> dict[str, object]:
+async def trigger_eval_run(
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
     from forensics.eval_simple import create_eval_cases_from_confirmed_flags, run_eval
 
+    tenant = get_current_tenant(authorization)
+    scope = tenant_scope(tenant)
     storage = get_storage()
-    create_eval_cases_from_confirmed_flags()
-    cases = storage.list_eval_cases(limit=100)
+    create_eval_cases_from_confirmed_flags(scope)
+    cases = storage.list_eval_cases(limit=100, tenant_id=scope)
     if not cases:
         # Seed eval cases from diagnosed failure traces
-        traces = storage.list_traces(limit=20)
+        traces = storage.list_traces(limit=20, tenant_id=scope)
         for t in traces:
-            diag = storage.get_diagnosis_for_trace(t.trace_id)
+            diag = storage.get_diagnosis_for_trace(t.trace_id, tenant_id=scope)
             if diag and diag.root_cause_step:
-                flag = Flag(trace_id=t.trace_id, user_id="system", note="Auto eval case")
+                flag = Flag(
+                    trace_id=t.trace_id,
+                    user_id="system",
+                    note="Auto eval case",
+                    tenant_id=tenant.tenant_id,
+                )
                 storage.create_flag(flag)
                 storage.update_diagnosis_confirmation(diag.diagnosis_id, True)
-        create_eval_cases_from_confirmed_flags()
+        create_eval_cases_from_confirmed_flags(scope)
 
-    run = await run_eval()
+    run = await run_eval(scope)
     if run:
         return {
             "status": "ok",
@@ -261,14 +405,16 @@ async def trigger_eval_run() -> dict[str, object]:
 
 
 @app.post("/pipeline/run-demo")
-async def trigger_pipeline_demo() -> dict[str, object]:
+async def trigger_pipeline_demo(
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
     """Run the 4-step pipeline on all 15 dataset documents and save traces."""
-    from forensics.config import get_settings
     from forensics.llm import using_llm_client
     from forensics.models import Document
     from forensics.pipeline import Pipeline
     from forensics.tracing import trace_context
 
+    tenant = get_current_tenant(authorization)
     settings = get_settings()
     dataset_dir = settings.dataset_dir
     labels_path = dataset_dir / "labels.json"
@@ -291,12 +437,15 @@ async def trigger_pipeline_demo() -> dict[str, object]:
                 continue
             doc_text = doc_path.read_text()
             document = Document(content=doc_text)
-            with trace_context(document_id=doc_id) as ctx:
+            # Traces written by this endpoint belong to the calling tenant, so a
+            # run triggered by tenant A is not listed for tenant B.
+            with trace_context(document_id=doc_id, tenant_id=tenant.tenant_id) as ctx:
                 await pipeline.run(document)
                 if ctx.trace:
                     storage.save_trace(ctx.trace)
                     expected_type = doc_info.get("doc_type")
                     diag = analyze_trace(ctx.trace, doc_text, expected_type)
+                    diag.tenant_id = tenant.tenant_id
                     storage.create_diagnosis(diag)
                     traces_saved += 1
 
@@ -304,7 +453,15 @@ async def trigger_pipeline_demo() -> dict[str, object]:
 
 
 @app.get("/analytics")
-def get_analytics() -> AnalyticsSnapshot:
+def get_analytics_endpoint(
+    authorization: Annotated[str | None, Header()] = None,
+) -> AnalyticsSnapshot:
+    """Authenticated route; the aggregation itself lives in `get_analytics`."""
+    tenant = get_current_tenant(authorization)
+    return get_analytics(tenant_scope(tenant))
+
+
+def get_analytics(tenant_id: str | None = None) -> AnalyticsSnapshot:
     """Get aggregated analytics for dashboard.
 
     A trace counts as a failure when its run status is FAILURE **or** the
@@ -312,9 +469,12 @@ def get_analytics() -> AnalyticsSnapshot:
     reported 0% on a dataset whose seeded failures are semantic (the run
     completed, but the output was wrong), which is the number the dashboard
     exists to show.
+
+    `tenant_id=None` aggregates every tenant; that is what the CLI and dev mode
+    want.
     """
     storage = get_storage()
-    traces = storage.list_traces(limit=10000)
+    traces = storage.list_traces(limit=10000, tenant_id=tenant_id)
 
     total_traces = len(traces)
 
@@ -324,10 +484,10 @@ def get_analytics() -> AnalyticsSnapshot:
     root_cause_latencies: list[float] = []
 
     # Group traces by date for failure_rate_over_time
-    traces_by_date: dict[str, dict] = {}
+    traces_by_date: dict[str, dict[str, int]] = {}
 
     for trace in traces:
-        diagnosis = storage.get_diagnosis_for_trace(trace.trace_id)
+        diagnosis = storage.get_diagnosis_for_trace(trace.trace_id, tenant_id=tenant_id)
         has_semantic_failure = diagnosis is not None and diagnosis.root_cause_step not in (
             "",
             "none",
@@ -395,7 +555,7 @@ if _dist_path.exists():
     app.mount("/assets", StaticFiles(directory=_dist_path / "assets"), name="assets")
 
     @app.get("/{full_path:path}")
-    def serve_frontend_spa(full_path: str):
+    def serve_frontend_spa(full_path: str) -> FileResponse:
         target = _dist_path / full_path
         if target.exists() and target.is_file():
             return FileResponse(target)
