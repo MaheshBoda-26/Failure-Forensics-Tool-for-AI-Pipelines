@@ -191,6 +191,34 @@ class Settings(BaseSettings):
         description="bcrypt cost factor for API key hashing (AUTH_BCRYPT_ROUNDS)",
     )
 
+    # --- Scheduled eval and alerting (spec 06) ---
+    eval_schedule: str = Field(
+        default="",
+        description="Cron expression for the nightly eval; empty disables scheduling",
+    )
+    eval_schedule_timezone: str = Field(
+        default="UTC", description="Timezone the cron expression is interpreted in"
+    )
+    scheduler_db_path: Path = Field(
+        default=Path("data/scheduler.db"),
+        description="SQLite file backing the APScheduler job store (survives restarts)",
+    )
+    alert_webhook_url: str | None = Field(
+        default=None, description="POST target for regression/improvement alerts"
+    )
+    alert_webhook_secret: SecretStr | None = Field(
+        default=None, description="Shared secret used to sign alert payloads with HMAC-SHA256"
+    )
+    alert_regression_threshold: float = Field(
+        default=0.10,
+        ge=0.0,
+        le=1.0,
+        description="Accuracy drop (as a fraction) that counts as a regression",
+    )
+    alert_on_fixed: bool = Field(
+        default=True, description="Also alert when a previously failing case now passes"
+    )
+
     # --- Versions ---
     pipeline_version: str = Field(default="0.1.0")
     schema_version: int = Field(default=1)
@@ -216,6 +244,19 @@ class Settings(BaseSettings):
         path = Path(v)
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    @field_validator("alert_webhook_url", "alert_webhook_secret", mode="before")
+    @classmethod
+    def blank_means_unset(cls, v: Any) -> Any:
+        """Treat an empty env value as "not configured".
+
+        `ALERT_WEBHOOK_SECRET=` in a `.env` file yields an empty string, which is
+        *falsy-looking but truthy as a `SecretStr`* — it would sign alerts with a
+        known-empty key, i.e. no signature at all while looking signed.
+        """
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
     @model_validator(mode="before")
     @classmethod

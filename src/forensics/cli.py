@@ -6,6 +6,7 @@ console script and as `python -m forensics.cli`.
 """
 
 import json
+import signal
 import sys
 from pathlib import Path
 
@@ -566,6 +567,77 @@ def auth_revoke_key(
         )
         raise typer.Exit(code=1)
     typer.secho(f"Revoked key {key_id}", fg=typer.colors.GREEN, err=True)
+
+
+# ─── scheduler (spec 06) ────────────────────────────────────────────────────
+
+
+@app.command(name="scheduler-start")
+def scheduler_start() -> None:
+    """Start the eval scheduler and block (for systemd / a container's PID 1)."""
+    from forensics.scheduler import get_scheduler
+
+    scheduler = get_scheduler(Storage())
+    scheduler.start()
+    if not scheduler.settings.eval_schedule:
+        typer.secho(
+            "EVAL_SCHEDULE is empty, so nothing is scheduled. "
+            "Set it (e.g. '0 2 * * *') and try again.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    typer.secho(
+        f"Scheduler started. Next eval: {scheduler.next_run_time()}",
+        fg=typer.colors.GREEN,
+        err=True,
+    )
+    try:
+        signal.pause()
+    except KeyboardInterrupt:
+        scheduler.stop()
+
+
+@app.command(name="scheduler-status")
+def scheduler_status() -> None:
+    """Show the eval schedule, the next run, and recent runs."""
+    from forensics.scheduler import get_scheduler
+
+    scheduler = get_scheduler(Storage())
+    status = scheduler.describe()
+
+    typer.secho("\n⏰ Eval scheduler", fg=typer.colors.BLUE, bold=True)
+    if not status["schedule"]:
+        typer.secho("  Schedule: (none — EVAL_SCHEDULE is empty)", fg=typer.colors.YELLOW)
+    else:
+        typer.secho(f"  Schedule: {status['schedule']} ({status['timezone']})")
+    typer.secho(f"  Running in this process: {'yes' if status['running'] else 'no'}")
+    typer.secho(f"  Next eval: {status['next_eval'] or 'N/A'}")
+    typer.secho(f"  Job store: {status['job_store']}")
+    typer.secho(
+        "  Alerts: "
+        + (
+            f"webhook configured, regression threshold "
+            f"{status['alert_regression_threshold']:.0%}, "
+            f"on_fixed={status['alert_on_fixed']}"
+            if status["alert_webhook_configured"]
+            else "no ALERT_WEBHOOK_URL configured"
+        )
+    )
+
+    runs = scheduler.storage.list_eval_runs(limit=5)
+    if runs:
+        typer.secho("\n  Recent runs:", fg=typer.colors.BLUE, bold=True)
+        for run in runs:
+            accuracy = f"{run.passed_count / run.total_cases:.0%}" if run.total_cases else "n/a"
+            typer.echo(
+                f"  {run.run_id:<14} {run.started_at.isoformat()} "
+                f"cases={run.total_cases:<4} passed={run.passed_count:<4} "
+                f"failed={run.failed_count:<4} accuracy={accuracy}"
+            )
+    else:
+        typer.secho("\n  No eval runs yet.", fg=typer.colors.YELLOW)
 
 
 def main() -> None:

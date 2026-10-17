@@ -7,6 +7,7 @@ Run eval on a cron schedule; alert on regression via webhook. Uses APScheduler w
 ```bash
 EVAL_SCHEDULE="0 2 * * *"           # cron: daily 2 AM UTC (default: none = disabled)
 EVAL_SCHEDULE_TIMEZONE=UTC
+SCHEDULER_DB_PATH=data/scheduler.db # SQLite job store (survives restarts)
 ALERT_WEBHOOK_URL=                  # POST target for alerts
 ALERT_WEBHOOK_SECRET=               # HMAC secret for signature verification
 ALERT_REGRESSION_THRESHOLD=0.10     # 10% accuracy drop triggers alert
@@ -169,45 +170,58 @@ def scheduler_status():
 ```
 
 ### `src/forensics/cli.py`
-```python
-@app.command()
-def scheduler_start():
-    """Start the eval scheduler (runs in foreground)."""
-    from forensics.scheduler import get_scheduler
-    from forensics.storage import Storage
-    import signal
-
-    sched = get_scheduler(Storage())
-    sched.start()
-    print(
-        f"Scheduler started. Next eval: {sched.scheduler.get_job('scheduled_eval').next_run_time}"
-    )
-    signal.pause()
-
-
-@app.command()
-def scheduler_status():
-    from forensics.scheduler import get_scheduler
-    from forensics.storage import Storage
-
-    sched = get_scheduler(Storage())
-    jobs = sched.scheduler.get_jobs()
-    for job in jobs:
-        print(f"  {job.id}: next={job.next_run_time}")
+```bash
+forensics scheduler-start    # foreground (systemd / container PID 1)
+forensics scheduler-status   # schedule, next run, recent runs
 ```
 
+### `src/forensics/api.py`
+`GET /scheduler/status` reports the same thing without the job-store path.
+
+## Implementation notes
+
+The sketch above is a design sketch; the shipped code differs in four places,
+each for a concrete reason.
+
+1. **The job function is module-level, not a bound method.** APScheduler pickles
+   jobs into the SQLite store, and pickling `self._run_scheduled_eval` would drag
+   the whole `EvalScheduler` — settings, HTTP transport, live connection — into
+   the blob. `_scheduled_eval_job` resolves the process-wide scheduler at call time.
+2. **The coroutine needs an explicit event loop.** APScheduler runs sync callables
+   in a worker thread, so `run_now()` wraps `run_scheduled_eval()` in
+   `asyncio.run`. Handing APScheduler an `async def` job returns an un-awaited
+   coroutine and the eval silently never runs.
+3. **`ALERT_ON_FIXED` compares case by case.** `passed_count > 0` is true after
+   every healthy run, which would alert on every run. The shipped version diffs
+   the previous run's failing case ids against the current run's passing ones.
+4. **`regression_pct` is a percentage.** The accuracies beside it are fractions,
+   so `0.90 → 0.70` reports `regression_pct: 20.0`. The comparison is rounded
+   before testing the threshold: `1.0 - 0.9` is `0.09999999999999998` in binary
+   floating point, so an exactly-10% drop would otherwise miss a 10% threshold.
+
+Also: the spec's `datetime`/`UTC` names were missing its import, and the startup
+hooks are wired into the existing FastAPI `lifespan` rather than the deprecated
+`@app.on_event`, so plugin loading and scheduler start-up have one owner.
+`scheduler_status` (the FastAPI route) is behind the same API-key check as every
+other data route.
+
 ## Acceptance Criteria
-1. `EVAL_SCHEDULE=""`: scheduler not started
+1. `EVAL_SCHEDULE=""`: scheduler not started (and `stop()` on shutdown is safe)
 2. `EVAL_SCHEDULE="0 2 * * *"`: runs eval daily at 2 AM UTC
-3. On regression ≥10%: POST to webhook with `alert_type: eval_regression`
-3. Webhook payload includes run_id, accuracies, regression_pct, failed_cases
-4. HMAC signature verified with `ALERT_WEBHOOK_SECRET`
-5. `forensics scheduler_start` runs foreground (for systemd/container)
-6. `forensics scheduler_status` shows next run time
-7. Scheduler survives process restart (SQLite job store)
+3. On regression ≥ `ALERT_REGRESSION_THRESHOLD`: POST to webhook with
+   `alert_type: eval_regression`
+4. Webhook payload includes `run_id`, `previous_accuracy`, `current_accuracy`,
+   `regression_pct`, `failed_cases`; the body is signed
+   `X-Signature: sha256=<hmac>` when `ALERT_WEBHOOK_SECRET` is set
+5. `ALERT_ON_FIXED=true`: a case that failed in the previous run and passes now
+   produces an `eval_improvement` alert listing `fixed_cases`
+6. `forensics scheduler-start` runs in the foreground (for systemd / a container)
+7. `forensics scheduler-status` shows the schedule and the next run time
+8. Scheduler survives a process restart (SQLite job store)
 
 ## Effort
-- **Files**: 1 new (`scheduler.py`), 2 modified
-- **Deps**: `apscheduler>=3.10`, `httpx>=0.27` (add to `pyproject.toml`)
+- **Files**: 1 new (`scheduler.py`), 3 modified (`config.py`, `api.py`, `cli.py`)
+- **Deps**: `apscheduler>=3.10`, `sqlalchemy>=2.0` (required by
+  `SQLAlchemyJobStore`), `httpx` (already present)
 - **Time**: ~3 hours
 - **Risk**: Medium (background scheduler, async in sync context)

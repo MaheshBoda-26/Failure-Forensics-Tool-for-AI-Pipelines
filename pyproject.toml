@@ -17,6 +17,10 @@ dependencies = [
     # Required, not optional: `forensics.auth` is imported by `forensics.api`
     # and `forensics.cli`, so the package cannot be imported without it.
     "bcrypt>=4.1",
+    # Same reasoning (spec 06): the scheduled eval and its SQLite-backed job
+    # store are core features; `SQLAlchemyJobStore` needs SQLAlchemy.
+    "apscheduler>=3.10",
+    "sqlalchemy>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -31,10 +35,6 @@ dev = [
 otel = [
     "opentelemetry-exporter-otlp>=1.20",
     "opentelemetry-exporter-otlp-proto-http>=1.20",
-]
-scheduler = [
-    "apscheduler>=3.10",
-    "httpx>=0.27",
 ]
 
 [project.scripts]
@@ -67,6 +67,13 @@ strict = true
 packages = ["forensics"]
 mypy_path = "src"
 warn_unreachable = true
+
+# APScheduler ships no type information (no `py.typed`, no stubs on PyPI), so
+# strict mode cannot analyse it. Its objects are real at runtime; the few values
+# that reach typed code are annotated explicitly at the boundary.
+[[tool.mypy.overrides]]
+module = ["apscheduler.*"]
+ignore_missing_imports = true
 
 # OTLP export is a genuine optional extra: `make install` pulls it in, but the
 # package must typecheck and import without it (the import is lazy inside

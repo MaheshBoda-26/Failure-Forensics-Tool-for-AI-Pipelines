@@ -63,9 +63,34 @@ Decisions worth recording:
 - Verified for real: fresh venv + `uv pip install -e ".[dev]"` → ruff clean, mypy strict clean,
   256 tests pass. `make check` green from a clean checkout, with no optional extra installed.
 
-## Phase 4 — 06-scheduled-eval
-- [ ] T12. `scheduler.py` + hooks
-- [ ] T13. `tests/test_scheduler.py`
+## Phase 4 — 06-scheduled-eval  ✅
+- [x] T12. `scheduler.py` + hooks (config, API lifespan, `scheduler-start`/`scheduler-status` CLI, `/scheduler/status`)
+- [x] T13. `tests/test_scheduler.py` (29 tests, all 8 acceptance criteria)
+
+Decisions worth recording:
+- **SQLAlchemy promoted to a required dependency.** `SQLAlchemyJobStore` (the
+  SQLite job store criterion 7 requires) raises `ImportError` without it, and the
+  spec's own dependency list omitted it. Adding the dep is the honest fix;
+  reimplementing APScheduler's job store in raw sqlite3 would be a riskier way to
+  satisfy the same criterion.
+- **The job is a module-level function.** APScheduler pickles jobs into the
+  store, so a bound method would serialise the whole scheduler (settings,
+  transport, live connections). `_scheduled_eval_job` resolves the global at run
+  time.
+- **`asyncio.run` in the job wrapper.** APScheduler runs sync callables in a
+  worker thread; passing the `async def` directly yields an un-awaited coroutine,
+  i.e. an eval that silently never runs.
+- **`ALERT_ON_FIXED` diffs case by case.** The sketch alerted on
+  `passed_count > 0`, which fires after every healthy run.
+- **Float comparison rounded before the threshold test**: `1.0 - 0.9` is
+  `0.09999999999999998`, so an exactly-10% drop missed a 10% threshold. Found by
+  the boundary test, not by inspection.
+- `regression_pct` is a real percentage (the accuracies beside it are fractions),
+  and tests exercise the webhook through `httpx.MockTransport`, so the real
+  request-building code runs without touching the network.
+- Spec 06 corrected: command names (`scheduler-start`, not `scheduler_start`),
+  duplicate criterion number, `SCHEDULER_DB_PATH`, dependency list, and an
+  "Implementation notes" section recording the four deliberate divergences.
 
 ## Phase 5 — 07-worker-queue
 - [ ] T14. `queue.py` + `worker.py`

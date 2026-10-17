@@ -37,12 +37,21 @@ from forensics.storage import Storage
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """Load custom check plugins at startup so a bad CHECK_PLUGINS fails fast."""
+    """Start-up and shutdown work that must not happen at import time.
+
+    Loads custom check plugins so a bad CHECK_PLUGINS fails fast, and starts the
+    scheduled eval when one is configured (a no-op otherwise).
+    """
     from forensics.checks import load_plugins_from_config
-    from forensics.config import get_settings
+    from forensics.scheduler import get_scheduler
 
     load_plugins_from_config(get_settings().check_plugins)
-    yield
+    scheduler = get_scheduler(get_storage())
+    scheduler.start()
+    try:
+        yield
+    finally:
+        scheduler.stop()
 
 
 app = FastAPI(title="Failure Forensics API", version="0.1.0", lifespan=_lifespan)
@@ -166,6 +175,22 @@ def health() -> dict[str, str]:
     smoke test) has no API key to present.
     """
     return {"status": "ok"}
+
+
+@app.get("/scheduler/status")
+def scheduler_status(
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    """Whether the scheduled eval is running, and when it fires next.
+
+    Rejects unauthenticated callers like the data routes, and deliberately omits
+    `job_store`: a filesystem path is not something every tenant needs.
+    """
+    get_current_tenant(authorization)
+    from forensics.scheduler import get_scheduler
+
+    status = get_scheduler(get_storage()).describe()
+    return {key: value for key, value in status.items() if key != "job_store"}
 
 
 @app.get("/traces", response_model=list[Trace])
