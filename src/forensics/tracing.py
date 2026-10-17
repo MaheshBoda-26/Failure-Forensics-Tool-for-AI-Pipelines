@@ -27,7 +27,7 @@ from pydantic import BaseModel
 from forensics.config import get_settings
 from forensics.migrations import migrate
 from forensics.models import DEFAULT_TENANT_ID, Span, Trace, TraceStatus
-from forensics.otel_export import DEFAULT_MAX_PROMPT_CHARS, ForensicsSpanProcessor, configure_otel
+from forensics.otel_export import ForensicsSpanProcessor, configure_otel
 from forensics.pii import create_redactor_from_settings
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -467,10 +467,13 @@ def finalize_trace(
     try:
         _provider, configured, exporter = configure_otel()
         if configured and exporter is not None:
-            # Use settings for max_prompt_chars
             settings = get_settings()
-            max_prompt_chars = getattr(settings, "otel_max_prompt_chars", DEFAULT_MAX_PROMPT_CHARS)
-            otel_processor = ForensicsSpanProcessor(trace, exporter, max_prompt_chars)
+            otel_processor = ForensicsSpanProcessor(
+                trace,
+                exporter,
+                settings.otel.max_prompt_chars,
+                settings.otel.sampling_rate,
+            )
             for span in trace.spans:
                 otel_processor.on_end(span)
     except Exception:

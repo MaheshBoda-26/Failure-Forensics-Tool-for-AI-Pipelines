@@ -178,3 +178,78 @@ def test_processor_on_end_bridges_completed_spans() -> None:
     spans = exporter.get_finished_spans()
     assert len(spans) == 1
     assert spans[0].name == "forensics.extraction"
+
+
+def test_sampling_rate_zero_drops_the_whole_trace() -> None:
+    """`OTEL_SAMPLING_RATE` was parsed but never applied, so it did nothing."""
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    trace = _trace_with_span()
+    processor = ForensicsSpanProcessor(trace=trace, exporter=exporter, sampling_rate=0.0)
+
+    processor.on_end(trace.spans[0])
+
+    assert list(exporter.get_finished_spans()) == []
+
+
+def test_sampling_rate_one_exports_every_span() -> None:
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    trace = _trace_with_span()
+    processor = ForensicsSpanProcessor(trace=trace, exporter=exporter, sampling_rate=1.0)
+
+    processor.on_end(trace.spans[0])
+
+    assert len(exporter.get_finished_spans()) == 1
+
+
+def test_sampling_decision_is_per_trace_not_per_span() -> None:
+    """A partially exported trace is worse than an unexported one."""
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    trace = _trace_with_span()
+    second = trace.spans[0].model_copy(update={"span_id": "span-2"})
+    trace.spans.append(second)
+
+    exporter = InMemorySpanExporter()
+    processor = ForensicsSpanProcessor(trace=trace, exporter=exporter, sampling_rate=0.0)
+    for span in trace.spans:
+        processor.on_end(span)
+
+    assert list(exporter.get_finished_spans()) == []
+
+
+def test_settings_drive_sampling_and_prompt_truncation(monkeypatch) -> None:
+    """`OTEL_SAMPLING_RATE` and `OTEL_MAX_PROMPT_CHARS` must reach the processor.
+
+    `max_prompt_chars` was read with `getattr(settings, "otel_max_prompt_chars", ...)`
+    for a setting that did not exist, so it silently always used the default.
+    """
+    from forensics.config import get_settings, reset_settings
+
+    monkeypatch.setenv("OTEL_MAX_PROMPT_CHARS", "12")
+    monkeypatch.setenv("OTEL_SAMPLING_RATE", "0.5")
+    reset_settings()
+    try:
+        settings = get_settings()
+        assert settings.otel.max_prompt_chars == 12
+        assert settings.otel.sampling_rate == 0.5
+    finally:
+        reset_settings()
+
+
+def test_export_trace_to_otel_uses_the_settings_limit() -> None:
+    """The truncation limit is a privacy control, so it must bound the export."""
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    trace = _trace_with_span()
+    trace.spans[0].prompt = "y" * 500
+    exporter = InMemorySpanExporter()
+
+    export_trace_to_otel(trace, exporter=exporter, max_prompt_chars=8)
+
+    exported = exporter.get_finished_spans()[0].attributes[GENAI_ATTRS["prompt"]]
+    assert exported.startswith("y" * 8)
+    assert len(exported) < 40

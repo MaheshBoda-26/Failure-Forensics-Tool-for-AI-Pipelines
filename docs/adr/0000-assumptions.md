@@ -28,6 +28,14 @@ This document records the assumptions made when generating the build plan for th
 | A6 | Vercel + Supabase | Requires storage refactor; Render keeps current SQLite/JSON design |
 | A7 | Same family for judge | Known weakness (self-preference bias); free to avoid on OpenRouter |
 
+## Corrections
+
+- **A6 (hosting) is half wrong.** Render does not offer persistent disks on the
+  free tier: a disk requires a paid instance (`plan: starter`), and free services
+  also spin down when idle, which stops a nightly eval. `render.yaml` therefore
+  declares `plan: starter` with the disk, and `README.md` documents the free-plan
+  variant (no disk, ephemeral `data/`, re-seed after each deploy).
+
 ## Consequences
 - The plan assumes 84 total hours (14 × 6). If actual hours drop to 4/day (56h), the cut list activates immediately.
 - $30 budget with $10 minimum top-up leaves $20 usable. At ~$0.05/run (cheap pipeline model), ~400 runs possible — sufficient for development + 2 full eval passes.

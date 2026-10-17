@@ -152,6 +152,31 @@ Real defects found and fixed while making the deploy honest:
 - `.env.example` gained every setting added by specs 04/06/07 (auth, scheduler, alerts, queue),
   plus the PII/OTel/judge/plugins block it never documented.
 
-## Phase 7 — Docs truth pass
-- [ ] T18. `docs/limitations.md`
-- [ ] T19. README / docs README / ADRs
+## Phase 7 — Docs truth pass  ✅
+- [x] T18. `docs/limitations.md` rewritten: a "Resolved in this revision" table names each item the old
+      file listed as missing (judge, auth, scheduler, plugins, PII, React) with its status, and the
+      remaining 17 entries are real, current limits — each with impact, mitigation, and the measurement
+      behind it. No table row presents shipped work as missing.
+- [x] T19. `docs/README.md` written (index of specs → test files, ADRs 0000–0015, guides, and how to
+      verify claims), ADRs 0013/0014/0015 added for the auth, scheduler, and queue decisions, ADR 0000's
+      hosting assumption corrected, and `README.md` refreshed (status table, spec-to-test map, deploy
+      guide, real CLI surface, honest demo prerequisites).
+
+Verification of "every command in the README runs as documented":
+`make install` (now re-runnable), `make check`, `make test`, `make dev`, `make run-web` (serves the API
+*and* the compiled SPA), `ping`, `validate-config`, `validate-dataset`, `demo`, `run`, `eval`,
+`analytics`, `benchmark-analyzer`, every `auth`/`scheduler-*`/`worker`/`queue` subcommand, and
+`scripts/smoke.sh` against a live local server. `pytest -m live` is documented as requiring a real key
+and was not run (quota); that precondition is stated in the README.
+
+More real defects found while doing this pass:
+- **`make install` failed for anyone who had already run it** — `uv venv` refuses to touch an existing
+  `.venv` and exits non-zero. `--allow-existing` makes the documented first step idempotent.
+- **`OTEL_SAMPLING_RATE` was parsed but never applied**, and `max_prompt_chars` was read via
+  `getattr(settings, "otel_max_prompt_chars", default)` for a setting that did not exist. Sampling is
+  now a per-trace head-based decision and the prompt-truncation limit is a real setting; both are
+  tested (`tests/test_otel_export.py`, now 15 tests).
+- **`frontend/package-lock.json` had a stale root block** (name `frontend`, `license: ISC`, and older
+  react/lucide ranges) that disagreed with `package.json`. `npm install` resynced it; `npm ci` and
+  `npm run build` now both work from a clean checkout, which the deploy build depends on.
+- `forensics ping`'s docstring promised a connectivity test it deliberately does not make.

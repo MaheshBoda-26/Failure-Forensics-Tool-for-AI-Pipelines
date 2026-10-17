@@ -56,6 +56,16 @@ class OTelSettings(BaseModel):
     sampling_rate: float = Field(
         default=1.0, ge=0.0, le=1.0, description="Head-based sampling rate"
     )
+    max_prompt_chars: int = Field(
+        default=4000,
+        gt=0,
+        description=(
+            "Prompt characters exported per span. Truncation is a privacy control: "
+            "exported spans leave the process and reach a third-party collector, "
+            "while the local trace files are what PII redaction covers. Mirrors "
+            "`otel_export.DEFAULT_MAX_PROMPT_CHARS`."
+        ),
+    )
 
 
 class Settings(BaseSettings):
@@ -171,6 +181,7 @@ class Settings(BaseSettings):
     otel_sampling_rate: float = Field(
         default=1.0, ge=0.0, le=1.0, validation_alias="OTEL_SAMPLING_RATE"
     )
+    otel_max_prompt_chars: int = Field(default=4000, gt=0, validation_alias="OTEL_MAX_PROMPT_CHARS")
     otel: OTelSettings = Field(default_factory=OTelSettings)
 
     # --- PII Redaction ---
@@ -322,6 +333,7 @@ class Settings(BaseSettings):
                 "endpoint": bound("OTEL_ENDPOINT") or "http://localhost:4318/v1/traces",
                 "service_name": bound("OTEL_SERVICE_NAME") or "failure-forensics",
                 "sampling_rate": bound("OTEL_SAMPLING_RATE") or 1.0,
+                "max_prompt_chars": bound("OTEL_MAX_PROMPT_CHARS") or 4000,
             }
         return data
 

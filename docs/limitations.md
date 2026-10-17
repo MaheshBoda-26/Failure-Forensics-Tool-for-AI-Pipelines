@@ -1,254 +1,344 @@
-# Failure Forensics Tool — Known Limitations (v0)
+# Failure Forensics Tool — Known Limitations
 
-This document honestly enumerates the current limitations of the Failure Forensics Tool as of Phase 6 (v0). These are not bugs; they are deliberate scope cuts or known gaps with documented mitigations.
+This document enumerates what the tool does **not** do, as shipped. Every entry
+is a scope decision or a known gap with its impact and mitigation stated. Nothing
+here is presented as a bug.
 
----
-
-## 1. No Judge LLM (Semantic Evaluation)
-
-**Limitation**: The analyzer uses only deterministic checks (entity grounding, label enum, date regex, context preservation, propagation, prompt schema). It cannot detect semantic failures like "the summary captures the wrong sentiment" or "the extraction misses a nuanced entity."
-
-**Impact**: Purely structural/syntactic failures are caught; semantic quality is not assessed.
-
-**Mitigation**:
-- Deterministic checks cover the most common failure modes in extraction/classification pipelines
-- Evidence chains enable human review to catch semantic issues
-- Judge LLM integration is the #1 priority for v1 (see `PROMPT.md` Phase 3)
+Last verified against the working tree at commit `cb373e9` (specs 01–07 complete,
+`make check` green with 344 tests).
 
 ---
 
-## 2. No Propagation Analysis (Global Fidelity = Local Fidelity)
+## Resolved in this revision
 
-**Limitation**: The analyzer treats each step independently. It does not model how an error in step N propagates to and compounds in step N+1. The `propagation` check only detects terminology mismatches between classification and summarization.
+The previous revision of this file listed shipped work as missing. These six are
+implemented, tested, and reachable by configuration:
 
-**Impact**: Cascading failures may be under-reported. A hallucinated entity in extraction that causes misclassification AND bad summarization is counted as three separate root causes rather than one cascading failure.
+| Previously listed as missing | Now |
+|---|---|
+| "No Judge LLM" | `JUDGE_ENABLED=true` runs a semantic judge; verdicts land in `Diagnosis.judge_analysis` (spec 02). Per-step spend is separable via the `judge` tag. |
+| "No Multi-Tenant / Auth" | API keys (bcrypt, `ffk_` prefix) + tenant-scoped reads and writes (spec 04). `tenant_id` on all seven tables, with an idempotent migration for existing data. |
+| "No Scheduled Eval / Alerting" | APScheduler cron job with HMAC-signed regression/improvement webhooks and a SQLite job store that survives restarts (spec 06). |
+| "No Custom Check Plugins" | `CHECK_PLUGINS=module:attr,…` registers custom deterministic checks, validated at startup (spec 05). |
+| "No PII Redaction" | Regex redaction at the persistence boundary, before the JSON and SQLite writes (spec 03). |
+| "No React Frontend (Streamlit Only)" | `frontend/` is React + Vite + React Flow; `streamlit_app.py` is the legacy explorer. |
 
-**Mitigation**:
-- The `propagation` check catches the most common case: classification/summarization terminology mismatch
-- Evidence chains explicitly cite the upstream span, enabling manual tracing
-- Full propagation graph analysis is planned for v1
+Two further configuration gaps were closed at the same time, because a setting
+that silently does nothing is worse than a missing one:
 
----
-
-## 3. Dry-Run Only in CI (No Live LLM Validation)
-
-**Limitation**: All automated tests run with `DRY_RUN=true` and a fake LLM that returns canned responses. The real OpenRouter integration, structured output tiers, retry logic, and spend tracking are only exercised manually.
-
-**Impact**:
-- Real model behavior (hallucination patterns, refusal styles, structured output compliance) is untested in CI
-- Cost accounting and spend caps are only validated against mock responses
-- Cache hit/miss behavior with real model outputs untested
-
-**Mitigation**:
-- LLM client unit tests use `httpx.MockTransport` with realistic response shapes
-- Structured output tier logic is tested with Pydantic validation errors
-- Live validation script: `python -m forensics.cli demo` (requires API key)
-
----
-
-## 4. Small Demo Dataset (15 Documents)
-
-**Limitation**: The seeded dataset contains only 15 documents (3 per type × 5 types) with exactly 5 seeded failures (1 per type + 1 mixed).
-
-**Impact**:
-- Statistical significance of analytics is negligible
-- Failure type frequency, step frequency, and time-to-root-cause are not representative
-- Eval loop trend tracking has insufficient data points
-
-**Mitigation**:
-- Dataset generation script (`seed` command) is stubbed for Phase 1 expansion to 50 documents
-- Schema supports arbitrary document count
-- Analytics endpoint gracefully handles small samples
+- `OTEL_*` environment variables were **ignored entirely** (pydantic-settings
+  fills a nested model only from `OTEL__EXPORTER` and drops env vars matching no
+  field), so spec 01's OTel feature was unreachable. `OTEL_EXPORTER=none|console|otlp`,
+  `OTEL_ENDPOINT`, `OTEL_SERVICE_NAME`, `OTEL_SAMPLING_RATE` and
+  `OTEL_MAX_PROMPT_CHARS` now bind.
+- `OTEL_SAMPLING_RATE` was parsed but never applied, and `max_prompt_chars` was
+  read with a `getattr` default for a setting that did not exist. Sampling is now
+  a per-trace head-based decision, and the prompt-truncation limit is real.
 
 ---
 
-## 5. Fake LLM in Tests Only
+## 1. The bundled UI cannot authenticate
 
-**Limitation**: The `FakeLLM` in `fake_llm.py` returns identical canned responses for all documents. It does not simulate model variability, refusal behavior, or structured output failures.
+**Limitation**: with `AUTH_ENABLED=true`, every data route requires
+`Authorization: Bearer ffk_…`, and the React client
+(`frontend/src/api/client.ts`) sends no such header. There is no key-entry UI.
 
-**Impact**:
-- Tests verify structure, not semantic correctness
-- Retry logic on 429/5xx is tested with mock transport, not real model behavior
-- Cache key differentiation by prompt content not fully exercised
+**Impact**: the bundled UI shows empty views against an authenticated API. The
+API itself is fully usable with `curl`, `scripts/smoke.sh`, or any client that
+sets the header.
 
-**Mitigation**:
-- MockTransport tests use document-specific response payloads
-- Real model integration tested manually via `demo` and `run` commands
-
----
-
-## 6. No React Frontend (Streamlit Only)
-
-**Limitation**: The trace explorer is built with Streamlit, not a custom React/React Flow application.
-
-**Impact**:
-- Limited customization of graph visualization (node layout, edge routing, animations)
-- No real-time updates (WebSocket) for live trace streaming
-- Less polished UX compared to a custom React Flow implementation
-
-**Mitigation**:
-- Streamlit provides sufficient interactivity for demo purposes
-- Plotly + NetworkX graph is interactive (zoom, pan, hover tooltips)
-- React/React Flow frontend deferred to v1 (see `PLAN.md` Phase 4)
+**Mitigation**: `render.yaml` deploys with `AUTH_ENABLED=false` for the public
+demo, which is the configuration the UI is built for. For a locked-down
+deployment, use the API directly or add a key field to the client's fetch
+wrapper (one header, one input).
 
 ---
 
-## 7. No OTel Collector Integration
+## 2. A worker that dies mid-job leaves the job `running` forever
 
-**Limitation**: The OTel export uses a custom `ForensicsSpanProcessor` with `SimpleSpanProcessor` + `ConsoleSpanExporter` (or in-memory exporter). No OTel Collector is deployed.
+**Limitation**: jobs are claimed by an atomic `UPDATE … RETURNING`, but nothing
+reclaims a job whose worker was killed (SIGKILL, OOM, deploy) after claiming it.
+There is no visibility timeout and no reaper.
 
-**Impact**:
-- Spans not visible in standard observability platforms (Jaeger, Zipkin, Grafana Tempo)
-- No distributed trace context propagation across services
-- No sampling, batching, or export resilience
+**Impact**: the job never completes and is never retried; `attempts` stays at
+whatever the claim set. Nothing else in the queue is affected, and no other job
+is blocked.
 
-**Mitigation**:
-- `ForensicsSpanProcessor` implements the standard `SpanProcessor` interface
-- Swapping to `BatchSpanProcessor` + OTLP exporter is a one-line change
-- Stdout exporter works for local demo/debugging
+**Mitigation**: `SIGTERM` is handled cleanly (the loop finishes its current batch
+and exits), which covers an ordinary deploy or restart. For a hard kill, requeue
+by hand:
 
----
+```sql
+UPDATE job_queue SET status='pending', worker_id=NULL WHERE job_id='…';
+```
 
-## 8. No Multi-Tenant / Auth
-
-**Limitation**: Single-user, no authentication, no tenant isolation. All traces, flags, diagnoses, eval cases share the same SQLite database.
-
-**Impact**:
-- Not suitable for production multi-user deployment
-- No RBAC, audit logging, or data isolation
-
-**Mitigation**:
-- Single-user scope matches demo/portfolio scope
-- SQLite + file-based JSON is portable and inspectable
-- Multi-tenancy planned for v1+ with PostgreSQL backend
+A reaper would need `QUEUE_STALL_TIMEOUT` plus a policy for repeated crashes;
+that is deliberately not guessed at here.
 
 ---
 
-## 9. No Scheduled Eval / Alerting
+## 3. The scheduled eval is tenant-agnostic
 
-**Limitation**: Eval runs are manual (`eval-run` command). No cron, no webhook triggers, no Slack/email alerts on regression.
+**Limitation**: the nightly run evaluates **every** tenant's eval cases in one
+`EvalRun`, which is recorded under the `default` tenant.
 
-**Impact**:
-- Regression detection requires manual intervention
-- No continuous monitoring of failure trends
+**Impact**: a per-tenant accuracy history is not available from the scheduled
+run. Per-tenant runs are available through `POST /eval/run` with that tenant's
+key.
 
-**Mitigation**:
-- `eval-run` CLI command is idempotent and scriptable
-- Can be wrapped in cron: `0 2 * * * /path/to/forensics eval-run`
-- GitHub Actions workflow can run eval on PR merge
-
----
-
-## 10. No Custom Check Plugins
-
-**Limitation**: The 6 deterministic checks are hardcoded in `analyzer_simple.py`. No plugin system for domain-specific checks.
-
-**Impact**:
-- Cannot add checks like "PII detection", "citation verification", "format compliance" without code changes
-- Not extensible for domain-specific pipelines
-
-**Mitigation**:
-- Check functions are isolated and follow a consistent signature
-- Plugin architecture planned for v1 (`checks/` directory with entry points)
+**Mitigation**: with a single-tenant deployment (the demo) this is exactly the
+desired behaviour — one number for the whole instance. A per-tenant schedule is a
+configuration shape (tenant → cron), not an algorithm.
 
 ---
 
-## 11. Single-Process SQLite
+## 4. With auth disabled, the API serves every tenant's data
 
-**Limitation**: SQLite with WAL mode handles concurrent reads but single writer. Not suitable for high-throughput or multi-process deployments.
+**Limitation**: `AUTH_ENABLED=false` applies **no** tenant filter. That is
+deliberate — the criterion is "works as before" — but it means switching auth off
+re-exposes data that auth mode separates.
 
-**Impact**:
-- CLI, API, and Streamlit cannot all write concurrently
-- Not horizontally scalable
+**Impact**: an operator who turns auth off on a database that already holds
+several tenants' data can read all of it. Records are still *written* under a
+concrete tenant (`default` in dev mode), so the separation is intact if auth is
+turned back on.
 
-**Mitigation**:
-- Demo scope is single-process
-- PostgreSQL migration path documented for v1+
-- Read-heavy workload (traces written once, read many times)
-
----
-
-## 12. No Prompt Versioning in Traces
-
-**Limitation**: Traces store `prompt_version` string but the actual prompt templates are not versioned in storage. Changing a prompt template doesn't create a new version automatically.
-
-**Impact**:
-- Cannot reproduce exact prompt that produced a trace
-- A/B testing of prompts requires manual version management
-
-**Mitigation**:
-- `prompt_version` field exists in `Trace` and `Span` models
-- CLI `demo` command uses fixed prompt versions
-- Full prompt content + hash versioning planned for v1
+**Mitigation**: treat `AUTH_ENABLED` as a deployment-wide switch, not a per-user
+preference. The value is logged at startup through the resolved settings, and
+`/scheduler/status` and `/jobs` are authenticated in both modes.
 
 ---
 
-## 13. No PII Redaction
+## 5. An in-flight job's document text is on disk, unredacted
 
-**Limitation**: Document text and span I/O are stored verbatim in JSON and SQLite. No automatic PII detection/redaction.
+**Limitation**: `job_queue.payload` holds the document text the pipeline is about
+to send to the model. PII redaction (spec 03) covers traces at the persistence
+boundary; the queue is pipeline *input*, and redacting it would change what the
+model sees.
 
-**Impact**:
-- Sensitive data in documents ends up in trace files and database
-- Not compliant with GDPR/CCPA for production use
+**Impact**: while a job is pending or running, its raw document text sits in the
+same SQLite file as the (redacted) traces. A finished job's payload is cleared to
+`{}`, so the exposure window is the job's lifetime, not the retention window.
 
-**Mitigation**:
-- Demo dataset contains no real PII
-- `analyzer_simple.py` never logs document content
-- PII redaction pipeline planned for v1+
-
----
-
-## 14. No Cost Estimation Before Request
-
-**Limitation**: Spend caps are enforced after the HTTP response (actual token counts). No pre-flight estimation to reject requests likely to exceed caps.
-
-**Impact**:
-- A single request can exceed the per-run cap before being rejected
-- Global cap may be exceeded by one request
-
-**Mitigation**:
-- Caps are generous for demo ($0.50/run, $20 global)
-- Post-request accounting prevents repeated overages
-- Pre-flight estimation (using `max_tokens` × price) planned for v1
+**Mitigation**: this is why payloads are cleared on `completed`/`failed` and why
+`QUEUE_JOB_TTL` (default 24h) only ever deletes terminal rows. A deployment that
+cannot accept even a short-lived plaintext window should reference documents by
+path (`doc_id`) instead of inlining `doc_text`.
 
 ---
 
-## 15. No Horizontal Scaling
+## 6. The fault scorecard's `context_loss` fault needs a trace with entities
 
-**Limitation**: All components (pipeline, API, Streamlit, eval) run in a single Python process. No worker pool, no message queue, no horizontal scaling.
+**Limitation**: `_inject_context_loss` summarizes without the grounded entities.
+If the baseline trace extracted **no** entities, a summary that omits them is
+indistinguishable from one that never had them, so `context_preservation` has
+nothing to compare and the fault is scored as a miss.
 
-**Impact**:
-- Throughput limited to ~1 document/second (LLM latency bound)
-- No parallel eval case execution
-- No load balancing
+**Impact**: the scorecard under-reports the analyzer's real accuracy on traces
+produced by `DRY_RUN=true`, whose canned extraction returns no entities.
+`forensics benchmark-analyzer` reports 85.7% step/category accuracy in that
+configuration; the remaining miss is this fault, not a detector failure.
 
-**Mitigation**:
-- Demo scope is single-threaded
-- `Pipeline` class is stateless and trivially parallelizable
-- Celery/RQ integration planned for v1+
+**Mitigation**: score against a real (non-dry-run) baseline trace, which has
+entities to lose. The injector's own no-op class of bug — choosing a label equal
+to the correct one — was fixed and is regression-tested.
+
+---
+
+## 7. DRY_RUN's canned classification is keyword-driven
+
+**Limitation**: the offline fixture picks a document type from keywords in the
+prompt (`invoice`/`bill to`, `report`/`analysis`/`findings`,
+`dear`/`email`/`letter`/`memo`, `mixed`/`proposal`) and defaults to `contract`,
+with explicit overrides for the five seeded-failure documents.
+
+**Impact**: documents that never name their own type are classified `contract`,
+so `forensics demo` in dry-run mode reports a low classification accuracy
+(3/15) that reflects the fixture, not the pipeline. The five seeded failures are
+still reproduced exactly, which is what the eval loop needs.
+
+**Mitigation**: the demo's numbers are only meaningful for the seeded documents.
+Use a real API key for a representative accuracy figure; the README's seeded-failures
+table describes dataset ground truth, not dry-run output.
+
+---
+
+## 8. No pre-flight cost check
+
+**Limitation**: spend caps are enforced *after* the response, using actual token
+counts. Nothing rejects a request that is likely to exceed a cap before sending
+it.
+
+**Impact**: one request can overshoot the per-run cap, and the global cap can be
+overshot by one request. With the default prices (0.0, see item 10) the counters
+read as no spend at all.
+
+**Mitigation**: caps are generous for the demo ($0.50/run, $20 global) and
+post-hoc accounting prevents repeated overages. Pre-flight estimation from
+`max_tokens × price` is a small addition when real prices are configured.
+
+---
+
+## 9. Prompt templates are not stored with traces
+
+**Limitation**: `prompt_version` records a version identifier, and the span holds
+the full rendered prompt, but the *template* that produced it is not archived.
+
+**Impact**: a trace can be replayed and diffed against the code in the tree, but
+not against the template revision that was live when it ran.
+
+**Mitigation**: `prompt_version` is on every `VersionedModel`, and the prompt text
+itself is in the span, so the evidence for "what the model actually saw" is
+complete. Template archiving is a storage feature, not a forensics one.
+
+---
+
+## 10. Prices default to zero
+
+**Limitation**: `.env.example` ships `*_PRICE_IN`/`*_PRICE_OUT` as `0.0` with a
+`VERIFY BEFORE USE` banner, because hosted prices change and inventing them is
+worse than leaving them blank.
+
+**Impact**: `total_cost_usd`, the per-run/global caps, and the per-step spend
+attribution (`judge` included) all compute correctly but read zero until real
+prices are set.
+
+**Mitigation**: set real per-1M prices in `.env`. The accounting code is
+price-agnostic; only the values need filling in.
+
+---
+
+## 11. The propagation check is a heuristic, not a dataflow analysis
+
+**Limitation**: `propagation` detects the common case — terminology that appears
+in one step's output and goes missing downstream. It does not build a dependency
+graph of the pipeline's data flow.
+
+**Impact**: a cascading failure can be reported at several steps rather than as
+one root cause. Local fidelity and global fidelity coincide for most steps.
+
+**Mitigation**: the evidence chain cites the upstream span, so a human can follow
+the cascade. The check is cheap, deterministic, and explainable, which is the
+property that made it worth shipping over a graph analysis.
+
+---
+
+## 12. Single-writer SQLite
+
+**Limitation**: SQLite in WAL mode allows concurrent readers and one writer. The
+queue's claims are atomic and `busy_timeout=5000` makes a second writer wait
+instead of failing, but writers are still serialised.
+
+**Impact**: the API, the CLI, a worker fleet, and the scheduler share one writer
+slot. Throughput is bounded by write frequency, not by CPU. Not horizontally
+scalable beyond one file.
+
+**Mitigation**: traces are written once and read many times, which is the shape
+WAL handles best. `Storage`, `JobQueue`, and `AuthManager` all take a `db_path`,
+so a PostgreSQL backend is a substitution rather than a rewrite.
+
+---
+
+## 13. API keys never expire
+
+**Limitation**: keys are bcrypt-hashed, prefixed for identification, and
+revocable — but there is no expiry, no automatic rotation, and no scopes. Every
+key of a tenant has that tenant's full access.
+
+**Impact**: a leaked key is valid until someone notices and revokes it. There is
+no read-only key for dashboards or CI that should not write.
+
+**Mitigation**: `revoke-key` takes effect immediately (the key stops validating
+on the next request) and revoked rows are kept for audit. Rotation means minting
+a new key and revoking the old one — two commands.
+
+---
+
+## 14. No rate limiting
+
+**Limitation**: the API authenticates but does not throttle. Nothing stops a
+tenant from issuing requests as fast as the process can serve them.
+
+**Impact**: one tenant can consume the whole instance's capacity, including the
+inference spend caps, which are per-process rather than per-tenant.
+
+**Mitigation**: the demo is single-tenant and bounded by model latency. Per-tenant
+caps would belong next to the spend tracker, which already attributes cost per
+step.
+
+---
+
+## 15. Small demo dataset
+
+**Limitation**: 15 documents, 5 seeded failures (one per type, plus a mixed one).
+
+**Impact**: analytics are illustrative, not statistically meaningful; failure-rate
+trends have too few points to be read as a trend. `seed` is not implemented — the
+dataset is checked in.
+
+**Mitigation**: the schema takes any document count, `labels.json` is the only
+input to ground-truth checks, and the fault injector produces arbitrarily many
+labelled failures from a single clean trace.
+
+---
+
+## 16. Live-model behaviour is not exercised in CI
+
+**Limitation**: the automated suite never calls a model. `httpx.MockTransport`,
+`DRY_RUN`, and recorded fixtures stand in. Tests that would call NIM are marked
+`live` and deselected by default.
+
+**Impact**: real hallucination patterns, refusal styles, structured-output
+compliance, and retry behaviour under 429/5xx are validated manually, not on every
+change. Cost accounting is validated against mock token counts.
+
+**Mitigation**: the client's three structured-output tiers, repair round-trip, and
+retry ladder are unit-tested against realistic response shapes; `pytest -m live`
+runs the real path when a key is available.
+
+---
+
+## 17. Multi-worker operation has no orchestrator or fairness
+
+**Limitation**: any number of `forensics worker start` processes can share the
+queue safely (claims are atomic), but there is no autoscaling, no health
+supervision, no dead-letter queue, and no per-tenant fairness — a tenant that
+enqueues 10,000 jobs at priority 10 delays everyone else.
+
+**Impact**: fine for one process and a demo; a burst needs manual capacity.
+
+**Mitigation**: `QUEUE_WORKER_CONCURRENCY`, `QUEUE_JOB_TTL` and the `priority`
+column are the levers available today, and `forensics queue list --status pending`
+is the queue-depth view.
 
 ---
 
 ## Summary
 
-| # | Limitation | Severity | v1 Target |
-|---|------------|----------|-----------|
-| 1 | No Judge LLM | High | ✅ Phase 3 |
-| 2 | No Propagation Analysis | High | ✅ Phase 3 |
-| 3 | Dry-Run Only in CI | Medium | Phase 1+ |
-| 4 | Small Demo Dataset | Low | Phase 1 |
-| 5 | Fake LLM in Tests | Medium | Phase 1+ |
-| 6 | Streamlit Only | Low | Phase 4 |
-| 7 | No OTel Collector | Low | Phase 2+ |
-| 8 | No Multi-Tenant/Auth | Low | Phase 1+ |
-| 9 | No Scheduled Eval/Alerting | Medium | Phase 5 |
-| 10 | No Custom Check Plugins | Medium | Phase 3+ |
-| 11 | Single-Process SQLite | Low | Phase 1+ |
-| 12 | No Prompt Versioning | Low | Phase 3+ |
-| 13 | No PII Redaction | Medium | Phase 1+ |
-| 14 | No Pre-Flight Cost Estimation | Medium | Phase 1+ |
-| 15 | No Horizontal Scaling | Low | Phase 1+ |
+| # | Limitation | Severity | Mitigation available today |
+|---|---|---|---|
+| 1 | Bundled UI cannot send an API key | Medium | Deploy with `AUTH_ENABLED=false`; use the API directly otherwise |
+| 2 | No reaper for jobs whose worker died | Medium | Handlers stop cleanly on SIGTERM; manual `UPDATE` for hard kills |
+| 3 | Scheduled eval is instance-wide | Low | Per-tenant runs via `POST /eval/run` |
+| 4 | Auth off = all tenants visible | Medium | Deployment-wide switch; writes still stamp a tenant |
+| 5 | In-flight job payload holds raw text | Medium | Cleared at terminal state; reference documents by id if unacceptable |
+| 6 | `context_loss` fault needs entities | Low | Score against a real trace, not a dry-run one |
+| 7 | DRY_RUN classification is keyword-driven | Low | Meaningful only for the 5 seeded documents |
+| 8 | No pre-flight cost check | Low | Post-hoc caps bound repeated overshoot |
+| 9 | Prompt templates not archived | Low | `prompt_version` + full prompt text per span |
+| 10 | Prices default to 0.0 | Medium | Set real prices in `.env` |
+| 11 | Single-writer SQLite | Low | WAL + `busy_timeout`; `db_path` is substitutable |
+| 12 | Propagation check is a heuristic | Low | Evidence chain cites the upstream span |
+| 13 | Keys never expire, no scopes | Medium | Immediate revocation, audited rows |
+| 14 | No rate limiting | Low | Model latency bounds a single-tenant demo |
+| 15 | Small dataset (15 documents) | Low | Schema is size-agnostic; fault injection scales failures |
+| 16 | Live model calls not in CI | Medium | `pytest -m live`; mock-transport coverage of the ladders |
+| 17 | No orchestrator or tenant fairness | Low | Atomic claims, concurrency/priority levers |
 
 ---
 
-**Philosophy**: This tool is a *forensics* tool, not a *monitoring* tool. Its job is to answer "which step broke and why?" after a failure occurs — not to prevent failures in real-time. The deterministic analyzer provides fast, explainable, auditable root-cause localization without the cost, latency, and opacity of a judge LLM. The limitations above are explicit trade-offs to ship a working, auditable system in 2 days, not omissions.
+**Philosophy**: this is a *forensics* tool, not a monitoring tool. Its job is to
+answer "which step broke and why?" after a failure, and to keep that answer
+auditable: deterministic checks first, an optional judge second, and every claim
+traceable to a span. The limits above are the price of a system that can be
+explained end to end — not omissions.

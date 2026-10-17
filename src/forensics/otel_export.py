@@ -15,6 +15,7 @@ Attribute keys follow the OTel GenAI semantic conventions where they exist and
 a contract with whatever collector eventually receives them.
 """
 
+import random
 from typing import Any, Literal, cast
 
 from opentelemetry import trace as otel_trace
@@ -164,10 +165,16 @@ class ForensicsSpanProcessor:
         trace: Trace,
         exporter: SpanExporter,
         max_prompt_chars: int = DEFAULT_MAX_PROMPT_CHARS,
+        sampling_rate: float = 1.0,
     ) -> None:
         self._trace = trace
         self._exporter = exporter
         self._max_prompt_chars = max_prompt_chars
+        # Head-based sampling, decided once per trace (this processor is
+        # constructed per trace), so a sampled trace is exported whole and an
+        # unsampled one is dropped whole. Deciding per span would export a
+        # partial trace, which is worse than no trace for correlation.
+        self._sampled = random.random() < sampling_rate
         # One provider for the processor's lifetime: building one per span
         # would spin up a thread pool per span and never shut it down.
         self._tracer = _provider_with(exporter).get_tracer(DEFAULT_TRACER_NAME)
@@ -176,6 +183,8 @@ class ForensicsSpanProcessor:
         return None
 
     def on_end(self, span: Span) -> None:
+        if not self._sampled:
+            return
         _emit_span(self._tracer, span, self._trace, self._exporter, self._max_prompt_chars)
 
     def shutdown(self) -> None:

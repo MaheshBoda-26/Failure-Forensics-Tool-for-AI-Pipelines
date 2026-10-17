@@ -4,7 +4,10 @@ help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s "$$(printf '\t')"
 
 install: ## create venv and install all deps
-	uv venv --python 3.12
+	# `--allow-existing` keeps this idempotent: plain `uv venv` refuses to touch
+	# an existing .venv and exits non-zero, so the documented first step of the
+	# quickstart failed for anyone who had already run it once.
+	uv venv --python 3.12 --allow-existing
 	uv pip install -e ".[dev,otel]"
 	cd frontend && npm install
 
