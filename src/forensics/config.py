@@ -137,6 +137,14 @@ class Settings(BaseSettings):
     data_dir: Path = Field(default=Path("data"))
     traces_dir: Path = Field(default=Path("data/traces"))
     db_path: Path = Field(default=Path("data/forensics.db"))
+    spend_file: Path = Field(
+        default=Path("data/spend.json"),
+        description=(
+            "Spend ledger. Env-configurable because a deployment that keeps its "
+            "database on a persistent disk but its ledger in the build directory "
+            "resets the global spend cap on every deploy."
+        ),
+    )
     dataset_dir: Path = Field(default=Path("dataset"))
     cache_dir: Path = Field(default=Path("data/cache"))
 
@@ -146,6 +154,23 @@ class Settings(BaseSettings):
     static_dir: Path = Field(default=Path("frontend/dist"))
 
     # --- OpenTelemetry ---
+    # The flat fields exist only to bind the env names spec 01 documents
+    # (`OTEL_EXPORTER`, ...). pydantic-settings fills a nested model only from a
+    # *nested* env shape (`OTEL__EXPORTER`) and silently drops env vars that match
+    # no known field, so without these the whole OTel feature was unreachable by
+    # configuration. `build_otel_settings` assembles `otel` from them.
+    otel_exporter: Literal["none", "otlp", "console"] = Field(
+        default="none", validation_alias="OTEL_EXPORTER"
+    )
+    otel_endpoint: str = Field(
+        default="http://localhost:4318/v1/traces", validation_alias="OTEL_ENDPOINT"
+    )
+    otel_service_name: str = Field(
+        default="failure-forensics", validation_alias="OTEL_SERVICE_NAME"
+    )
+    otel_sampling_rate: float = Field(
+        default=1.0, ge=0.0, le=1.0, validation_alias="OTEL_SAMPLING_RATE"
+    )
     otel: OTelSettings = Field(default_factory=OTelSettings)
 
     # --- PII Redaction ---
@@ -272,6 +297,33 @@ class Settings(BaseSettings):
         if isinstance(v, str) and not v.strip():
             return None
         return v
+
+    @model_validator(mode="before")
+    @classmethod
+    def build_otel_settings(cls, data: dict[str, Any]) -> dict[str, Any]:
+        """Assemble `otel` from the flat `OTEL_*` fields above.
+
+        Spec 01 documents flat names (`OTEL_EXPORTER`, ...); pydantic-settings
+        would only fill a nested model from `OTEL__EXPORTER`, and it drops env
+        vars matching no field, so the flat fields are the binding layer and
+        `otel` is the single object everything downstream reads. Same shape as
+        `build_model_configs` below.
+        """
+
+        def bound(alias: str) -> Any:
+            # pydantic-settings keys env-sourced *aliased* values by the alias as
+            # written (`OTEL_EXPORTER`). The lowercase field name is accepted too,
+            # so this does not depend on that internal choice.
+            return data.get(alias, data.get(alias.lower()))
+
+        if not isinstance(data.get("otel"), dict):
+            data["otel"] = {
+                "exporter": bound("OTEL_EXPORTER") or "none",
+                "endpoint": bound("OTEL_ENDPOINT") or "http://localhost:4318/v1/traces",
+                "service_name": bound("OTEL_SERVICE_NAME") or "failure-forensics",
+                "sampling_rate": bound("OTEL_SAMPLING_RATE") or 1.0,
+            }
+        return data
 
     @model_validator(mode="before")
     @classmethod

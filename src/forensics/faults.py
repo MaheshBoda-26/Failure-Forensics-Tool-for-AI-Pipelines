@@ -97,13 +97,26 @@ def _inject_wrong_label(output: dict[str, Any], document_text: str) -> dict[str,
     is chosen to avoid a *different* type's keywords so the injection does not
     ALSO trip the propagation check — a fault must isolate one failure.
 
+    The chosen label must also differ from the type already in the output. Most
+    demo documents never name their own type ("NON-DISCLOSURE AGREEMENT" contains
+    no `contract`), so picking "the first type absent from the text" could set the
+    label to the very type that is correct — a silent no-op that scored the
+    analyzer as missing a fault it was never given.
+
     Expected: misclassification (requires expected_type to be passed to the
     analyzer).
     """
     text = document_text.lower()
     present = {t.value for t in DocumentType if t.value in text}
+    current = output.get("document_type")
     for candidate in ("contract", "invoice", "report", "correspondence", "mixed"):
-        if candidate not in present:
+        if candidate not in present and candidate != current:
+            return {**output, "document_type": candidate}
+    # Every type is either named in the text or is the current label; the
+    # remaining ones are still valid enum members, so a mismatch is guaranteed as
+    # long as the result differs from `current`.
+    for candidate in ("contract", "invoice", "report", "correspondence", "mixed"):
+        if candidate != current:
             return {**output, "document_type": candidate}
     return {**output, "document_type": DocumentType.REPORT.value}
 

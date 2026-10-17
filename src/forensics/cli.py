@@ -40,7 +40,11 @@ def _setup() -> None:
 
 @app.command()
 def ping() -> None:
-    """Test NIM connectivity and print model info."""
+    """Print the resolved configuration and model info.
+
+    Deliberately no network call: this is the check an operator runs when a run
+    misbehaved, and it must work when the provider is the thing that is down.
+    """
     _setup()
     settings = get_settings()
 

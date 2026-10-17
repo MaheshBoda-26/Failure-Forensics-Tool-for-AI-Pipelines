@@ -120,8 +120,37 @@ Decisions worth recording:
   time, and its criteria/call shapes are now annotated with what actually ships.
 
 ## Phase 6 — Deploy
-- [ ] T16. render.yaml / Dockerfile + persistent disk
-- [ ] T17. live smoke test (needs Render access)
+- [x] T16. `render.yaml` + `Procfile` + `scripts/smoke.sh`; persistent disk, health check, env wiring
+- [ ] T17. live smoke test — **blocked: no Render account/CLI/credentials in this environment.**
+      Verified everything that does not need the account: the blueprint parses, the exact build
+      command runs (`pip install ".[otel]"` + `npm ci && npm run build`), the exact start command
+      serves the API *and* the compiled SPA, and `scripts/smoke.sh` passes the whole
+      health → seed → flag → diagnose → confirm → analytics loop against that server, both
+      anonymously (as the blueprint deploys it) and with `AUTH_ENABLED=true` + a real `ffk_` key.
+      A no-key request is refused with 401 on every data route and allowed on `/health`.
+
+Real defects found and fixed while making the deploy honest:
+- **`SPEND_FILE` did not exist.** The spend-ledger path was hardcoded, so a deployment that put its
+  database on a persistent disk still reset the global spend cap on every redeploy. Added the
+  setting and threaded it through `NIMClient` (mirroring `cache_dir`).
+- **`npm ci` failed**: the committed `package-lock.json` disagreed with `package.json`
+  (vite 8.3.4 / typescript 7.0.2 / plugin-react 6.1.2 were installed and building fine, while
+  `package.json` still asked for vite ^6 / typescript ^5.7). Aligned `package.json` to the versions
+  the lock file and the verified build actually use, so the build is reproducible.
+- **`OTEL_*` environment variables were silently ignored.** pydantic-settings fills a nested model
+  only from `OTEL__EXPORTER` and drops env vars matching no field, so spec 01's entire feature was
+  unreachable by configuration: `OTEL_EXPORTER=otlp` left the exporter at `none`. Added flat
+  `OTEL_*` bindings (the `NVIDIA_API_KEY` pattern) plus a validator that assembles `settings.otel`;
+  verified `console`, `otlp`, and `none` end to end, from both env vars and `.env`.
+- **`cp .env.example .env` produced a config that refused to start.** The template set
+  `JUDGE_FAMILY_SEPARATION_REQUIRED=true` while giving the pipeline and its fallback the same model
+  ID, which the duplicate-ID guard (gated on the same flag) rejects once the flag is on.
+- **The fault injector could be a no-op.** `_inject_wrong_label` picked "the first type absent from
+  the document text", but most demo documents never name their own type, so it could set the label
+  to the correct one and the scorecard then blamed the analyzer for a fault it never received. The
+  analyzer's fault-injection score went 71.4% → 85.7% (step and category) with that one fix.
+- `.env.example` gained every setting added by specs 04/06/07 (auth, scheduler, alerts, queue),
+  plus the PII/OTel/judge/plugins block it never documented.
 
 ## Phase 7 — Docs truth pass
 - [ ] T18. `docs/limitations.md`

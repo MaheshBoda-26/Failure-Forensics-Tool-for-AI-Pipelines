@@ -1,0 +1,81 @@
+# Render blueprint for Failure Forensics.
+#
+# One web service serves both halves: `forensics.api:app` answers the JSON API and
+# mounts the compiled React UI from `frontend/dist` (the mount is skipped when the
+# directory is absent, so a build without Node still starts and serves the API).
+#
+# The persistent disk is what makes the demo survive a redeploy: it holds the
+# SQLite index (`forensics.db`), the per-trace JSON payloads, the LLM response
+# cache, the spend ledger, and the APScheduler job store.
+#
+# Two things to know before deploying:
+#
+#   * Disks are not available on the free plan. `plan: starter` is declared
+#     *because* the `disk:` block below requires it; on the free plan, delete the
+#     `disk:` block and accept an ephemeral filesystem (then re-seed the demo with
+#     `POST /pipeline/run-demo` after every restart).
+#   * The disk cannot be mounted at the repository's own `data/`, because a
+#     build recreates the checkout. It is mounted at `/var/data` and the output
+#     paths are pointed there instead, which is the same guarantee.
+services:
+  - type: web
+    name: failure-forensics
+    runtime: python
+    plan: starter
+    region: oregon
+    branch: main
+    autoDeploy: true
+    healthCheckPath: /health
+    buildCommand: >-
+      pip install --upgrade pip &&
+      pip install ".[otel]" &&
+      cd frontend && npm ci && npm run build
+    startCommand: uvicorn forensics.api:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+
+      # Everything the app writes goes to the disk.
+      - key: DATA_DIR
+        value: /var/data
+      - key: TRACES_DIR
+        value: /var/data/traces
+      - key: CACHE_DIR
+        value: /var/data/cache
+      - key: DB_PATH
+        value: /var/data/forensics.db
+      - key: SCHEDULER_DB_PATH
+        value: /var/data/scheduler.db
+      - key: SPEND_FILE
+        value: /var/data/spend.json
+
+      # Secrets: set these in the Render dashboard, never in git.
+      - key: NVIDIA_API_KEY
+        sync: false
+
+      # Defaults on purpose. Auth off keeps the public demo open and the queue off
+      # keeps runs inline — a queued job needs a worker service to consume it.
+      - key: AUTH_ENABLED
+        value: "false"
+      - key: QUEUE_ENABLED
+        value: "false"
+
+      # Empty schedule = no nightly eval. Set a cron (e.g. "0 2 * * *") together
+      # with ALERT_WEBHOOK_URL to enable regression alerting; the instance must
+      # stay running for the job to fire.
+      - key: EVAL_SCHEDULE
+        value: ""
+      - key: EVAL_SCHEDULE_TIMEZONE
+        value: UTC
+      - key: ALERT_WEBHOOK_URL
+        sync: false
+      - key: ALERT_WEBHOOK_SECRET
+        sync: false
+
+      # Uncomment to run the demo without spending NIM quota.
+      # - key: DRY_RUN
+      #   value: "true"
+    disk:
+      name: forensics-data
+      mountPath: /var/data
+      sizeGB: 1

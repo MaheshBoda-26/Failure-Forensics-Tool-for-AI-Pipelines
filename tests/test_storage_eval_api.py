@@ -295,6 +295,32 @@ def test_inject_does_not_mutate_original() -> None:
     assert trace.spans[1].output_json == before
 
 
+def test_wrong_label_fault_always_changes_the_label() -> None:
+    """A fault that re-sets the correct label is a no-op that blames the analyzer.
+
+    Most demo documents never name their own type — "NON-DISCLOSURE AGREEMENT"
+    contains no `contract` — so choosing "the first type absent from the text"
+    could pick the type that is in fact correct, and the scorecard then reported a
+    missed fault the analyzer had never been given.
+    """
+    from forensics.models import DocumentType
+
+    fault = next(f for f in FAULTS if f.name == "wrong_label")
+    valid = {member.value for member in DocumentType}
+
+    for document_text in (
+        "",
+        "NON-DISCLOSURE AGREEMENT between the parties",
+        "An invoice for services rendered",
+        "A contract and a report and an invoice",
+    ):
+        for original_label in valid:
+            output = {"document_type": original_label, "confidence": 0.9, "all_scores": {}}
+            injected = fault.apply(output, document_text)
+            assert injected["document_type"] != original_label, document_text
+            assert injected["document_type"] in valid
+
+
 # ─── Dataset reachability ───────────────────────────────────────────────────
 
 

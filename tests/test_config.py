@@ -1,8 +1,13 @@
 """Tests for config module."""
 
+from pathlib import Path
+
 import pytest
 
 from forensics.config import Settings, reset_settings, validate_startup
+
+#: A non-default key prefix, so evidence that the setting bound at all.
+NON_DEFAULT_PREFIX = "test_"
 
 
 def _make_env(overrides: dict[str, str] | None = None) -> dict[str, str]:
@@ -145,3 +150,140 @@ def test_validate_startup_success(monkeypatch):
 
     reset_settings()
     validate_startup()  # Should not raise
+
+
+def test_otel_settings_come_from_flat_env_vars(monkeypatch):
+    """Spec 01 documents `OTEL_EXPORTER=...` and friends.
+
+    pydantic-settings fills a nested model only from a *nested* env shape
+    (`OTEL__EXPORTER`) and drops env vars that match no field, so before these
+    flat bindings existed every `OTEL_*` variable was silently ignored and the
+    whole OTel feature was unreachable by configuration.
+    """
+    env = _make_env(
+        {
+            "OTEL_EXPORTER": "console",
+            "OTEL_ENDPOINT": "http://collector:4318/v1/traces",
+            "OTEL_SERVICE_NAME": "my-service",
+            "OTEL_SAMPLING_RATE": "0.25",
+        }
+    )
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    reset_settings()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.otel.exporter == "console"
+    assert settings.otel.endpoint == "http://collector:4318/v1/traces"
+    assert settings.otel.service_name == "my-service"
+    assert settings.otel.sampling_rate == 0.25
+
+
+def test_otel_defaults_export_nothing(monkeypatch):
+    for k, v in _make_env().items():
+        monkeypatch.setenv(k, v)
+
+    reset_settings()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.otel.exporter == "none"
+    assert settings.otel.service_name == "failure-forensics"
+    assert settings.otel.sampling_rate == 1.0
+
+
+def test_otel_rejects_an_unknown_exporter(monkeypatch):
+    env = _make_env({"OTEL_EXPORTER": "jaeger"})
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    reset_settings()
+    with pytest.raises(ValueError):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_otel_rejects_an_out_of_range_sampling_rate(monkeypatch):
+    env = _make_env({"OTEL_SAMPLING_RATE": "1.5"})
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    reset_settings()
+    with pytest.raises(ValueError):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_every_documented_feature_env_var_binds_to_a_setting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`.env.example` and `render.yaml` advertise these names; they must bind.
+
+    `SPEND_FILE` did not: the spend-ledger path was hardcoded, so a deployment
+    that put its database on a persistent disk still reset the global spend cap
+    on every redeploy.
+    """
+    env = _make_env(
+        {
+            "SPEND_FILE": str(tmp_path / "spend.json"),
+            "AUTH_ENABLED": "true",
+            "AUTH_API_KEY_PREFIX": NON_DEFAULT_PREFIX,
+            "AUTH_BCRYPT_ROUNDS": "5",
+            "CHECK_PLUGINS": "tests.plugin_samples:no_shouting",
+            "JUDGE_ENABLED": "true",
+            "JUDGE_FORCE": "true",
+            "PII_REDACTION_ENABLED": "true",
+            "PII_ENTITY_TYPES": "email,phone",
+            "PII_REDACTION_CHAR": "#",
+            "EVAL_SCHEDULE": "0 2 * * *",
+            "EVAL_SCHEDULE_TIMEZONE": "Europe/Berlin",
+            "SCHEDULER_DB_PATH": str(tmp_path / "scheduler.db"),
+            "ALERT_WEBHOOK_URL": "https://hooks.example.test/alerts",
+            "ALERT_WEBHOOK_SECRET": "shared-secret",  # pragma: allowlist secret
+            "ALERT_REGRESSION_THRESHOLD": "0.25",
+            "ALERT_ON_FIXED": "false",
+            "QUEUE_ENABLED": "true",
+            "QUEUE_WORKER_CONCURRENCY": "3",
+            "QUEUE_POLL_INTERVAL": "0.5",
+            "QUEUE_JOB_TTL": "60",
+        }
+    )
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    reset_settings()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.spend_file == tmp_path / "spend.json"
+    assert settings.auth_enabled is True
+    assert settings.auth_api_key_prefix == NON_DEFAULT_PREFIX
+    assert settings.auth_bcrypt_rounds == 5
+    assert settings.check_plugins == "tests.plugin_samples:no_shouting"
+    assert settings.judge_enabled is True
+    assert settings.judge_force is True
+    assert settings.pii_redaction_enabled is True
+    assert settings.pii_entity_types == "email,phone"
+    assert settings.pii_redaction_char == "#"
+    assert settings.eval_schedule == "0 2 * * *"
+    assert settings.eval_schedule_timezone == "Europe/Berlin"
+    assert settings.scheduler_db_path == tmp_path / "scheduler.db"
+    assert settings.alert_webhook_url == "https://hooks.example.test/alerts"
+    assert settings.alert_webhook_secret is not None
+    assert settings.alert_webhook_secret.get_secret_value() == "shared-secret"
+    assert settings.alert_regression_threshold == 0.25
+    assert settings.alert_on_fixed is False
+    assert settings.queue_enabled is True
+    assert settings.queue_worker_concurrency == 3
+    assert settings.queue_poll_interval == 0.5
+    assert settings.queue_job_ttl == 60
+
+
+def test_blank_alert_secret_is_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`ALERT_WEBHOOK_SECRET=` must not sign alerts with an empty key."""
+    env = _make_env({"ALERT_WEBHOOK_SECRET": "", "ALERT_WEBHOOK_URL": ""})
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    reset_settings()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.alert_webhook_secret is None
+    assert settings.alert_webhook_url is None

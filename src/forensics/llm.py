@@ -434,7 +434,7 @@ class NIMClient:
         self.spend_tracker = SpendTracker(
             settings.spend_cap_per_run_usd,
             settings.spend_cap_global_usd,
-            spend_file,
+            spend_file or settings.spend_file,
         )
         self._transport = transport
         self._client: httpx.AsyncClient | None = None
