@@ -2,7 +2,7 @@
 #
 # End-to-end smoke test: the loop a demo actually has to survive.
 #
-#   health -> seed a run -> flag a trace -> diagnose -> confirm -> analytics
+#   health -> ui -> seed a run -> flag a trace -> diagnose -> confirm -> analytics
 #
 # Usage:
 #   scripts/smoke.sh [BASE_URL]
@@ -38,6 +38,15 @@ step "health"
 STATUS=$("${CURL[@]}" "${BASE_URL}/health" | field "['status']")
 [[ "$STATUS" == "ok" ]] || die "/health returned status=${STATUS}"
 ok "service is up"
+
+# ── bundled UI ──────────────────────────────────────────────────────────────
+step "ui"
+# The failure this catches: a deploy builds the SPA but cannot serve it, so
+# `/health` stays green and every API route below passes while `/` answers 404.
+UI=$("${CURL[@]}" "${BASE_URL}/") || die "GET / failed — the compiled UI is not being served"
+printf '%s' "$UI" | grep -qi '<div id="root"' \
+  || die "GET / did not return the SPA shell (check STATIC_DIR/frontend/dist)"
+ok "compiled UI served at /"
 
 # ── seed data if the instance is empty ──────────────────────────────────────
 step "traces"

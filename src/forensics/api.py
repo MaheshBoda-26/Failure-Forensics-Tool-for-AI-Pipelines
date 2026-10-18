@@ -669,7 +669,35 @@ def get_analytics(tenant_id: str | None = None) -> AnalyticsSnapshot:
 
 
 # Mount static files if frontend/dist exists
-_dist_path = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+def _static_dir() -> Path:
+    """Directory holding the compiled SPA, resolved against the process CWD.
+
+    `STATIC_DIR` is repository-relative (`frontend/dist`), and the process CWD is
+    the repository root both on a dev machine and on the Render service. The
+    previous `__file__`-relative path worked only for an editable install:
+    `pip install ".[otel]"` puts `api.py` inside site-packages, where the path
+    can never see the built frontend, so the deployed service answered 404 on
+    `/` while `/health` stayed green (the blueprint's own build step still
+    compiled the UI, which is what made the failure invisible).
+    """
+    try:
+        configured = Path(get_settings().static_dir)
+    except Exception:
+        # `tests/test_imports.py` imports this module without a full environment.
+        configured = Path("frontend/dist")
+    if configured.is_absolute():
+        return configured
+    candidates = (
+        Path.cwd() / configured,
+        Path(__file__).resolve().parent.parent.parent / configured,
+    )
+    # A directory that does not exist is how the API says "no UI to serve" — the
+    # mount below is skipped rather than failing, so a Node-less build still
+    # answers the JSON API.
+    return next((path for path in candidates if path.exists()), candidates[0])
+
+
+_dist_path = _static_dir()
 if _dist_path.exists():
     from fastapi.staticfiles import StaticFiles
 

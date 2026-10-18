@@ -302,6 +302,11 @@ def traced_step(step_name: str) -> Callable[[F], F]:
                 span = Span(
                     span_id=_new_id(),
                     trace_id=trace.trace_id,
+                    # Inherit the trace's tenant. Omitting this defaulted every
+                    # span to "default" even when its trace belonged to tenant A,
+                    # so the JSON and the `spans` table disagreed with the trace
+                    # about ownership.
+                    tenant_id=trace.tenant_id,
                     step_name=step_name,
                     input_json=json.dumps(input_data, default=_safe_repr),
                     output_json=output_json,

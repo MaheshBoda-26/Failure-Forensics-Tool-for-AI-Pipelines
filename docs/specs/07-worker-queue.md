@@ -347,13 +347,17 @@ The sketch above is a design sketch; the shipped code differs in five places.
    untyped `payload: dict`. `status` is a `JobStatus` enum, which also gives
    `GET /jobs?status=` its validation for free.
 2. **A finished job's payload is cleared.** The payload carries the raw document
-   text, and spec 03 promises the unredacted original never reaches disk. Keeping
-   it for `QUEUE_JOB_TTL` (24h by default) would break that promise for every
-   queued job. Retries keep the payload; `completed`/`failed` do not.
-3. **`busy_timeout=5000` is set on every connection.** Without it, the second
-   worker to write raises `database is locked` instead of waiting, which makes
-   the "multiple workers" criterion false in practice even though the claim is
-   atomic.
+   text, which is the pipeline's input and cannot be redacted without changing
+   what the model sees, so it is on disk for the job's lifetime either way.
+   Clearing at `completed`/`failed` bounds that window to the job rather than
+   `QUEUE_JOB_TTL` (24h by default); it does not mean the plaintext was never
+   written, and SQLite does not securely erase it. See `docs/limitations.md` §5.
+   Retries keep the payload.
+3. **`busy_timeout=5000` is set on the queue's connections.** Without it, the
+   second worker to write raises `database is locked` instead of waiting, which
+   makes the "multiple workers" criterion false in practice even though the claim
+   is atomic. `Storage` and `tracing.init_db` do not set it explicitly; they rely
+   on the `sqlite3` default timeout, which is also 5 seconds.
 4. **One `process_document` serves both modes.** The API's synchronous path and
    the worker call the same function, so an inline run and a queued run cannot
    drift apart. It stamps `tenant_id` on both the trace and the diagnosis, which

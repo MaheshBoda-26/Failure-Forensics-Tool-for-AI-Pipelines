@@ -12,10 +12,13 @@ Two deliberate differences from the spec's sketch:
   directly, and pydantic gives the response an actual schema instead of guessing
   at `payload: dict`.
 * A job's payload is cleared when the job reaches a terminal state. The payload
-  carries the raw document text the pipeline is about to process, and spec 03
-  promises the unredacted original never reaches disk; keeping it in the queue
-  for `QUEUE_JOB_TTL` (24h by default) would quietly break that promise for every
-  queued job. Retries keep it — only `completed`/`failed` clear it.
+  carries the raw document text the pipeline is about to process. It is the
+  pipeline's *input*, and redacting it would change what the model sees, so it is
+  stored verbatim for the job's lifetime. Clearing at `completed`/`failed` bounds
+  that window to the job instead of `QUEUE_JOB_TTL` (24h by default); it does not
+  mean the plaintext was never written, and it is not secure erasure — SQLite
+  keeps WAL and freelist pages. `docs/limitations.md` §5 and the spec 03
+  implementation notes state this as the shipped guarantee. Retries keep it.
 """
 
 import json

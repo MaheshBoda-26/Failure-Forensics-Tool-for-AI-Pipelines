@@ -101,6 +101,33 @@ async def test_all_successful_spans_leave_trace_success() -> None:
     assert ctx.trace.status is TraceStatus.SUCCESS
 
 
+async def test_spans_inherit_the_trace_tenant(tmp_path: Path) -> None:
+    """A span belongs to its trace's tenant, not the `default` fallback.
+
+    Spans were built without `tenant_id`, so a tenant-A trace persisted spans
+    stamped `default` — in the JSON payload and in the `spans` table — which
+    contradicts the trace that owns them.
+    """
+    with trace_context(document_id="d1", tenant_id="tenant_a") as ctx:
+
+        @traced_step("step")
+        async def step() -> str:
+            return "ok"
+
+        await step()
+
+    assert ctx.trace is not None
+    trace = ctx.trace
+    assert trace.tenant_id == "tenant_a"
+    assert [span.tenant_id for span in trace.spans] == ["tenant_a"]
+
+    db_path = tmp_path / "index.sqlite"
+    finalize_trace(trace, traces_dir=tmp_path / "traces", db_path=db_path)
+    with sqlite3.connect(db_path) as conn:
+        persisted = conn.execute("SELECT tenant_id FROM spans").fetchall()
+    assert persisted == [("tenant_a",)], "the spans table disagrees with its trace"
+
+
 async def test_step_output_is_serialized_as_json_object() -> None:
     """A Pydantic step result must land in `output_json` as a JSON object.
 

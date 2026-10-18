@@ -24,9 +24,11 @@ second failure mode for a workload that is, at demo scale, a handful of jobs.
   the queue produce identical records, and both stamp the job's `tenant_id` on
   the trace *and* the diagnosis.
 - **A job's payload is cleared when it reaches a terminal state.** The payload
-  holds the raw document text; spec 03 promises the unredacted original never
-  rests on disk, and a 24-hour retention window would break that for every queued
-  job. Retries keep it; `completed`/`failed` do not.
+  holds the raw document text, which is the pipeline's input and cannot be
+  redacted without changing what the model sees, so it is on disk for the job's
+  lifetime regardless. Clearing at `completed`/`failed` bounds the exposure to
+  the job instead of a 24-hour retention window; it is not secure erasure.
+  Retries keep it.
 - **`run_once(pipeline)` is the seam.** `run()` owns the LLM client lifecycle and
   the loop; `run_once` claims and processes exactly one batch. Signal handlers are
   best-effort (main thread only, absent on Windows), so the loop is always
