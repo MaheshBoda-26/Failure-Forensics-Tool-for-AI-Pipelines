@@ -150,10 +150,31 @@ pii_redaction_char: str = Field(default="█")
 6. SSN `123-45-6789` → 11 `█` (separators are masked too)
 7. JWT tokens fully redacted
 8. Custom patterns work: `{"name": "internal_id", "pattern": "INT-\\d{8}", "replacement": "[REDACTED]"}` → `INT-12345678` → `[REDACTED]`
-9. Redaction happens **before** JSON + SQLite write; original never hits disk
+9. Redaction happens **before** JSON + SQLite write; original never hits disk (see
+   Implementation notes: this holds for traces, not for queued input)
 10. Redaction list stored in span metadata (optional, for audit)
 
 ## Effort
 - **Files**: 2 new (`pii.py`, tests), 2 modified
 - **Time**: ~3 hours
 - **Risk**: Low (pure regex, well-tested patterns)
+
+## Implementation notes
+
+The sketch above is a design sketch; the shipped code differs in two places.
+
+1. **Criterion 9 holds for traces, not for a queued job's input.** Redaction runs
+   in `finalize_trace`, before the JSON file and the SQLite index are written, so
+   no span payload reaches disk unredacted. `QUEUE_ENABLED=true` is different:
+   the document text is the pipeline's *input*, and redacting it would change
+   what the model sees, so `job_queue.payload` stores it verbatim and clears it
+   to `{}` at `completed`/`failed`. The exposure window is the job's lifetime
+   rather than zero, and clearing is not secure erasure — SQLite does not scrub
+   WAL or freelist pages. A deployment that cannot accept a short-lived plaintext
+   window should pass `doc_id` instead of `doc_text`. See
+   `docs/limitations.md` §5.
+2. **The default entity list is wider than the sketch.** `PII_ENTITY_TYPES`
+   ships as `api_key,email,phone,credit_card,ssn,ipv4,jwt`; the sketch lists the
+   first five. Both extra patterns are already implemented, so turning redaction
+   on masks more than the sketch promised — the safe direction, but a real
+   difference.
