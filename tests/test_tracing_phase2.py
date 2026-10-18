@@ -8,6 +8,7 @@ cost cannot support post-mortem cost or accuracy analysis.
 import contextlib
 import json
 import sqlite3
+import types
 from pathlib import Path
 
 import httpx
@@ -311,6 +312,31 @@ def test_span_trace_id_must_match_its_trace(tmp_path: Path) -> None:
     trace = Trace(document_id="d1", spans=[_span("a")])  # span.trace_id == "t"
     with pytest.raises(sqlite3.IntegrityError):
         finalize_trace(trace, traces_dir=tmp_path / "traces", db_path=tmp_path / "db.sqlite")
+
+
+def test_a_failed_json_write_leaves_no_temp_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The temp file is cleaned up when the rename fails.
+
+    `write_trace_json` writes `.<trace_id>.tmp` then renames it. If the write
+    fails halfway, that partial file used to stay in `traces_dir`, which is read
+    by humans and scanned for `*.json`.
+    """
+    import forensics.tracing as tracing_mod
+
+    def refuses(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk full")
+
+    # `tracing.os` is used only for `replace`, so swapping the reference cannot
+    # disturb the real `os` module (or pytest's own file handling).
+    monkeypatch.setattr(tracing_mod, "os", types.SimpleNamespace(replace=refuses))
+
+    traces_dir = tmp_path / "traces"
+    with pytest.raises(OSError):
+        tracing_mod.write_trace_json(Trace(document_id="d1"), traces_dir)
+
+    assert list(traces_dir.iterdir()) == [], "a partial .tmp file was left behind"
 
 
 def test_finalize_trace_sets_completion_fields() -> None:
