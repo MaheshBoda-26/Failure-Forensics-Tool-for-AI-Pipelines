@@ -703,12 +703,38 @@ if _dist_path.exists():
 
     app.mount("/assets", StaticFiles(directory=_dist_path / "assets"), name="assets")
 
-    @app.get("/{full_path:path}")
-    def serve_frontend_spa(full_path: str) -> FileResponse:
-        target = _dist_path / full_path
-        if target.exists() and target.is_file():
-            return FileResponse(target)
-        return FileResponse(_dist_path / "index.html")
+
+def _safe_static_target(full_path: str) -> Path | None:
+    """Resolve a request path to a file inside the SPA directory, or None.
+
+    This catch-all is unauthenticated, so a path that escapes `dist` must never
+    be served: `..` segments — including the URL-encoded form a browser or proxy
+    lets through — would otherwise expose `.env`, `data/forensics.db`, or any
+    file the process can read. Both sides are resolved first, so a symlink
+    inside `dist` that points outside it is rejected too.
+    """
+    try:
+        base = _dist_path.resolve()
+        target = (_dist_path / full_path).resolve()
+    except OSError:  # pragma: no cover - resolve() only raises on a path loop
+        return None
+    if not target.is_relative_to(base) or not target.is_file():
+        return None
+    return target
+
+
+# Registered unconditionally so the guard above is exercised (and testable)
+# even when no frontend build exists; without an `index.html` it answers 404,
+# which is what an unmatched route returned before the SPA was introduced.
+@app.get("/{full_path:path}")
+def serve_frontend_spa(full_path: str) -> FileResponse:
+    target = _safe_static_target(full_path)
+    if target is not None:
+        return FileResponse(target)
+    index = _dist_path / "index.html"
+    if not index.is_file():
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse(index)
 
 
 if __name__ == "__main__":
