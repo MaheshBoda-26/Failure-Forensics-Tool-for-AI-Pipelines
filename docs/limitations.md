@@ -137,7 +137,8 @@ indistinguishable from one that never had them, so `context_preservation` has
 nothing to compare and the fault is scored as a miss.
 
 **Impact**: the scorecard under-reports the analyzer's real accuracy on traces
-produced by `DRY_RUN=true`, whose canned extraction returns no entities.
+produced by `DRY_RUN=true`, whose canned extraction returns no entities for every
+document but one (the seeded `invoice_001`).
 `forensics benchmark-analyzer` reports 85.7% step/category accuracy in that
 configuration; the remaining miss is this fault, not a detector failure.
 
@@ -147,21 +148,42 @@ to the correct one — was fixed and is regression-tested.
 
 ---
 
-## 7. DRY_RUN's canned classification is keyword-driven
+## 7. DRY_RUN's canned responses are a fixture, not model behaviour
 
-**Limitation**: the offline fixture picks a document type from keywords in the
-prompt (`invoice`/`bill to`, `report`/`analysis`/`findings`,
-`dear`/`email`/`letter`/`memo`, `mixed`/`proposal`) and defaults to `contract`,
-with explicit overrides for the five seeded-failure documents.
+**Limitation**: the offline fixture returns hand-written output keyed on the
+document id (`<type>_NNN`, the dataset's own shape), with a prompt-keyword
+heuristic only as the fallback for an id with no dataset prefix. It stands in for
+a model; it does not emulate one.
 
-**Impact**: documents that never name their own type are classified `contract`,
-so `forensics demo` in dry-run mode reports a low classification accuracy
-(3/15) that reflects the fixture, not the pipeline. The five seeded failures are
-still reproduced exactly, which is what the eval loop needs.
+**Impact**: `forensics demo` in dry-run mode reproduces every label in
+`dataset/labels.json` — the five seeded failures at their declared step and
+category, and the ten clean documents — and reports 13/15 classifications. The
+two misses are the two *seeded* misclassifications (`contract_001`,
+`mixed_001`), so they are the fixture working, not a pipeline result. A real
+accuracy figure still requires a real API key.
 
-**Mitigation**: the demo's numbers are only meaningful for the seeded documents.
-Use a real API key for a representative accuracy figure; the README's seeded-failures
-table describes dataset ground truth, not dry-run output.
+**Mitigation**: treat dry-run output as evidence about the analyzer and the eval
+loop, which is what the seeded failures exist to test, and never as a model
+benchmark. `tests/test_dry_run_dataset.py` asserts the label reproduction
+directly, so this claim cannot silently rot again the way the prompt-keyword
+version did (which reported 3/15 and reproduced none of the five failures).
+
+---
+
+## 7b. Re-diagnosing a persisted trace under PII redaction sees redacted spans
+
+**Limitation**: the write path analyzes the *unredacted* trace and redacts on
+disk. `POST /traces/{trace_id}/diagnose` instead loads the persisted trace, which
+is redacted by design, so with `PII_REDACTION_ENABLED=true` an extracted email,
+phone, or IP is `█` in the span while `doc_text` is not — and `entity_grounding`
+flags the correctly extracted entity as a hallucination.
+
+**Impact**: re-diagnosis of an old trace is unreliable when redaction is on. The
+original analysis, produced at write time, is correct and already stored.
+
+**Mitigation**: read the stored diagnosis rather than re-deriving it, or run with
+redaction off if re-diagnosis of historical traces is required. The alternative —
+persisting the unredacted trace — would reopen the leak spec 03 closes.
 
 ---
 
@@ -325,7 +347,8 @@ is the queue-depth view.
 | 4 | Auth off = all tenants visible | Medium | Deployment-wide switch; writes still stamp a tenant |
 | 5 | In-flight job payload holds raw text | Medium | Cleared at terminal state; reference documents by id if unacceptable |
 | 6 | `context_loss` fault needs entities | Low | Score against a real trace, not a dry-run one |
-| 7 | DRY_RUN classification is keyword-driven | Low | Meaningful only for the 5 seeded documents |
+| 7 | DRY_RUN's canned output is a fixture, not model behaviour | Low | Reproduces all 15 labels; still needs a real key for accuracy |
+| 7b | Re-diagnosing a persisted trace sees redacted spans | Low | Read the stored diagnosis, or run with redaction off |
 | 8 | No pre-flight cost check | Low | Post-hoc caps bound repeated overshoot |
 | 9 | Prompt templates not archived | Low | `prompt_version` + full prompt text per span |
 | 10 | Prices default to 0.0 | Medium | Set real prices in `.env` |

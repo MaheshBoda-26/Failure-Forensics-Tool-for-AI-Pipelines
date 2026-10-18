@@ -292,21 +292,12 @@ def diagnose_trace(
 
     doc_text = doc_path.read_text()
 
-    # Ground-truth type, when the document has a label, so misclassification
-    # is observable rather than assumed away.
-    expected_type: str | None = None
-    labels_path = dataset_dir / "labels.json"
-    if labels_path.exists():
-        try:
-            labels = json.loads(labels_path.read_text())
-            for entry in labels.get("documents", []):
-                if entry.get("doc_id") == trace.document_id:
-                    expected_type = entry.get("doc_type")
-                    break
-        except (OSError, ValueError):
-            expected_type = None
+    # Ground-truth type, when the document has a label, so misclassification is
+    # observable rather than assumed away. One loader serves the CLI, the eval
+    # loop, and this endpoint.
+    from forensics.eval_simple import document_ground_truth
 
-    diagnosis = analyze_trace(trace, doc_text, expected_type)
+    diagnosis = analyze_trace(trace, doc_text, document_ground_truth(trace.document_id))
     # `analyze_trace` cannot know who called it; the tenant is assigned by the
     # layer that does.
     diagnosis.tenant_id = tenant.tenant_id
@@ -351,7 +342,9 @@ def confirm_diagnosis(
         storage.create_flag(flag)
         flags = [flag]
 
-    # Auto-create eval case from confirmed diagnosis
+    # Auto-create eval cases from the confirmed diagnosis, one per
+    # `(trace, failing step)`. Confirming the same diagnosis twice used to
+    # insert a duplicate case every time.
     from forensics.eval_simple import flag_to_eval_case
 
     for flag in flags:
