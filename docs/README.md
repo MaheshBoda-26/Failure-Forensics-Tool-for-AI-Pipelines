@@ -74,7 +74,7 @@ consequences, and the tests that verify it.
 ## Verifying claims in these docs
 
 ```bash
-make check                    # ruff + mypy strict + 344 tests, hermetic
+make check                    # ruff + mypy strict + 348 tests, hermetic
 scripts/smoke.sh http://127.0.0.1:8000     # the whole loop over HTTP against a running server
 pytest -m live                # the paths that need a real model (uses quota)
 forensics benchmark-analyzer  # fault-injection scorecard for the analyzer
