@@ -21,7 +21,7 @@ Implemented and tested:
 | React trace explorer + FastAPI | `frontend/`, `api.py` | `scripts/smoke.sh` |
 
 `make check` (ruff + mypy strict + pytest) is green from a clean checkout:
-**352 tests**, no optional extras required beyond `make install`.
+**390 tests**, no optional extras required beyond `make install`.
 
 Known gaps, stated plainly:
 
@@ -233,8 +233,12 @@ before auth existed.
 | correspondence_001 | correspondence | ✅ | summarization | propagation_error |
 | mixed_001 | mixed | ✅ | classification | misclassification |
 
-*Note: `DRY_RUN=true` returns document-aware canned responses, so actual failures
-match the seeded ones. Seeded failures are ground truth for eval.*
+*Note: `DRY_RUN=true` returns document-keyed canned responses, so a dry run
+reproduces every row above at its declared step and category, and the ten clean
+documents pass. `forensics demo` reports 13/15 classifications: the two misses
+are `contract_001` and `mixed_001`, which is the fixture reproducing their seeded
+misclassification. Seeded failures are ground truth for eval.
+`tests/test_dry_run_dataset.py` asserts this against `labels.json`.*
 
 ## Rules
 

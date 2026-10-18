@@ -21,6 +21,7 @@ from forensics.analyzer_simple import (
 from forensics.faults import FAULTS, inject, score_fault
 from forensics.models import (
     DocumentType,
+    EvalCase,
     EvalRun,
     FailureCategory,
     Flag,
@@ -543,3 +544,243 @@ def test_flag_and_confirm_roundtrip_through_the_api(
     assert updated.confirmed is True
     assert updated.overridden is True
     assert updated.override_category is FailureCategory.CONTEXT_LOSS
+
+
+# ─── Eval case identity: exactly one per (trace, failing step) ──────────────
+#
+# A case means "this step is wrong on this trace". `confirm_diagnosis` and the
+# `eval-cases` sweep both inserted a fresh row on every call, so re-confirming a
+# diagnosis or re-running the sweep inflated the suite with copies and accuracy
+# was measured over duplicates of the same failure.
+
+
+def _eval_case(trace_id: str, step: str = "extraction") -> EvalCase:
+    return EvalCase(
+        trace_id=trace_id,
+        failing_step=step,
+        bad_output={"entities": []},
+        corrected_output={"entities": []},
+        category=FailureCategory.MISCLASSIFICATION,
+        pipeline_version="0.1.0",
+        prompt_version="v1",
+    )
+
+
+def _failing_trace() -> Trace:
+    """A trace whose extraction hallucinates an entity (root cause: extraction)."""
+    trace = _clean_trace()
+    trace.spans[1].output_json = json.dumps(
+        {
+            "entities": [
+                {"value": "__ghost__", "entity_type": "org", "start_offset": 0, "end_offset": 9}
+            ]
+        }
+    )
+    return trace
+
+
+def test_create_eval_case_is_idempotent_per_trace_and_step(storage: Storage) -> None:
+    storage.save_trace(_clean_trace())
+
+    first = storage.create_eval_case(_eval_case("t1"))
+    second = storage.create_eval_case(_eval_case("t1"))
+
+    assert first.case_id == second.case_id
+    assert len(storage.list_eval_cases(limit=100)) == 1
+
+
+def test_eval_cases_for_different_steps_are_distinct(storage: Storage) -> None:
+    storage.save_trace(_clean_trace())
+
+    a = storage.create_eval_case(_eval_case("t1", "extraction"))
+    b = storage.create_eval_case(_eval_case("t1", "summarization"))
+
+    assert a.case_id != b.case_id
+    assert len(storage.list_eval_cases(limit=100)) == 2
+
+
+def test_eval_case_unique_index_rejects_a_raw_duplicate(storage: Storage) -> None:
+    """The schema itself must refuse the duplicate, not only the helper."""
+    import sqlite3
+
+    storage.save_trace(_clean_trace())
+    case = storage.create_eval_case(_eval_case("t1"))
+
+    with sqlite3.connect(storage.db_path) as conn, pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO eval_cases (case_id, trace_id, failing_step, bad_output, "
+            "corrected_output, category, created_at, tenant_id) VALUES "
+            "('dup', 't1', ?, '{}', '{}', 'misclassification', "
+            "'2026-01-01T00:00:00+00:00', 'default')",
+            (case.failing_step,),
+        )
+
+
+def test_legacy_duplicate_eval_cases_are_collapsed_on_migration(tmp_path: Path) -> None:
+    """A database that already holds duplicates is repaired, not rejected."""
+    import sqlite3
+
+    db = tmp_path / "legacy.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """
+        CREATE TABLE eval_cases (
+            case_id TEXT PRIMARY KEY,
+            trace_id TEXT NOT NULL,
+            failing_step TEXT NOT NULL,
+            bad_output TEXT NOT NULL,
+            corrected_output TEXT NOT NULL,
+            category TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            pipeline_version TEXT,
+            prompt_version TEXT,
+            tenant_id TEXT NOT NULL DEFAULT 'default'
+        )
+        """
+    )
+    for i in range(3):
+        conn.execute(
+            "INSERT INTO eval_cases (case_id, trace_id, failing_step, bad_output, "
+            "corrected_output, category, created_at, pipeline_version, prompt_version) VALUES "
+            "(?, 't1', 'extraction', '{}', '{}', 'misclassification', "
+            "'2026-01-01T00:00:00+00:00', '0.1.0', 'v1')",
+            (f"case{i}",),
+        )
+    conn.commit()
+    conn.close()
+
+    repaired = Storage(traces_dir=tmp_path / "traces", db_path=db)
+
+    remaining = repaired.list_eval_cases(limit=100)
+    assert len(remaining) == 1
+    # The earliest row survives, so the original case id is stable.
+    assert remaining[0].case_id == "case0"
+    with sqlite3.connect(db) as check:
+        indexes = {row[1] for row in check.execute("PRAGMA index_list(eval_cases)")}
+    assert "idx_eval_cases_unique" in indexes
+
+
+def test_eval_case_sweep_is_idempotent() -> None:
+    """`forensics eval-cases` twice must not double the suite.
+
+    `Storage()` resolves the env-redirected paths the autouse fixture installs,
+    so this exercises the same code path the CLI does.
+    """
+    from forensics.eval_simple import create_eval_cases_from_confirmed_flags
+
+    storage = Storage()
+    trace = _failing_trace()
+    storage.save_trace(trace)
+    diagnosis = analyze_trace(trace, DOC, "contract")
+    assert diagnosis.root_cause_step == "extraction"
+    storage.create_diagnosis(diagnosis)
+    storage.update_diagnosis_confirmation(diagnosis.diagnosis_id, confirmed=True)
+    storage.create_flag(Flag(trace_id=trace.trace_id, note="bad extraction"))
+
+    first = create_eval_cases_from_confirmed_flags()
+    second = create_eval_cases_from_confirmed_flags()
+
+    assert first == 1
+    assert second == 0
+    assert len(storage.list_eval_cases(limit=100)) == 1
+
+
+def test_confirm_diagnosis_twice_creates_one_eval_case(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Confirming the same diagnosis twice must not duplicate its eval case."""
+    from forensics import api
+
+    st = Storage(traces_dir=tmp_path / "traces", db_path=tmp_path / "db.sqlite")
+    monkeypatch.setattr(api, "_storage", st)
+    st.save_trace(_failing_trace())
+
+    diagnosis = api.diagnose_trace("t1")
+    request = api.ConfirmDiagnosisRequest(confirmed=True)
+    api.confirm_diagnosis(diagnosis.diagnosis_id, request)
+    api.confirm_diagnosis(diagnosis.diagnosis_id, request)
+
+    assert len(st.list_eval_cases(limit=100)) == 1
+
+
+# ─── The eval loop must judge against the dataset label ─────────────────────
+
+
+class _StubPipeline:
+    """Emits a fixed trace so `run_eval_case` runs without a model call."""
+
+    def __init__(self, steps: list[tuple[str, dict]]) -> None:
+        self.steps = steps
+        self.seen_document_ids: list[str] = []
+
+    async def run(self, document: object, document_id: str = "") -> None:
+        from forensics.tracing import get_current_trace
+
+        self.seen_document_ids.append(document_id)
+        trace = get_current_trace()
+        assert trace is not None
+        for step_name, output in self.steps:
+            trace.spans.append(
+                Span(
+                    trace_id=trace.trace_id,
+                    step_name=step_name,
+                    input_json="{}",
+                    output_json=json.dumps(output),
+                    model_id="stub-model",
+                    provider="stub",
+                    prompt="stub",
+                    raw_response="stub",
+                    status="success",
+                )
+            )
+
+
+async def test_run_eval_case_records_the_original_document_id() -> None:
+    """`case.trace_id` is a trace id, not a document id."""
+    from forensics.eval_simple import run_eval_case
+
+    pipeline = _StubPipeline([("classification", {"document_type": "contract", "confidence": 0.9})])
+    case = _eval_case("t_trace", "classification")
+
+    await run_eval_case(case, pipeline, DOC, document_id="contract_001")  # type: ignore[arg-type]
+
+    assert pipeline.seen_document_ids == ["contract_001"]
+
+
+async def test_expected_type_decides_whether_a_misclassification_is_a_failure() -> None:
+    """The bug: without the label, a wrong classification passed every check.
+
+    `check_label_grounding` only runs when `expected_type` is supplied, so a
+    `misclassification` case was reported "OK FIXED" by construction.
+    """
+    from forensics.eval_simple import run_eval_case
+
+    # DOC is a contract; the stub pipeline calls it an invoice.
+    steps = [("classification", {"document_type": "invoice", "confidence": 0.9})]
+    case = _eval_case("t_trace", "classification")
+
+    ungrounded = await run_eval_case(
+        case,
+        _StubPipeline(steps),
+        DOC,
+        document_id="contract_001",  # type: ignore[arg-type]
+    )
+    grounded = await run_eval_case(
+        case,
+        _StubPipeline(steps),
+        DOC,
+        document_id="contract_001",
+        expected_type="contract",
+    )
+
+    assert ungrounded.fixed is True, "negative control: the label check was skipped"
+    assert grounded.fixed is False
+    assert grounded.details["category"] == FailureCategory.MISCLASSIFICATION.value
+
+
+def test_document_ground_truth_reads_the_dataset_labels() -> None:
+    from forensics.eval_simple import document_ground_truth
+
+    assert document_ground_truth("contract_001") == "contract"
+    assert document_ground_truth("invoice_001") == "invoice"
+    assert document_ground_truth("not_in_the_dataset") is None

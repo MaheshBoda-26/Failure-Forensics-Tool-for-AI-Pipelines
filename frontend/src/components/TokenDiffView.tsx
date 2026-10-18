@@ -11,7 +11,9 @@ export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }
   // Find the root cause span
   const rootCauseStep = diagnosis?.root_cause_step;
   const rootCauseSpan = rootCauseStep ? trace.spans.find(s => s.step_name === rootCauseStep) : trace.spans[2] || trace.spans[0];
-  const groundTruthType = diagnosis?.category === "misclassification" ? "INVOICE" : "UNKNOWN";
+  // NOTE: the backend does not expose a ground-truth document type yet; the API
+  // is written so this can be wired to a real `expected_type` field later.
+  const groundTruthType = "UNKNOWN";
 
   const parseJson = (jsonStr: string) => {
     try {

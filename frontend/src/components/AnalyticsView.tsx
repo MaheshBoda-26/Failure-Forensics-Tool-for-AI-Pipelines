@@ -22,7 +22,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     try {
       setIsRunningEval(true);
       const res = await api.triggerEvalRun();
-      setEvalNotice(`✓ Eval run ${res.run_id} completed: ${Math.round(res.current_accuracy * 100)}% accuracy`);
+      setEvalNotice(`✓ Eval run ${res.run_id} completed: ${res.passed_count}/${res.total_cases} cases passed`);
       await onRefreshAnalytics();
       // Fetch results for the new run
       if (res.run_id) {
@@ -273,7 +273,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
               marginTop: "6px",
             }}
           >
-            {evalRuns[0]?.regressions?.length ?? 2} Traces
+            {evalRuns[0]?.failed_count ?? evalResults.filter((r) => !r.fixed).length} Traces
           </div>
           <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-cinnabar)", marginTop: "6px" }}>
             ⚠ Blocked by evaluation gate

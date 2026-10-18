@@ -9,6 +9,30 @@ contract instead of showing hardcoded numbers.
 Baseline: `main` @ `2c57354` (working tree has an unrelated `scheduler.py` alert-isolation edit).
 Gate for every phase: `make check` (ruff + mypy strict + `pytest -m "not live"`).
 
+## Status — executed 2026-10-18 (read this first)
+
+This plan was executed by **two sessions at once** in the same worktree, which is
+why the result is split across two branches:
+
+| Phase | Where it landed |
+|---|---|
+| A (path traversal, judge persistence) | `fix/review-findings-2` commit `49812e0` |
+| B (PII rewrite, analyze-before-redact) | `fix/review-findings-2` commit `15672a9` |
+| C (config knobs) | `fix/review-findings-2` commit `15672a9` |
+| D1/D2 (`document_id` threading, DRY_RUN fixture) | `fix/review-findings-2` commit `15672a9` |
+| D3/D4 (eval `expected_type`, case dedup) | `fix/review-findings-2-tail` (this branch) |
+| E (frontend sync) | owned by the concurrent session; **not** in this branch |
+| F (docs + verification) | `fix/review-findings-2-tail` (this branch) |
+
+`fix/review-findings-2-tail` is branched from `15672a9` so its diff is purely the
+tail (D3, D4, F) and cannot clobber the in-flight frontend work.
+
+Verified on this branch: `ruff check` clean, `ruff format --check` clean, `mypy`
+strict clean, **390 tests pass / 0 fail**. `forensics demo` with `DRY_RUN=true`
+reports 13/15 classifications and 5/5 step + 5/5 category accuracy; the two misses
+are the seeded misclassifications. `benchmark-analyzer` is unchanged at 85.7%
+(§6 still holds — the canned extraction returns no entities but for `invoice_001`).
+
 ## Verification done while planning (not assumed)
 
 | Claim | How checked | Result |
@@ -137,9 +161,28 @@ Gate for every phase: `make check` (ruff + mypy strict + `pytest -m "not live"`)
 - [ ] **F3. Full gate.** `make check`; `python -m forensics.cli demo` (dry-run) shows the 5 seeded
       failures; `scripts/smoke.sh` against a local server still passes; `cd frontend && npm run build`.
 
-## Open decisions to confirm before coding
-1. **`report_001` ground truth.** Declared `summarization/prompt_failure`, but the canned summary
-   produces `propagation_error`. Plan D2 makes the fixture emit a schema-invalid summary so the
-   *label* stays authoritative. Alternative: change `labels.json` + docs to `propagation_error`.
-2. **Delivery.** One branch + PR per phase group, or a single branch/PR for all of it.
-3. **Scope.** All 8 findings, or Critical/High only (A, B) first.
+## Open decisions — resolved
+1. **`report_001` ground truth.** Resolved: **fix the fixture, keep the label.** The fixture emits a
+   schema-invalid summarization payload constructed with `SummaryOutput.model_construct`
+   (an empty `summary`, which `min_length=1` makes unrepresentable otherwise), so `labels.json`
+   stays the source of truth and the eval loop scores a real `prompt_failure`.
+2. **Delivery.** Resolved: isolated worktree + branch (`fix/review-findings-2-tail`) stacked on
+   `fix/review-findings-2`, because a second session is committing to that branch concurrently.
+3. **Scope.** Resolved: all 8 findings — A–D2 on `fix/review-findings-2`, D3/D4/F here, E owned by
+   the concurrent session.
+
+## Decisions recorded in this branch
+- **D4 is enforced in two layers.** `Storage.create_eval_case` is idempotent on
+  `(trace_id, failing_step, tenant_id)` (returning the existing case, tolerating the
+  `IntegrityError` a lost race produces) and `migrations.idx_eval_cases_unique` is the schema
+  backstop. Callers additionally pre-seed their dedupe set / check before inserting, so counts stay
+  honest. A legacy database holding duplicates is repaired on first `Storage()` construction, keeping
+  the earliest row.
+- **One ground-truth loader.** `eval_simple.document_ground_truth` is now the single place that reads
+  `labels.json`; the CLI, the eval loop, and `POST /traces/{id}/diagnose` all use it, so no analysis
+  path can silently skip `check_label_grounding`.
+- **`run_eval_case` traces the original document id**, not `case.trace_id`, so document-keyed
+  behaviour (the offline fixture, cache keys) applies to the re-run.
+- ADR `docs/adr/0016-dry-run-fixture-and-analysis-order.md` records the fixture rewrite and the
+  analyze-before-redaction ordering; `docs/limitations.md` §7/§7b and the README seeded-failure note
+  were corrected to match measurement.

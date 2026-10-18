@@ -66,6 +66,9 @@ export const DAGGraphView: React.FC<DAGGraphViewProps> = ({ trace, diagnosis }) 
   };
 
   const selectedNodeData = nodes.find(n => n.id === selectedNode);
+  const failingIndex = diagnosis?.root_cause_step
+    ? nodes.findIndex((n) => n.id === diagnosis.root_cause_step)
+    : -1;
 
   return (
     <div
@@ -264,36 +267,44 @@ export const DAGGraphView: React.FC<DAGGraphViewProps> = ({ trace, diagnosis }) 
                 </div>
 
                 {/* Connector Arrow */}
-                {idx < nodes.length - 1 && (
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      position: "relative",
-                      width: "36px",
-                    }}
-                  >
+                {idx < nodes.length - 1 && (() => {
+                  const isFailingConnector = failingIndex !== -1 && idx === failingIndex - 1;
+                  const isDownstreamConnector = failingIndex !== -1 && idx >= failingIndex;
+                  return (
                     <div
                       style={{
-                        height: "2px",
-                        width: "100%",
-                        backgroundColor: idx === 1 ? "var(--color-cinnabar)" : "var(--color-rule-strong)",
-                        borderTop: idx === 2 ? "2px dashed var(--color-rule-strong)" : "none",
+                        display: "flex",
+                        alignItems: "center",
+                        position: "relative",
+                        width: "36px",
                       }}
-                    />
-                    <div
-                      style={{
-                        position: "absolute",
-                        right: 0,
-                        width: 0,
-                        height: 0,
-                        borderTop: "4px solid transparent",
-                        borderBottom: "4px solid transparent",
-                        borderLeft: `6px solid ${idx === 1 ? "var(--color-cinnabar)" : "var(--color-rule-strong)"}`,
-                      }}
-                    />
-                  </div>
-                )}
+                    >
+                      <div
+                        style={{
+                          height: "2px",
+                          width: "100%",
+                          backgroundColor: isFailingConnector
+                            ? "var(--color-cinnabar)"
+                            : "var(--color-rule-strong)",
+                          borderTop: isDownstreamConnector
+                            ? "2px dashed var(--color-rule-strong)"
+                            : "none",
+                        }}
+                      />
+                      <div
+                        style={{
+                          position: "absolute",
+                          right: 0,
+                          width: 0,
+                          height: 0,
+                          borderTop: "4px solid transparent",
+                          borderBottom: "4px solid transparent",
+                          borderLeft: `6px solid ${isFailingConnector ? "var(--color-cinnabar)" : "var(--color-rule-strong)"}`,
+                        }}
+                      />
+                    </div>
+                  );
+                })()}
               </React.Fragment>
             );
           })}

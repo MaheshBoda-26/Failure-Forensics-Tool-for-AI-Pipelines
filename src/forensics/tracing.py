@@ -461,6 +461,11 @@ def finalize_trace(
             span.raw_response, _ = redactor.redact(span.raw_response)
             span.input_json, _ = redactor.redact(span.input_json)
             span.output_json, _ = redactor.redact(span.output_json)
+            # An error message can echo sensitive data it was parsing (an
+            # exception quoting the offending text), so it gets the same
+            # treatment as the payloads.
+            if span.error:
+                span.error, _ = redactor.redact(span.error)
         if trace.final_output is not None:
             dumped, _ = redactor.redact_json(trace.final_output.model_dump(mode="json"))
             trace.final_output = PipelineOutput.model_validate(dumped)
