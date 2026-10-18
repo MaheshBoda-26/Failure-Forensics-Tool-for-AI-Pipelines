@@ -362,8 +362,17 @@ class Storage:
     # --- Diagnosis operations ---
 
     def create_diagnosis(self, diagnosis: Diagnosis) -> Diagnosis:
-        """Create a new diagnosis."""
+        """Create a new diagnosis.
+
+        Analyzer evidence can quote the document and span payloads verbatim, so
+        it is redacted here — the same boundary that redacts the trace — before
+        it is written.
+        """
         import json
+
+        from forensics.pii import redact_diagnosis
+
+        redact_diagnosis(diagnosis)
 
         with self._conn() as conn:
             conn.execute(

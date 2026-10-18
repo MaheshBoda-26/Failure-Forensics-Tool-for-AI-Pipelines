@@ -94,13 +94,16 @@ def run(doc_path: Path) -> None:
         async with using_llm_client() as client:
             pipeline = Pipeline(client=client)
             with trace_context(document_id=doc_path.stem) as ctx:
-                result = await pipeline.run(doc)
+                result = await pipeline.run(doc, document_id=doc_path.stem)
                 storage = Storage()
+                assert ctx.trace is not None
+                # Diagnose the unredacted trace, then persist (save_trace redacts
+                # in place when PII_REDACTION_ENABLED is on).
+                diagnosis = analyze_trace(ctx.trace, doc.content)
                 json_path = storage.save_trace(ctx.trace)
 
             # Persist the diagnosis so analytics/eval/UI have a root cause.
-            assert ctx.trace is not None
-            storage.create_diagnosis(analyze_trace(ctx.trace, doc.content))
+            storage.create_diagnosis(diagnosis)
 
             typer.secho(f"Pipeline completed: {doc_path.stem}", fg=typer.colors.GREEN)
             typer.echo(f"Trace saved to: {json_path}")
@@ -224,18 +227,22 @@ def demo() -> None:
 
                 doc = Document(content=doc_path.read_text())
                 with trace_context(document_id=doc_id) as ctx:
-                    result = await pipeline.run(doc)
+                    result = await pipeline.run(doc, document_id=doc_id)
+                    assert ctx.trace is not None
+                    # Analyze and persist the diagnosis so analytics, the eval
+                    # loop and the UI have a real root cause per trace.
+                    # Previously the demo saved traces but never analyzed them,
+                    # so analytics and eval had nothing to read.
+                    expected_type = doc_info.get("doc_type", "unknown")
+                    # The dataset's ground-truth type lets the analyzer detect a
+                    # valid-but-wrong label (misclassification).
+                    #
+                    # Analyze before `save_trace` redacts the trace in place (PII
+                    # redaction), or every extracted entity grounds against a
+                    # span that no longer contains it.
+                    diagnosis = analyze_trace(ctx.trace, doc.content, expected_type)
                     storage.save_trace(ctx.trace)
 
-                # Analyze and persist the diagnosis so analytics, the eval loop
-                # and the UI have a real root cause per trace. Previously the
-                # demo saved traces but never analyzed them, so analytics and
-                # eval had nothing to read.
-                assert ctx.trace is not None
-                expected_type = doc_info.get("doc_type", "unknown")
-                # The dataset's ground-truth type lets the analyzer detect a
-                # valid-but-wrong label (misclassification).
-                diagnosis = analyze_trace(ctx.trace, doc.content, expected_type)
                 storage.create_diagnosis(diagnosis)
 
                 actual_type = result.classification.document_type.value

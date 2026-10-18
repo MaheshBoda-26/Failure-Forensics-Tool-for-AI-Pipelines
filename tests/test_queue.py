@@ -49,12 +49,20 @@ class FakePipeline:
         # `Pipeline(client=...)` at the call sites under test.
         self.client = client
         self.calls: list[str] = []
+        self.document_ids: list[str] = []
         self._on_run = on_run
 
-    async def run(self, document: Document) -> None:
+    async def run(self, document: Document, document_id: str = "") -> None:
+        """Mirror `Pipeline.run`, which forwards the caller's document id.
+
+        The signature has to match: `worker.process_document` passes
+        `document_id=` explicitly, so a double that only accepts the document
+        raises `TypeError` and every queued job "fails" for the wrong reason.
+        """
         from forensics.models import Span
 
         self.calls.append(document.content)
+        self.document_ids.append(document_id)
         trace = get_current_trace()
         assert trace is not None
         trace.spans.append(
@@ -398,7 +406,7 @@ def test_a_failing_job_does_not_stop_the_worker(storage: Storage, queue: JobQueu
 
 def test_a_broken_worker_pipeline_records_the_failure(storage: Storage, queue: JobQueue) -> None:
     class Exploding(FakePipeline):
-        async def run(self, document: Document) -> None:
+        async def run(self, document: Document, document_id: str = "") -> None:
             raise RuntimeError("model provider is down")
 
     job = queue.enqueue("acme", _payload(), max_attempts=1)

@@ -323,3 +323,67 @@ def test_blank_alert_secret_is_unset(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert settings.alert_webhook_secret is None
     assert settings.alert_webhook_url is None
+
+
+# ─── Per-model output budget and reasoning flag ─────────────────────────────
+#
+# Both env vars were documented in `.env.example` and read by nothing: the
+# `MAX_TOKENS` value was dropped before the model builder ran (no field bound
+# it), and `IS_REASONING` was never read anywhere at all.
+
+
+def test_model_max_tokens_binds_for_every_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    env = _make_env(
+        {
+            "PIPELINE_MODEL_MAX_TOKENS": "8192",
+            "PIPELINE_FALLBACK_MODEL_MAX_TOKENS": "1024",
+            "JUDGE_MODEL_MAX_TOKENS": "2048",
+            "CHEAP_MODEL_MAX_TOKENS": "512",
+        }
+    )
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    reset_settings()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.pipeline_model.max_tokens == 8192
+    assert settings.pipeline_fallback_model.max_tokens == 1024
+    assert settings.judge_model.max_tokens == 2048
+    assert settings.cheap_model.max_tokens == 512
+
+
+def test_model_is_reasoning_binds_and_reaches_the_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = _make_env(
+        {
+            "PIPELINE_MODEL_IS_REASONING": "true",
+            "PIPELINE_FALLBACK_MODEL_IS_REASONING": "false",
+            "CHEAP_MODEL_IS_REASONING": "true",
+        }
+    )
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    reset_settings()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.pipeline_model.is_reasoning is True
+    assert settings.pipeline_fallback_model.is_reasoning is False
+    assert settings.cheap_model.is_reasoning is True
+    assert settings.judge_model.is_reasoning is False  # undocumented default
+
+
+def test_model_knob_defaults_are_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A config that never sets the knobs keeps the historical 4096/False."""
+    for k, v in _make_env().items():
+        monkeypatch.setenv(k, v)
+
+    reset_settings()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.pipeline_model.max_tokens == 4096
+    assert settings.pipeline_model.is_reasoning is False
+    assert settings.judge_model.max_tokens == 4096
+    assert settings.judge_model.is_reasoning is False

@@ -55,15 +55,19 @@ async def process_document(
     """
     document = Document(content=doc_text)
     with trace_context(document_id=doc_id, tenant_id=tenant_id) as ctx:
-        await pipeline.run(document)
+        await pipeline.run(document, document_id=doc_id)
         trace = ctx.trace
 
     if trace is None:
         raise RuntimeError("pipeline produced no trace")
 
-    storage.save_trace(trace)
+    # Analyze *before* `save_trace`: finalize_trace redacts the trace in place
+    # when PII_REDACTION_ENABLED is on, and an entity-grounding check run against
+    # a redacted payload flags every real entity as a hallucination. The
+    # diagnosis is scrubbed at its own write boundary (`create_diagnosis`).
     diagnosis = analyze_trace(trace, doc_text, expected_type)
     diagnosis.tenant_id = tenant_id
+    storage.save_trace(trace)
     storage.create_diagnosis(diagnosis)
 
     return {

@@ -25,6 +25,8 @@ from forensics.config import ModelConfig, get_settings
 from forensics.models import (
     ClassificationOutput,
     Document,
+    DocumentType,
+    Entity,
     ExtractionOutput,
     FailureCategory,
     IntakeOutput,
@@ -401,6 +403,59 @@ class SpendTracker:
             raise SpendCapExceededError(msg, "global")
 
 
+# The offline fixture's ground truth, keyed by document id.
+#
+# `DRY_RUN=true` is documented as reproducing the five seeded failures in
+# `dataset/labels.json`. It previously inspected the *prompt* instead: the
+# classification prompt carries only extracted entities, so it never named the
+# document type, and no dataset document contains its own filename stem. Every
+# document therefore fell through to `contract`, which invented 12
+# misclassifications, hid the seeded one, and left the other four seeded
+# failures unreproducible.
+
+#: Document-type prefixes the demo dataset uses (`contract_001`, ...). The
+#: fixture classifies from the id, which is the only thing that survives into
+#: the classification prompt.
+_DRY_RUN_TYPE_BY_PREFIX: tuple[tuple[str, str], ...] = (
+    ("contract", "contract"),
+    ("invoice", "invoice"),
+    ("report", "report"),
+    ("correspondence", "correspondence"),
+    ("mixed", "mixed"),
+)
+
+#: Seeded wrong labels: a valid enum value that is not the document's type.
+_DRY_RUN_MISCLASSIFY: dict[str, str] = {
+    "contract_001": "invoice",  # misclassification @ classification
+    "mixed_001": "contract",  # misclassification @ classification
+}
+
+#: Seeded hallucinated extraction: an entity absent from the source text.
+_DRY_RUN_HALLUCINATED_ENTITIES: dict[str, list[dict[str, Any]]] = {
+    "invoice_001": [
+        {
+            "value": "Fake Vendor Inc",
+            "entity_type": "organization",
+            "start_offset": 0,
+            "end_offset": 10,
+        }
+    ],
+}
+
+#: Seeded summaries that misread an upstream verdict.
+_DRY_RUN_SUMMARY_OVERRIDES: dict[str, str] = {
+    # correspondence summarised with contract/invoice terminology -> propagation error
+    "correspondence_001": "The invoice total is $5000 per the contract terms.",
+}
+
+#: Seeded outputs that violate the step's schema outright. Built with
+#: `model_construct`, because a *validated* `SummaryOutput` cannot represent the
+#: failure (`summary` has `min_length=1`), which is why this seeded
+#: `prompt_failure` never reproduced. The payload still serializes as ordinary
+#: JSON, so the analyzer sees a schema violation rather than a serializer error.
+_DRY_RUN_SCHEMA_INVALID_SUMMARIZATION: frozenset[str] = frozenset({"report_001"})
+
+
 class NIMClient:
     """NVIDIA NIM API client: structured output, caching, spend caps, retries.
 
@@ -754,6 +809,76 @@ class NIMClient:
 
         return self._build_structured_response(model_config, data, parsed)
 
+    @staticmethod
+    def _dry_run_document_type(document_id: str, prompt: str) -> DocumentType:
+        """Pick a document type for the offline fixture.
+
+        The dataset's id prefixes are authoritative because they are the last
+        ground truth the fixture can see; the prompt keywords the old version
+        used are only a fallback for a document whose id carries no prefix.
+        """
+        for prefix, value in _DRY_RUN_TYPE_BY_PREFIX:
+            if document_id.startswith(prefix):
+                return DocumentType(value)
+
+        prompt_lower = prompt.lower()
+        if "invoice" in prompt_lower or "bill to" in prompt_lower:
+            return DocumentType.INVOICE
+        if "report" in prompt_lower or "analysis" in prompt_lower or "findings" in prompt_lower:
+            return DocumentType.REPORT
+        if (
+            "dear" in prompt_lower
+            or "email" in prompt_lower
+            or "letter" in prompt_lower
+            or "memo" in prompt_lower
+        ):
+            return DocumentType.CORRESPONDENCE
+        if "mixed" in prompt_lower or "proposal" in prompt_lower:
+            return DocumentType.MIXED
+        return DocumentType.CONTRACT
+
+    def _dry_run_response(
+        self, response_model: type[T], document_id: str, prompt: str
+    ) -> BaseModel:
+        """Canned step output for `DRY_RUN`, keyed by document id.
+
+        Keying on `document_id` is what makes the five seeded failures
+        reproducible: the id is threaded from `Pipeline.run`, whereas the prompt
+        is not a reliable signal (the classification prompt has no document
+        text at all).
+        """
+        doc_id = document_id.lower()
+        doc_type = self._dry_run_document_type(doc_id, prompt)
+
+        if response_model == IntakeOutput:
+            return IntakeOutput(
+                document=Document(content=prompt), cleaned_text=prompt, char_count=len(prompt)
+            )
+
+        if response_model == ExtractionOutput:
+            seeded = _DRY_RUN_HALLUCINATED_ENTITIES.get(doc_id, [])
+            return ExtractionOutput(entities=[Entity(**entity) for entity in seeded])
+
+        if response_model == ClassificationOutput:
+            wrong = _DRY_RUN_MISCLASSIFY.get(doc_id)
+            if wrong is not None:
+                # A seeded wrong answer; deliberately unsure confidence.
+                return ClassificationOutput(document_type=DocumentType(wrong), confidence=0.42)
+            return ClassificationOutput(document_type=doc_type, confidence=0.95)
+
+        if response_model == SummaryOutput:
+            if doc_id in _DRY_RUN_SCHEMA_INVALID_SUMMARIZATION:
+                # A model that ignored the output contract and returned no
+                # usable summary. `model_construct` bypasses the `min_length=1`
+                # that made this seeded failure unrepresentable before.
+                return SummaryOutput.model_construct(summary="", key_points=[], metadata={})
+            override = _DRY_RUN_SUMMARY_OVERRIDES.get(doc_id)
+            return SummaryOutput(
+                summary=override or f"Dry run summary for {doc_type.value}", key_points=[]
+            )
+
+        raise ValueError(f"Unknown response model: {response_model}")
+
     async def structured(
         self,
         model_config: ModelConfig,
@@ -762,94 +887,18 @@ class NIMClient:
         system: str | None = None,
         prompt_version: str = "v1",
         step: str = "",
+        document_id: str = "",
     ) -> StructuredResponse:
-        """Call LLM with 3-tier structured output fallback."""
+        """Call LLM with 3-tier structured output fallback.
+
+        `document_id` is only consulted by the offline fixture (see `DRY_RUN`);
+        the fixture has to know which document it is standing in for, because
+        the classification prompt carries only extracted entities and therefore
+        cannot name the document itself.
+        """
 
         if self.dry_run:
-            # Return document-specific canned responses for dry run
-            from forensics.models import Document, DocumentType, Entity
-
-            # Detect document type from prompt content
-            doc_type = DocumentType.CONTRACT
-            prompt_lower = prompt.lower()
-            if (
-                "invoice" in prompt_lower
-                or "tax invoice" in prompt_lower
-                or "bill to" in prompt_lower
-            ):
-                doc_type = DocumentType.INVOICE
-            elif (
-                "report" in prompt_lower or "analysis" in prompt_lower or "findings" in prompt_lower
-            ):
-                doc_type = DocumentType.REPORT
-            elif (
-                "dear" in prompt_lower
-                or "email" in prompt_lower
-                or "letter" in prompt_lower
-                or "memo" in prompt_lower
-            ):
-                doc_type = DocumentType.CORRESPONDENCE
-            elif "mixed" in prompt_lower or "proposal" in prompt_lower:
-                doc_type = DocumentType.MIXED
-
-            # Seeded failure document IDs and their expected behaviors
-            seeded_failures: dict[str, dict[str, Any]] = {
-                "contract_001": {"doc_type": DocumentType.INVOICE},  # misclassification
-                "invoice_001": {
-                    "entities": [
-                        Entity(
-                            value="Fake Vendor Inc",
-                            entity_type="organization",
-                            start_offset=0,
-                            end_offset=10,
-                        )
-                    ]
-                },  # extraction_hallucination
-                "report_001": {
-                    "summary": "This is a contract agreement between parties..."
-                },  # prompt_failure (wrong doc type terminology)
-                "correspondence_001": {
-                    "summary": "The invoice total is $5000 per the contract terms."
-                },  # propagation_error
-                "mixed_001": {"doc_type": DocumentType.CONTRACT},  # misclassification
-            }
-
-            # Find matching seeded failure
-            matched_failure = None
-            for doc_id, failure in seeded_failures.items():
-                if doc_id in prompt_lower:
-                    matched_failure = failure
-                    break
-
-            if response_model == IntakeOutput:
-                parsed: BaseModel = IntakeOutput(
-                    document=Document(content=prompt),
-                    cleaned_text=prompt,
-                    char_count=len(prompt),
-                )
-            elif response_model == ExtractionOutput:
-                parsed = ExtractionOutput(
-                    entities=matched_failure.get("entities", []) if matched_failure else [],
-                )
-            elif response_model == ClassificationOutput:
-                parsed = ClassificationOutput(
-                    document_type=matched_failure.get("doc_type", doc_type)
-                    if matched_failure
-                    else doc_type,
-                    confidence=0.42
-                    if matched_failure and matched_failure.get("doc_type")
-                    else 0.95,
-                )
-            elif response_model == SummaryOutput:
-                parsed = SummaryOutput(
-                    summary=matched_failure.get("summary", f"Dry run summary for {doc_type}")
-                    if matched_failure
-                    else f"Dry run summary for {doc_type}",
-                    key_points=[],
-                )
-            else:
-                raise ValueError(f"Unknown response model: {response_model}")
-
+            parsed = self._dry_run_response(response_model, document_id, prompt)
             return StructuredResponse(
                 content="",
                 model=model_config.model_id,
@@ -976,11 +1025,12 @@ class NIMClient:
         system: str | None = None,
         prompt_version: str = "v1",
         step: str = "",
+        document_id: str = "",
     ) -> StructuredResponse:
         """Run with primary model, fall back on failure."""
         try:
             return await self.structured(
-                primary, prompt, response_model, system, prompt_version, step
+                primary, prompt, response_model, system, prompt_version, step, document_id
             )
         except (RateLimitError, ServerError, ModelNotFoundError):
             if fallback.model_id == primary.model_id:
@@ -991,7 +1041,7 @@ class NIMClient:
                 # doubling the time to the real error.
                 raise
             return await self.structured(
-                fallback, prompt, response_model, system, prompt_version, step
+                fallback, prompt, response_model, system, prompt_version, step, document_id
             )
 
 
@@ -1101,7 +1151,9 @@ class LLMClient:
             detected_encoding=_detect_encoding(document_text),
         )
 
-    async def extraction(self, intake_output: IntakeOutput) -> ExtractionOutput:
+    async def extraction(
+        self, intake_output: IntakeOutput, document_id: str = ""
+    ) -> ExtractionOutput:
         settings = get_settings()
         prompt, system = self._get_step_prompt("extraction", {"text": intake_output.cleaned_text})
         response = await self.nim.run_with_fallback(
@@ -1112,11 +1164,14 @@ class LLMClient:
             system=system,
             prompt_version="extraction-v1",
             step="extraction",
+            document_id=document_id,
         )
         _publish_telemetry(response, prompt)
         return response.parsed  # type: ignore[return-value]
 
-    async def classification(self, extraction_output: ExtractionOutput) -> ClassificationOutput:
+    async def classification(
+        self, extraction_output: ExtractionOutput, document_id: str = ""
+    ) -> ClassificationOutput:
         settings = get_settings()
         entities_data = [
             {"value": e.value, "type": e.entity_type} for e in extraction_output.entities
@@ -1130,6 +1185,7 @@ class LLMClient:
             system=system,
             prompt_version="classification-v1",
             step="classification",
+            document_id=document_id,
         )
         _publish_telemetry(response, prompt)
         return response.parsed  # type: ignore[return-value]
@@ -1138,6 +1194,7 @@ class LLMClient:
         self,
         intake_output: IntakeOutput,
         classification_output: ClassificationOutput,
+        document_id: str = "",
     ) -> SummaryOutput:
         settings = get_settings()
         prompt, system = self._get_step_prompt(
@@ -1155,6 +1212,7 @@ class LLMClient:
             system=system,
             prompt_version="summarization-v1",
             step="summarization",
+            document_id=document_id,
         )
         _publish_telemetry(response, prompt)
         return response.parsed  # type: ignore[return-value]

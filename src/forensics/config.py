@@ -114,6 +114,22 @@ class Settings(BaseSettings):
     judge_model_id: str = Field(default="")
     judge_model_provider: str = Field(default="")
     judge_model_family: str = Field(default="")
+
+    # Per-model output budget and reasoning flag, declared as fields because
+    # pydantic-settings only surfaces an env var to the `mode="before"`
+    # validator when a field binds it — an undeclared `PIPELINE_MODEL_MAX_TOKENS`
+    # was silently dropped, so `build_model` always saw the 4096 default and
+    # `MODEL_IS_REASONING` was never read at all. `apply_model_knobs` (mode
+    # "after") copies these onto the assembled `ModelConfig`s.
+    pipeline_model_max_tokens: int = Field(default=4096, gt=0, exclude=True)
+    pipeline_model_is_reasoning: bool = Field(default=False, exclude=True)
+    pipeline_fallback_model_max_tokens: int = Field(default=4096, gt=0, exclude=True)
+    pipeline_fallback_model_is_reasoning: bool = Field(default=False, exclude=True)
+    judge_model_max_tokens: int = Field(default=4096, gt=0, exclude=True)
+    judge_model_is_reasoning: bool = Field(default=False, exclude=True)
+    cheap_model_max_tokens: int = Field(default=4096, gt=0, exclude=True)
+    cheap_model_is_reasoning: bool = Field(default=False, exclude=True)
+
     request_timeout_s: float = Field(
         default=60.0,
         gt=0,
@@ -349,19 +365,12 @@ class Settings(BaseSettings):
         """Build ModelConfig objects from flat env vars."""
 
         def build_model(prefix: str) -> ModelConfig:
-            max_tokens = int(data.get(f"{prefix}_model_max_tokens", 0) or 0)
             return ModelConfig(
                 model_id=data.get(f"{prefix}_model_id", ""),
                 provider=data.get(f"{prefix}_model_provider", ""),
                 family=data.get(f"{prefix}_model_family", ""),
                 price_in_per_1m=float(data.get(f"{prefix}_model_price_in", 0)),
                 price_out_per_1m=float(data.get(f"{prefix}_model_price_out", 0)),
-                # Reasoning models (nemotron-3-super and friends) spend a large
-                # share of the budget on hidden reasoning tokens. At the 4096
-                # default they finish with finish_reason="length" and an empty
-                # content string, which the structured-output tiers read as an
-                # unparseable model reply.
-                max_tokens=max_tokens or 4096,
             )
 
         data["pipeline_model"] = build_model("pipeline")
@@ -369,6 +378,28 @@ class Settings(BaseSettings):
         data["judge_model"] = build_model("judge")
         data["cheap_model"] = build_model("cheap")
         return data
+
+    @model_validator(mode="after")
+    def apply_model_knobs(self) -> "Settings":
+        """Copy the per-model output budget and reasoning flag onto each config.
+
+        Reasoning models (nemotron-3-super and friends) spend a large share of
+        the budget on hidden reasoning tokens. At the 4096 default they finish
+        with `finish_reason="length"` and an empty content string, which the
+        structured-output tiers read as an unparseable reply. Applied here, from
+        the parsed fields, rather than in the `mode="before"` builder, which
+        cannot see an env var that no field binds.
+        """
+        for prefix, attr in (
+            ("pipeline", "pipeline_model"),
+            ("pipeline_fallback", "pipeline_fallback_model"),
+            ("judge", "judge_model"),
+            ("cheap", "cheap_model"),
+        ):
+            config: ModelConfig = getattr(self, attr)
+            config.max_tokens = getattr(self, f"{prefix}_model_max_tokens")
+            config.is_reasoning = getattr(self, f"{prefix}_model_is_reasoning")
+        return self
 
     @model_validator(mode="after")
     def validate_judge_family_separation(self) -> "Settings":
