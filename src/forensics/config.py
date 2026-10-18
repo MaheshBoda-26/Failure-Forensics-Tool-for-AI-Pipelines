@@ -75,6 +75,12 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        # Without this, `OTEL__EXPORTER` is not parsed as the nested `otel` model
+        # at all: the flat `OTEL_EXPORTER` fields below exist to bind the names
+        # spec 01 documents, and `build_otel_settings` assembles `otel` from
+        # them. Declaring the delimiter makes the nested spelling work too,
+        # instead of being silently ignored.
+        env_nested_delimiter="__",
         extra="ignore",
     )
 

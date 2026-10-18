@@ -180,6 +180,42 @@ def test_otel_settings_come_from_flat_env_vars(monkeypatch):
     assert settings.otel.sampling_rate == 0.25
 
 
+def test_otel_settings_also_come_from_nested_env_vars(monkeypatch):
+    """`OTEL__EXPORTER` is the spelling pydantic-settings parses natively.
+
+    It used to be silently ignored: without `env_nested_delimiter="__"` the
+    nested shape never became the `otel` dict, so `build_otel_settings` filled
+    `otel` from the (empty) flat fields and the nested values vanished. Both
+    spellings must now work.
+    """
+    env = _make_env(
+        {
+            "OTEL__EXPORTER": "otlp",
+            "OTEL__SERVICE_NAME": "nested-service",
+        }
+    )
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    reset_settings()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.otel.exporter == "otlp"
+    assert settings.otel.service_name == "nested-service"
+
+
+def test_nested_otel_env_wins_over_flat(monkeypatch):
+    """Precedence is deterministic: the explicit nested model is used as-is."""
+    env = _make_env({"OTEL_EXPORTER": "console", "OTEL__EXPORTER": "otlp"})
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    reset_settings()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.otel.exporter == "otlp"
+
+
 def test_otel_defaults_export_nothing(monkeypatch):
     for k, v in _make_env().items():
         monkeypatch.setenv(k, v)
