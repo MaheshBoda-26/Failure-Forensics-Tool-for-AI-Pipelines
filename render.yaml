@@ -53,6 +53,50 @@ services:
       - key: NVIDIA_API_KEY
         sync: false
 
+      # Model configuration. Required, not optional: `Settings` validates that
+      # every role has an id, a provider and a family, and the app exits during
+      # lifespan startup without them. The `.env` that holds these locally is
+      # gitignored, so it never reaches Render — only `NVIDIA_API_KEY` is not
+      # enough, and a deploy that sets only that fails to boot.
+      - key: PIPELINE_MODEL_ID
+        value: poolside/laguna-xs-2.1
+      - key: PIPELINE_MODEL_PROVIDER
+        value: poolside
+      - key: PIPELINE_MODEL_FAMILY
+        value: poolside
+      - key: PIPELINE_FALLBACK_MODEL_ID
+        value: poolside/laguna-xs-2.1
+      - key: PIPELINE_FALLBACK_MODEL_PROVIDER
+        value: poolside
+      - key: PIPELINE_FALLBACK_MODEL_FAMILY
+        value: poolside
+      - key: JUDGE_MODEL_ID
+        value: meta/llama-3.1-8b-instruct
+      - key: JUDGE_MODEL_PROVIDER
+        value: meta
+      - key: JUDGE_MODEL_FAMILY
+        value: meta
+      - key: CHEAP_MODEL_ID
+        value: nvidia/nemotron-3.5-content-safety
+      - key: CHEAP_MODEL_PROVIDER
+        value: nvidia
+      - key: CHEAP_MODEL_FAMILY
+        value: nvidia
+
+      # Prices stay 0.0 until real ones are filled in, so `total_cost_usd`
+      # reports 0 (docs/limitations.md §10). Declared explicitly rather than
+      # omitted so the zero is visibly a decision, not a missing value.
+      - key: PIPELINE_MODEL_PRICE_IN
+        value: "0.0"
+      - key: PIPELINE_MODEL_PRICE_OUT
+        value: "0.0"
+
+      # Deliberate, and identical to `.env.example`: the pipeline and its
+      # fallback share the one slug verified against NIM, and this switch also
+      # gates the duplicate-model-id guard, so `true` would abort startup.
+      - key: JUDGE_FAMILY_SEPARATION_REQUIRED
+        value: "false"
+
       # Defaults on purpose. Auth off keeps the public demo open and the queue off
       # keeps runs inline — a queued job needs a worker service to consume it.
       - key: AUTH_ENABLED
