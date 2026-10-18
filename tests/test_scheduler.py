@@ -277,6 +277,34 @@ def test_regression_posts_an_alert_with_the_full_payload(
     assert captured[0].headers["content-type"] == "application/json"
 
 
+def test_one_undeliverable_alert_does_not_swallow_the_next(
+    factory: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Alerts are delivered independently.
+
+    A regression and an improvement from the same run are separate
+    notifications, so a webhook that fails on the first must not prevent the
+    second from being attempted.
+    """
+    scheduler = factory(CRON, alert_webhook_url="https://hooks.test/alerts")
+    attempted: list[str] = []
+
+    async def flaky(alert_type: str, payload: dict[str, Any]) -> bool:
+        attempted.append(alert_type)
+        if alert_type == "eval_regression":
+            raise httpx.ConnectError("webhook unreachable")
+        return True
+
+    monkeypatch.setattr(scheduler, "send_alert", flaky)
+
+    alerts = [{"alert_type": "eval_regression"}, {"alert_type": "eval_improvement"}]
+    asyncio.run(scheduler._deliver_alerts(alerts))
+
+    assert attempted == ["eval_regression", "eval_improvement"], (
+        "a failed alert stopped the remaining deliveries"
+    )
+
+
 def test_regression_below_threshold_does_not_alert(factory: Any) -> None:
     scheduler = factory(CRON, alert_regression_threshold="0.10")
     previous = _mem_run("prev", passed=100, failed=0)

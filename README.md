@@ -21,7 +21,7 @@ Implemented and tested:
 | React trace explorer + FastAPI | `frontend/`, `api.py` | `scripts/smoke.sh` |
 
 `make check` (ruff + mypy strict + pytest) is green from a clean checkout:
-**348 tests**, no optional extras required beyond `make install`.
+**352 tests**, no optional extras required beyond `make install`.
 
 Known gaps, stated plainly:
 

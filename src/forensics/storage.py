@@ -132,6 +132,8 @@ class Storage:
                     overridden BOOLEAN DEFAULT 0,
                     override_category TEXT,
                     override_reason TEXT,
+                    judge_analysis TEXT,
+                    analyzer_fallback BOOLEAN DEFAULT 0,
                     tenant_id TEXT NOT NULL DEFAULT 'default',
                     FOREIGN KEY (trace_id) REFERENCES traces(trace_id)
                 )
@@ -370,8 +372,8 @@ class Storage:
                 (diagnosis_id, trace_id, root_cause_step, category, confidence,
                  evidence_chain, step_scores, analyzer_version, model_id, provider,
                  created_at, confirmed, overridden, override_category, override_reason,
-                 tenant_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 judge_analysis, analyzer_fallback, tenant_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     diagnosis.diagnosis_id,
@@ -389,6 +391,12 @@ class Storage:
                     int(diagnosis.overridden),
                     diagnosis.override_category.value if diagnosis.override_category else None,
                     diagnosis.override_reason,
+                    (
+                        json.dumps(diagnosis.judge_analysis.model_dump(mode="json"))
+                        if diagnosis.judge_analysis is not None
+                        else None
+                    ),
+                    int(diagnosis.analyzer_fallback),
                     diagnosis.tenant_id,
                 ),
             )
@@ -403,6 +411,10 @@ class Storage:
         data["evidence_chain"] = json.loads(data["evidence_chain"] or "[]")
         data["step_scores"] = json.loads(data["step_scores"] or "[]")
         data["step_scores"] = [StepScore.model_validate(s) for s in data["step_scores"]]
+        # The judge verdict is stored as JSON; a row written before the column
+        # existed yields None, which `Diagnosis` treats as "judge did not run".
+        raw_judge = data.get("judge_analysis")
+        data["judge_analysis"] = json.loads(raw_judge) if raw_judge else None
         return Diagnosis.model_validate(data)
 
     def get_diagnosis(self, diagnosis_id: str, tenant_id: str | None = None) -> Diagnosis | None:

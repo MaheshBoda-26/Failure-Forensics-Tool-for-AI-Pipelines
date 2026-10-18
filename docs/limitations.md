@@ -5,8 +5,9 @@ is a scope decision or a known gap with its impact and mitigation stated. Nothin
 here is presented as a bug.
 
 Last verified against the working tree at commit `cb373e9` (specs 01–07 complete,
-`make check` green with 344 tests). A later revision added the deploy and
-multi-tenancy fixes on branch `fix/review-findings`, bringing the suite to 348.
+`make check` green with 344 tests). Later revisions added the deploy and
+multi-tenancy fixes (PR #1) and the tracing/scheduler fixes, bringing the suite
+to 352.
 
 ---
 

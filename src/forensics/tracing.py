@@ -26,7 +26,7 @@ from pydantic import BaseModel
 
 from forensics.config import get_settings
 from forensics.migrations import migrate
-from forensics.models import DEFAULT_TENANT_ID, Span, Trace, TraceStatus
+from forensics.models import DEFAULT_TENANT_ID, PipelineOutput, Span, Trace, TraceStatus
 from forensics.otel_export import ForensicsSpanProcessor, configure_otel
 from forensics.pii import create_redactor_from_settings
 
@@ -449,7 +449,11 @@ def finalize_trace(
     if not trace.total_latency_ms:
         trace.total_latency_ms = sum(span.latency_ms for span in trace.spans)
 
-    # PII redaction (before persistence)
+    # PII redaction (before persistence). Covers every field that reaches the
+    # JSON file: the spans, plus `final_output`, which embeds the raw document
+    # text in `IntakeOutput.document.content`. Nothing populates `final_output`
+    # yet, so the second branch is insurance against the next caller doing so
+    # and silently re-opening the gap spec 03 closes.
     redactor = create_redactor_from_settings()
     if redactor.enabled:
         for span in trace.spans:
@@ -457,6 +461,9 @@ def finalize_trace(
             span.raw_response, _ = redactor.redact(span.raw_response)
             span.input_json, _ = redactor.redact(span.input_json)
             span.output_json, _ = redactor.redact(span.output_json)
+        if trace.final_output is not None:
+            dumped, _ = redactor.redact_json(trace.final_output.model_dump(mode="json"))
+            trace.final_output = PipelineOutput.model_validate(dumped)
 
     traces_dir = traces_dir or _default_traces_dir()
     write_trace_json(trace, traces_dir)
@@ -488,23 +495,34 @@ def finalize_trace(
 
 
 def write_trace_json(trace: Trace, traces_dir: Path) -> Path:
-    """Write trace to JSON file atomically (tmp + rename)."""
+    """Write trace to JSON file atomically (tmp + rename).
+
+    The temp file is removed if the dump or the rename fails: it holds a partial
+    payload, and `traces_dir` is read by humans and scanned for `*.json`, so a
+    leftover `.<trace_id>.tmp` is litter that looks like data.
+    """
     traces_dir.mkdir(parents=True, exist_ok=True)
     file_path = traces_dir / f"{trace.trace_id}.json"
 
-    # Atomic write: write to temp file then rename
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        dir=traces_dir,
-        prefix=f".{trace.trace_id}.",
-        suffix=".tmp",
-        delete=False,
-    ) as tmp:
-        json.dump(trace.model_dump(mode="json"), tmp, indent=2, default=str)
-        tmp_path = Path(tmp.name)
+    tmp_path: Path | None = None
+    try:
+        # Atomic write: write to temp file then rename
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=traces_dir,
+            prefix=f".{trace.trace_id}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            json.dump(trace.model_dump(mode="json"), tmp, indent=2, default=str)
 
-    # Atomic rename
-    os.replace(tmp_path, file_path)
+        # Atomic rename
+        os.replace(tmp_path, file_path)
+    except BaseException:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+        raise
     return file_path
 
 

@@ -77,6 +77,36 @@ def _secret_trace() -> Trace:
     return trace
 
 
+def _trace_with_final_output(document_text: str) -> Trace:
+    """A trace whose `final_output` embeds the document text verbatim.
+
+    `IntakeOutput.document.content` is the raw input, and `cleaned_text` is a
+    second copy of it; both live inside the trace JSON.
+    """
+    from forensics.models import (
+        ClassificationOutput,
+        Document,
+        DocumentType,
+        ExtractionOutput,
+        IntakeOutput,
+        PipelineOutput,
+        SummaryOutput,
+    )
+
+    trace = Trace(document_id="d1", spans=[])
+    trace.final_output = PipelineOutput(
+        intake=IntakeOutput(
+            document=Document(content=document_text),
+            cleaned_text=document_text,
+            char_count=len(document_text),
+        ),
+        extraction=ExtractionOutput(entities=[]),
+        classification=ClassificationOutput(document_type=DocumentType.CONTRACT, confidence=0.9),
+        summarization=SummaryOutput(summary="s"),
+    )
+    return trace
+
+
 # --- Criterion 1: disabled is a true passthrough ---------------------------
 
 
@@ -299,6 +329,44 @@ def test_secrets_do_reach_disk_when_redaction_is_off(
     finalize_trace(trace, traces_dir=traces_dir, db_path=db_path)
 
     assert OPENROUTER_KEY.encode() in _read_json_bytes(traces_dir, trace.trace_id)
+
+
+def test_final_output_is_redacted_before_it_reaches_disk(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`final_output` embeds the raw document text, so it is inside the boundary.
+
+    `PipelineOutput.intake.document.content` holds the document verbatim. Nothing
+    populates `final_output` today; this constructs it to prove the redaction
+    covers it if a caller ever does, instead of silently re-opening criterion 9.
+    """
+    _enable_pii(monkeypatch)
+    traces_dir = tmp_path / "traces"
+    trace = _trace_with_final_output(f"Contact {EMAIL} about {NVIDIA_KEY}")
+
+    finalize_trace(trace, traces_dir=traces_dir, db_path=tmp_path / "forensics.db")
+
+    on_disk = _read_json_bytes(traces_dir, trace.trace_id)
+    assert EMAIL.encode() not in on_disk
+    assert NVIDIA_KEY.encode() not in on_disk
+
+    assert trace.final_output is not None
+    assert EMAIL not in trace.final_output.intake.document.content
+    assert EMAIL not in trace.final_output.intake.cleaned_text
+
+
+def test_final_output_reaches_disk_when_redaction_is_off(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Negative control for the test above."""
+    monkeypatch.setenv("PII_REDACTION_ENABLED", "false")
+    reset_settings()
+    traces_dir = tmp_path / "traces"
+    trace = _trace_with_final_output(f"Contact {EMAIL}")
+
+    finalize_trace(trace, traces_dir=traces_dir, db_path=tmp_path / "forensics.db")
+
+    assert EMAIL.encode() in _read_json_bytes(traces_dir, trace.trace_id)
 
 
 def test_redaction_survives_a_round_trip_through_the_json_file(
