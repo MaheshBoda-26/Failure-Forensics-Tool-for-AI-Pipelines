@@ -20,6 +20,7 @@ Design notes:
   opaque `IntegrityError`.
 """
 
+import contextlib
 import secrets
 from datetime import UTC, datetime
 from typing import Any
@@ -38,6 +39,25 @@ _MAX_KEY_BYTES = 200
 #: power, which makes a collision between two live keys negligible while
 #: keeping the identifying prefix short enough to display.
 _PREFIX_ENTROPY_CHARS = 8
+
+#: A throwaway bcrypt hash, built once on the first failed lookup. Comparing
+#: against it makes "no such prefix" cost the same as "wrong key": otherwise an
+#: unknown prefix returns in microseconds and a known one spends ~100 ms in
+#: bcrypt, which turns response time into an oracle for which prefixes exist.
+_DUMMY_HASH: bytes | None = None
+
+
+def _dummy_hash() -> bytes:
+    global _DUMMY_HASH
+    if _DUMMY_HASH is None:
+        _DUMMY_HASH = bcrypt.hashpw(secrets.token_bytes(16), bcrypt.gensalt(rounds=12))
+    return _DUMMY_HASH
+
+
+def _spend_bcrypt(raw_key: str) -> None:
+    """Do the work a verification does, without revealing the outcome."""
+    with contextlib.suppress(ValueError):  # the dummy is always a valid hash
+        bcrypt.checkpw(raw_key.encode(), _dummy_hash())
 
 
 def _key_prefix(raw_key: str, configured_prefix: str) -> str:
@@ -187,6 +207,7 @@ class AuthManager:
             )
             rows = cursor.fetchall()
             if not rows:
+                _spend_bcrypt(raw_key)
                 return None
             cols = [d[0] for d in cursor.description]
 
@@ -205,6 +226,7 @@ class AuthManager:
                     # A malformed stored hash is a data problem, not a valid key.
                     continue
             if matched_row is None:
+                _spend_bcrypt(raw_key)
                 return None
 
             data = dict(zip(cols, matched_row, strict=False))

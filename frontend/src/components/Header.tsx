@@ -1,5 +1,6 @@
-import React from "react";
+import React, { useState } from "react";
 import { Activity, Play, CheckCircle2, AlertCircle } from "lucide-react";
+import { setApiKey } from "../api/client";
 
 export type NavTab = "home" | "explorer" | "dag" | "analytics";
 
@@ -18,6 +19,9 @@ export const Header: React.FC<HeaderProps> = ({
   onRunDemo,
   isRunningDemo,
 }) => {
+  const [keyDraft, setKeyDraft] = useState("");
+  const [keySaved, setKeySaved] = useState(false);
+
   return (
     <header
       style={{
@@ -128,6 +132,57 @@ export const Header: React.FC<HeaderProps> = ({
           )}
           <span>{backendOnline ? "API CONNECTED" : "OFFLINE / LOCAL"}</span>
         </div>
+
+        {/* API Key Input */}
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            const trimmed = keyDraft.trim();
+            if (!trimmed) return;
+            setApiKey(trimmed);
+            setKeyDraft("");
+            setKeySaved(true);
+            window.setTimeout(() => setKeySaved(false), 2000);
+          }}
+          title="Stored in this browser only; sent as an Authorization header."
+          style={{ display: "flex", gap: "6px", alignItems: "center" }}
+        >
+          <input
+            type="password"
+            value={keyDraft}
+            onChange={(event) => setKeyDraft(event.target.value)}
+            placeholder={keySaved ? "key saved" : "API key (ffk_…)"}
+            aria-label="API key"
+            autoComplete="off"
+            spellCheck={false}
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: "11px",
+              padding: "4px 8px",
+              width: "150px",
+              color: "var(--color-ink)",
+              backgroundColor: "var(--color-ground)",
+              border: "1px solid var(--color-rule-strong)",
+              borderRadius: "var(--radius-1)",
+            }}
+          />
+          <button
+            type="submit"
+            disabled={!keyDraft.trim()}
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: "11px",
+              padding: "4px 10px",
+              color: keyDraft.trim() ? "var(--color-copper)" : "var(--color-ink-3)",
+              backgroundColor: "transparent",
+              border: `1px solid ${keyDraft.trim() ? "var(--color-copper)" : "var(--color-rule-strong)"}`,
+              borderRadius: "var(--radius-1)",
+              cursor: keyDraft.trim() ? "pointer" : "not-allowed",
+            }}
+          >
+            {keySaved ? "SAVED" : "SET KEY"}
+          </button>
+        </form>
 
         {/* Run Demo Button */}
         <button

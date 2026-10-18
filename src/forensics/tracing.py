@@ -518,7 +518,11 @@ def write_trace_json(trace: Trace, traces_dir: Path) -> Path:
     leftover `.<trace_id>.tmp` is litter that looks like data.
     """
     traces_dir.mkdir(parents=True, exist_ok=True)
-    file_path = traces_dir / f"{trace.trace_id}.json"
+    from forensics.documents import contained_path
+
+    file_path = contained_path(traces_dir / f"{trace.trace_id}.json", traces_dir)
+    if file_path is None:
+        raise ValueError(f"trace_id {trace.trace_id!r} resolves outside the traces directory")
 
     tmp_path: Path | None = None
     try:
@@ -548,6 +552,9 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # The CLI's `finalize_trace` shares this file with a running API/worker, so
+    # wait for a writer rather than failing immediately with "database is locked".
+    conn.execute("PRAGMA busy_timeout=5000")
 
     # Traces table
     conn.execute(
