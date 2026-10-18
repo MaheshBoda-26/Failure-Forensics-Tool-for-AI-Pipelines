@@ -20,6 +20,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from forensics.analyzer_simple import analyze_trace
+from forensics.eval_simple import create_eval_cases_from_confirmed_flags
 from forensics.models import FailureCategory, Flag, Trace
 from forensics.storage import Storage
 
@@ -575,6 +576,10 @@ def render_flag_interface(trace: Trace, diagnosis, storage: Storage, doc_text: s
                         ),
                         override_reason=diagnosis.override_reason,
                     )
+                    # Feed the confirmed flag into the eval suite the same way
+                    # the FastAPI route does; the sweep is idempotent (dedup on
+                    # (trace, failing step)) so re-clicking cannot inflate it.
+                    create_eval_cases_from_confirmed_flags()
                     st.success("Diagnosis confirmed!")
                     st.rerun()
 
@@ -603,7 +608,7 @@ def render_flag_interface(trace: Trace, diagnosis, storage: Storage, doc_text: s
                             override_reason=override_reason,
                         )
                         st.success("Diagnosis overridden and confirmed!")
-                        st.success("Diagnosis overridden!")
+                        create_eval_cases_from_confirmed_flags()
                         st.rerun()
 
 
@@ -715,7 +720,20 @@ def main() -> None:
     selected_trace = traces[selected_idx] if selected_idx < len(traces) else traces[0]
 
     doc_text = load_doc_text(selected_trace.document_id)
-    diagnosis = analyze_trace(selected_trace, doc_text)
+    # Fetch the persisted diagnosis instead of rebuilding one on every render:
+    # a fresh `analyze_trace` result has a diagnosis_id that exists only in
+    # memory, so Confirm/Override would run an UPDATE against 0 rows. If no
+    # stored diagnosis exists yet, compute it (with the dataset's ground-truth
+    # label) and persist it so the human-review buttons can act on it.
+    diagnosis = storage.get_diagnosis_for_trace(selected_trace.trace_id)
+    if diagnosis is None:
+        expected_type = None
+        for doc_info in labels.get("documents", []):
+            if doc_info.get("doc_id") == selected_trace.document_id:
+                expected_type = doc_info.get("doc_type", "unknown")
+                break
+        diagnosis = analyze_trace(selected_trace, doc_text, expected_type)
+        storage.create_diagnosis(diagnosis)
 
     # ─── Pipeline Graph ───────────────────────────────────────────────────────
     st.divider()

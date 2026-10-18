@@ -511,7 +511,7 @@ export const App: React.FC = () => {
                 ) : (
                   filteredTraces.map((t) => {
                     const isSelected = t.trace_id === selectedTrace?.trace_id;
-                    const isFail = t.status === "failure" || t.document_id.includes("001");
+                    const isFail = t.status === "failure";
                     return (
                       <div
                         key={t.trace_id}
