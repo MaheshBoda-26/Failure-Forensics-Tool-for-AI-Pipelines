@@ -192,9 +192,22 @@ class EvalScheduler:
             run=run,
             current_accuracy=current_accuracy,
         )
-        for alert in alerts:
-            await self.send_alert(alert["alert_type"], alert)
+        await self._deliver_alerts(alerts)
         return alerts
+
+    async def _deliver_alerts(self, alerts: list[dict[str, Any]]) -> None:
+        """Send each alert independently.
+
+        A regression alert and an improvement alert from the same run are
+        separate notifications, so one unreachable webhook must not swallow the
+        rest. Failures are logged per alert and the caller's `run_now` guard
+        remains the backstop.
+        """
+        for alert in alerts:
+            try:
+                await self.send_alert(alert["alert_type"], alert)
+            except Exception:
+                logger.exception("Alert %s could not be delivered", alert["alert_type"])
 
     def _latest_completed_run(self) -> EvalRun | None:
         """Most recent eval run that actually evaluated something."""
