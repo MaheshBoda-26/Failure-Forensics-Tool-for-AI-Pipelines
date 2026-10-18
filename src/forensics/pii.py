@@ -80,34 +80,61 @@ class PIIRedactor:
         """Redact PII from a string.
 
         Returns (redacted_text, list_of_redactions).
+
+        Every pattern is matched against the *original* text, all match spans
+        are collected, overlaps are resolved, and the replacements are spliced
+        from the end of the string backwards. A running character offset is
+        deliberately not used: patterns are visited in a fixed order that has
+        nothing to do with where they match, so a match found earlier in that
+        order but later in the string shifted every subsequent replacement to
+        the wrong index — leaving part of the secret in plaintext and corrupting
+        the surrounding JSON whenever a replacement's length differed from the
+        text it replaced (which is exactly what a custom replacement does).
         """
         if not self.enabled or not text:
             return text, []
 
+        # (start, end, entity_type, match) for every enabled pattern.
+        found: list[tuple[int, int, str, re.Match[str]]] = []
+        for entity_type, pattern in self._patterns.items():
+            for match in pattern.finditer(text):
+                found.append((match.start(), match.end(), entity_type, match))
+
+        # Deterministic, position-first order: earliest start wins; between two
+        # spans that begin together, the longer one wins; the entity type breaks
+        # a remaining tie so the result does not depend on dict iteration order.
+        found.sort(key=lambda item: (item[0], -(item[1] - item[0]), item[2]))
+
+        selected: list[tuple[int, int, str, re.Match[str]]] = []
+        cursor = -1
+        for start, end, entity_type, match in found:
+            if start < cursor:
+                continue  # overlaps a span already chosen; the first wins
+            selected.append((start, end, entity_type, match))
+            cursor = end
+
         redactions: list[Redaction] = []
         redacted = text
-        offset = 0
-
-        # Sort patterns by name for deterministic order
-        for entity_type in sorted(self._patterns.keys()):
-            pattern = self._patterns[entity_type]
-            for match in pattern.finditer(text):
-                start, end = match.span()
-                original = match.group()
-                custom = self._custom_replacements.get(entity_type)
-                replacement = custom if custom else self.replacement_char * len(original)
-                redactions.append(
-                    Redaction(
-                        entity_type=entity_type,
-                        start=start,
-                        end=end,
-                        original=original,
-                        replacement=replacement,
-                    )
+        for start, end, entity_type, match in sorted(
+            selected, key=lambda item: item[0], reverse=True
+        ):
+            original = match.group()
+            custom = self._custom_replacements.get(entity_type)
+            replacement = custom if custom else self.replacement_char * len(original)
+            redactions.append(
+                Redaction(
+                    entity_type=entity_type,
+                    start=start,
+                    end=end,
+                    original=original,
+                    replacement=replacement,
                 )
-                redacted = redacted[: start + offset] + replacement + redacted[end + offset :]
-                offset += len(replacement) - len(original)
+            )
+            redacted = redacted[:start] + replacement + redacted[end:]
 
+        # Report in positional order, which is the order the audit-list reader
+        # expects (the splice above necessarily visits them backwards).
+        redactions.reverse()
         return redacted, redactions
 
     def redact_json(self, data: Any) -> tuple[Any, list[Redaction]]:
@@ -158,8 +185,41 @@ def create_redactor_from_settings() -> PIIRedactor:
     )
 
 
+def redact_diagnosis(diagnosis: Any) -> bool:
+    """Redact analyzer-derived free text on a diagnosis, in place.
+
+    `analyze_trace` has to run against the *unredacted* trace — an entity check
+    can only ground an entity it can still see — so its evidence strings can
+    quote the document and the span payloads verbatim. Persisting that verdict
+    would put the plaintext that the trace writer redacted back on disk under a
+    different table, so the diagnosis is scrubbed at the same boundary.
+
+    Returns True when a redactor ran (redaction enabled).
+    """
+    redactor = create_redactor_from_settings()
+    if not redactor.enabled:
+        return False
+
+    def scrub(value: str) -> str:
+        return redactor.redact(value)[0]
+
+    diagnosis.evidence_chain = [scrub(item) for item in diagnosis.evidence_chain]
+    for score in diagnosis.step_scores:
+        score.evidence = [scrub(item) for item in score.evidence]
+    if diagnosis.override_reason:
+        diagnosis.override_reason = scrub(diagnosis.override_reason)
+
+    analysis = getattr(diagnosis, "judge_analysis", None)
+    if analysis is not None:
+        for judge_score in analysis.step_scores:
+            judge_score.evidence = [scrub(item) for item in judge_score.evidence]
+            judge_score.semantic_issues = [scrub(item) for item in judge_score.semantic_issues]
+    return True
+
+
 __all__ = [
     "PIIRedactor",
     "Redaction",
     "create_redactor_from_settings",
+    "redact_diagnosis",
 ]

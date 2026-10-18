@@ -250,6 +250,73 @@ def test_custom_pattern_offset_does_not_shift_other_matches(
     assert redacted == f"id [REDACTED]; mail {BLOCK * len(EMAIL)}; tel {BLOCK * len(PHONE)}"
 
 
+def test_differing_length_replacement_before_a_later_secret_is_safe() -> None:
+    """A name-sorted custom pattern must not corrupt a secret that follows it.
+
+    Patterns used to be applied in *name* order with one shared character
+    offset, so a custom pattern whose name sorts before `email` but whose match
+    sits *after* the email shifted the email's replacement to the wrong index.
+    With a custom name that sorts first (`aaa_id`) the corruption is guaranteed,
+    and part of the address survives in plaintext.
+    """
+    redactor = PIIRedactor(
+        enabled=True,
+        custom_patterns=[{"name": "aaa_id", "pattern": r"INT-\d{8}", "replacement": "[REDACTED]"}],
+    )
+
+    redacted, redactions = redactor.redact(f"mail {EMAIL}; id {CUSTOM_ID}")
+
+    assert EMAIL not in redacted
+    assert redacted == f"mail {BLOCK * len(EMAIL)}; id [REDACTED]"
+    assert {r.entity_type for r in redactions} == {"email", "aaa_id"}
+
+
+def test_json_stays_parseable_when_replacements_change_length() -> None:
+    """The real symptom: `span.output_json` was left structurally invalid.
+
+    A redacted span payload is parsed downstream, so a splice at the wrong index
+    did not just leak — it produced JSON that no longer parsed.
+    """
+    redactor = PIIRedactor(
+        enabled=True,
+        custom_patterns=[{"name": "aaa_id", "pattern": r"INT-\d{8}", "replacement": "[REDACTED]"}],
+    )
+    payload = json.dumps({"contact": EMAIL, "ref": f"{CUSTOM_ID}", "n": 1})
+
+    redacted, _ = redactor.redact(payload)
+
+    assert EMAIL not in redacted
+    assert CUSTOM_ID not in redacted
+    assert json.loads(redacted) == {
+        "contact": BLOCK * len(EMAIL),
+        "ref": "[REDACTED]",
+        "n": 1,
+    }
+
+
+def test_overlapping_matches_are_redacted_once() -> None:
+    """Overlaps resolve to one span, not stacked replacements."""
+    redactor = PIIRedactor(enabled=True, entity_types=frozenset({"phone", "ssn"}))
+
+    # The phone pattern can match a leading country code inside the SSN's shape.
+    redacted, redactions = redactor.redact(f"ssn {SSN}")
+
+    assert SSN not in redacted
+    assert redacted.count("█") >= len(SSN)
+    # No span is reported twice for the same characters.
+    spans = [(r.start, r.end) for r in redactions]
+    assert len(spans) == len(set(spans))
+
+
+def test_redactions_are_reported_in_positional_order() -> None:
+    redactor = PIIRedactor(enabled=True)
+
+    _, redactions = redactor.redact(f"mail {EMAIL} tel {PHONE} ssn {SSN}")
+
+    starts = [r.start for r in redactions]
+    assert starts == sorted(starts)
+
+
 # --- Criterion 10: the audit list is usable ---------------------------------
 
 
@@ -384,3 +451,119 @@ def test_redaction_survives_a_round_trip_through_the_json_file(
     assert OPENROUTER_KEY not in span["output_json"]
     assert BLOCK in span["output_json"]
     assert written["trace_id"] == trace.trace_id
+
+
+# --- The analyzer must see the unredacted trace -----------------------------
+
+
+def _trace_with_grounded_email() -> Trace:
+    """A trace whose extraction output legitimately contains the email."""
+    doc = f"Contact {EMAIL} for details."
+    trace = Trace(document_id="d1", spans=[])
+    trace.spans.append(
+        Span(
+            trace_id=trace.trace_id,
+            step_name="extraction",
+            input_json=json.dumps({"cleaned_text": doc}),
+            output_json=json.dumps(
+                {
+                    "entities": [
+                        {
+                            "value": EMAIL,
+                            "entity_type": "email",
+                            "start_offset": doc.index(EMAIL),
+                            "end_offset": doc.index(EMAIL) + len(EMAIL),
+                        }
+                    ]
+                }
+            ),
+            model_id="m",
+            provider="p",
+            prompt="p",
+            raw_response="r",
+            status="success",
+        )
+    )
+    return trace
+
+
+def test_analyzer_grounds_entities_before_redaction_runs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Ordering is the fix: redact-then-analyze flagged every real entity.
+
+    `save_trace` → `finalize_trace` redacts `output_json` in place. When the
+    caller saved first and analyzed second, the extracted email was already
+    `████` while the document still held it, so `entity_grounding` reported a
+    hallucination for correct output.
+    """
+    from forensics.analyzer_simple import analyze_trace
+    from forensics.storage import Storage
+
+    _enable_pii(monkeypatch)
+    storage = Storage(traces_dir=tmp_path / "traces", db_path=tmp_path / "db.sqlite")
+    doc = f"Contact {EMAIL} for details."
+    trace = _trace_with_grounded_email()
+
+    # The supported order: analyze, then persist.
+    diagnosis = analyze_trace(trace, doc)
+    assert diagnosis.root_cause_step == "none"
+    storage.save_trace(trace)
+
+    stored = storage.get_trace(trace.trace_id)
+    assert stored is not None
+    assert EMAIL not in stored.spans[0].output_json, "plaintext reached disk"
+
+    # Negative control for the ordering itself: analyzing the *redacted* trace
+    # is what the old call order did, and it fails.
+    after = analyze_trace(stored, doc)
+    assert after.root_cause_step == "extraction"
+    assert after.category.value == "extraction_hallucination"
+
+
+def test_create_diagnosis_redacts_analyzer_evidence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Evidence quoting the document must not re-open the disk boundary."""
+    from forensics.analyzer_simple import analyze_trace
+    from forensics.storage import Storage
+
+    _enable_pii(monkeypatch)
+    storage = Storage(traces_dir=tmp_path / "traces", db_path=tmp_path / "db.sqlite")
+    trace = _trace_with_grounded_email()
+    storage.save_trace(trace)
+
+    diagnosis = analyze_trace(trace, f"Contact {EMAIL} for details.")
+    diagnosis.evidence_chain = [f"entity {EMAIL} is not grounded", f"key {NVIDIA_KEY}"]
+    diagnosis.step_scores[0].evidence = [f"observed {OPENROUTER_KEY}"]
+
+    storage.create_diagnosis(diagnosis)
+    stored = storage.get_diagnosis(diagnosis.diagnosis_id)
+
+    assert stored is not None
+    evidence = " ".join(stored.evidence_chain) + " " + " ".join(stored.step_scores[0].evidence)
+    assert EMAIL not in evidence
+    assert NVIDIA_KEY not in evidence
+    assert OPENROUTER_KEY not in evidence
+
+
+def test_diagnosis_evidence_is_left_alone_when_redaction_is_off(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Negative control: the scrub above is conditional, not unconditional."""
+    from forensics.analyzer_simple import analyze_trace
+    from forensics.storage import Storage
+
+    monkeypatch.setenv("PII_REDACTION_ENABLED", "false")
+    reset_settings()
+    storage = Storage(traces_dir=tmp_path / "traces", db_path=tmp_path / "db.sqlite")
+    trace = _trace_with_grounded_email()
+    storage.save_trace(trace)
+
+    diagnosis = analyze_trace(trace, f"Contact {EMAIL} for details.")
+    diagnosis.evidence_chain = [f"entity {EMAIL} is not grounded"]
+    storage.create_diagnosis(diagnosis)
+
+    stored = storage.get_diagnosis(diagnosis.diagnosis_id)
+    assert stored is not None
+    assert stored.evidence_chain == [f"entity {EMAIL} is not grounded"]

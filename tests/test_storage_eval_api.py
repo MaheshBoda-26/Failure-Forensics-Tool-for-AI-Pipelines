@@ -24,7 +24,9 @@ from forensics.models import (
     EvalRun,
     FailureCategory,
     Flag,
+    JudgeAnalysis,
     Span,
+    StepJudgeScore,
     Trace,
     TraceStatus,
 )
@@ -175,6 +177,116 @@ def test_diagnosis_ids_do_not_collide(storage: Storage) -> None:
     storage.create_diagnosis(d1)
     storage.create_diagnosis(d2)  # must not raise
     assert d1.diagnosis_id != d2.diagnosis_id
+
+
+# ─── Diagnosis persistence: judge verdict must survive a round trip ─────────
+
+
+def _judge_analysis() -> JudgeAnalysis:
+    return JudgeAnalysis(
+        step_scores=[
+            StepJudgeScore(
+                step_name="summarization",
+                local_fidelity=0.2,
+                global_fidelity=0.1,
+                evidence=["summary drops the invoice total"],
+                semantic_issues=["omits the payment terms"],
+            )
+        ],
+        root_cause_step="summarization",
+        category=FailureCategory.PROPAGATION_ERROR,
+        confidence=0.77,
+        cost_usd=0.0042,
+        model_id="google/judge-model",
+        provider="google",
+    )
+
+
+def test_judge_analysis_and_fallback_survive_persistence(storage: Storage) -> None:
+    """`judge_analysis` was on the model but had no column, so it vanished.
+
+    Persisting a diagnosis dropped the judge's verdict and the
+    `analyzer_fallback` flag; `GET /traces/{id}/diagnosis` then reported a
+    judge-less diagnosis even when the judge had overridden the deterministic one.
+    """
+    storage.save_trace(_clean_trace())
+    diagnosis = analyze_trace(_clean_trace(), DOC)
+    diagnosis.judge_analysis = _judge_analysis()
+    diagnosis.analyzer_fallback = True
+
+    storage.create_diagnosis(diagnosis)
+
+    loaded = storage.get_diagnosis(diagnosis.diagnosis_id)
+    assert loaded is not None
+    assert loaded.analyzer_fallback is True
+    assert loaded.judge_analysis is not None
+    assert loaded.judge_analysis.root_cause_step == "summarization"
+    assert loaded.judge_analysis.category is FailureCategory.PROPAGATION_ERROR
+    assert loaded.judge_analysis.cost_usd == pytest.approx(0.0042)
+    assert loaded.judge_analysis.step_scores[0].semantic_issues == ["omits the payment terms"]
+
+
+def test_diagnosis_without_judge_analysis_round_trips_as_none(storage: Storage) -> None:
+    """The deterministic path must not invent a judge verdict."""
+    storage.save_trace(_clean_trace())
+    diagnosis = analyze_trace(_clean_trace(), DOC)
+    storage.create_diagnosis(diagnosis)
+
+    loaded = storage.get_diagnosis(diagnosis.diagnosis_id)
+    assert loaded is not None
+    assert loaded.judge_analysis is None
+    assert loaded.analyzer_fallback is False
+
+
+def test_legacy_diagnoses_table_is_migrated_in_place(tmp_path: Path) -> None:
+    """A database written before the columns existed is widened, not abandoned."""
+    import sqlite3
+
+    db = tmp_path / "legacy.sqlite"
+    conn = sqlite3.connect(db)
+    # The exact `diagnoses` shape from before this revision: no judge columns.
+    conn.execute(
+        """
+        CREATE TABLE diagnoses (
+            diagnosis_id TEXT PRIMARY KEY,
+            trace_id TEXT NOT NULL,
+            root_cause_step TEXT NOT NULL,
+            category TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            evidence_chain TEXT NOT NULL,
+            step_scores TEXT NOT NULL,
+            analyzer_version TEXT,
+            model_id TEXT,
+            provider TEXT,
+            created_at TEXT NOT NULL,
+            confirmed BOOLEAN DEFAULT 0,
+            overridden BOOLEAN DEFAULT 0,
+            override_category TEXT,
+            override_reason TEXT,
+            tenant_id TEXT NOT NULL DEFAULT 'default'
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO diagnoses (diagnosis_id, trace_id, root_cause_step, category, "
+        "confidence, evidence_chain, step_scores, analyzer_version, model_id, provider, "
+        "created_at) "
+        "VALUES ('d1', 't1', 'summarization', 'propagation_error', 0.9, '[]', '[]', "
+        "'0.1.0', 'test-model', 'test', '2026-01-01T00:00:00+00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    storage = Storage(traces_dir=tmp_path / "traces", db_path=db)
+    loaded = storage.get_diagnosis("d1")
+
+    assert loaded is not None
+    assert loaded.analyzer_fallback is False
+    assert loaded.judge_analysis is None
+
+    with sqlite3.connect(db) as check:
+        columns = {row[1] for row in check.execute("PRAGMA table_info(diagnoses)")}
+    assert {"judge_analysis", "analyzer_fallback"} <= columns
 
 
 # ─── Analyzer regression tests (integration path) ────────────────────────────

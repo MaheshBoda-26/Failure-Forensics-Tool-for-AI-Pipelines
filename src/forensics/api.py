@@ -491,12 +491,14 @@ async def trigger_pipeline_demo(
             # Traces written by this endpoint belong to the calling tenant, so a
             # run triggered by tenant A is not listed for tenant B.
             with trace_context(document_id=doc_id, tenant_id=tenant.tenant_id) as ctx:
-                await pipeline.run(document)
+                await pipeline.run(document, document_id=doc_id)
                 if ctx.trace:
-                    storage.save_trace(ctx.trace)
+                    # Diagnose before persisting: `save_trace` redacts the trace
+                    # in place, and grounding a redacted entity always fails.
                     expected_type = doc_info.get("doc_type")
                     diag = analyze_trace(ctx.trace, doc_text, expected_type)
                     diag.tenant_id = tenant.tenant_id
+                    storage.save_trace(ctx.trace)
                     storage.create_diagnosis(diag)
                     traces_saved += 1
 
