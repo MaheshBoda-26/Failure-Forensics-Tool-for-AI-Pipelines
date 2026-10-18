@@ -8,7 +8,7 @@ file and index.
 
 import sqlite3
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -478,11 +478,45 @@ class Storage:
 
     # --- Eval Case operations ---
 
+    def find_eval_case(
+        self, trace_id: str, failing_step: str, tenant_id: str | None = None
+    ) -> EvalCase | None:
+        """The case already covering `(trace, step)`, if any.
+
+        `(trace_id, failing_step, tenant_id)` is the natural key of an eval case
+        — "this step is wrong on this trace" — and is unique in the schema
+        (`migrations.idx_eval_cases_unique`).
+        """
+        sql = "SELECT * FROM eval_cases WHERE trace_id = ? AND failing_step = ?"
+        params: list[Any] = [trace_id, failing_step]
+        if tenant_id is not None:
+            sql += " AND tenant_id = ?"
+            params.append(tenant_id)
+        sql += " LIMIT 1"
+        with self._conn() as conn:
+            cursor = conn.execute(sql, params)
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return self._load_eval_case_row(row, [d[0] for d in cursor.description])
+
     def create_eval_case(self, case: EvalCase) -> EvalCase:
-        """Create a new eval case."""
+        """Create a new eval case, or return the one already covering this step.
+
+        Idempotent on `(trace_id, failing_step, tenant_id)`, which the unique
+        index enforces. Confirming a diagnosis or re-running `eval-cases` used to
+        insert a fresh copy every time, so the suite grew without bound and its
+        accuracy was measured over duplicates of the same failure.
+        """
         import json
 
-        with self._conn() as conn:
+        existing = self.find_eval_case(case.trace_id, case.failing_step, case.tenant_id)
+        if existing is not None:
+            return existing
+
+        with self._conn() as conn, suppress(sqlite3.IntegrityError):
+            # A concurrent writer may win the race; the unique index holds, so
+            # the case exists and is the one returned below.
             conn.execute(
                 """
                 INSERT INTO eval_cases
@@ -503,7 +537,8 @@ class Storage:
                     case.tenant_id,
                 ),
             )
-        return case
+
+        return self.find_eval_case(case.trace_id, case.failing_step, case.tenant_id) or case
 
     @staticmethod
     def _load_eval_case_row(row: Any, cols: list[str]) -> EvalCase:

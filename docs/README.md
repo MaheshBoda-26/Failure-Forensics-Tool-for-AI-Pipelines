@@ -60,6 +60,7 @@ consequences, and the tests that verify it.
 | [0013](adr/0013-auth-multitenant.md) | API keys with tenant-scoped storage |
 | [0014](adr/0014-scheduled-eval-alerts.md) | Scheduled eval with webhook regression alerts |
 | [0015](adr/0015-worker-queue.md) | SQLite worker queue for pipeline runs |
+| [0016](adr/0016-dry-run-fixture-and-analysis-order.md) | Document-keyed DRY_RUN fixture; analyze before redaction |
 
 ## Other documents
 
@@ -74,7 +75,7 @@ consequences, and the tests that verify it.
 ## Verifying claims in these docs
 
 ```bash
-make check                    # ruff + mypy strict + 352 tests, hermetic
+make check                    # ruff + mypy strict + 390 tests, hermetic
 scripts/smoke.sh http://127.0.0.1:8000     # the whole loop over HTTP against a running server
 pytest -m live                # the paths that need a real model (uses quota)
 forensics benchmark-analyzer  # fault-injection scorecard for the analyzer

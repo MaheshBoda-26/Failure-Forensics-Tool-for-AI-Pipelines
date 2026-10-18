@@ -62,6 +62,27 @@ def _dataset_dir() -> Path:
         return Path("dataset")
 
 
+def document_ground_truth(document_id: str) -> str | None:
+    """The labelled document type for `document_id`, when the dataset has one.
+
+    One loader for every caller. `check_label_grounding` is the only check that
+    can observe a valid-but-wrong classification, and it runs only when a
+    ground-truth type is supplied, so any analysis path that omits this makes
+    `misclassification` structurally undetectable — which is how a
+    misclassification eval case came to be reported "OK FIXED".
+    """
+    labels_path = _dataset_dir() / "labels.json"
+    try:
+        labels = json.loads(labels_path.read_text())
+    except (OSError, ValueError):
+        return None
+    for entry in labels.get("documents", []):
+        if entry.get("doc_id") == document_id:
+            value = entry.get("doc_type")
+            return value if isinstance(value, str) else None
+    return None
+
+
 def _document_text_for_trace(storage: Storage, trace_id: str) -> str:
     """Resolve the source document text for a trace.
 
@@ -166,25 +187,41 @@ def flag_to_eval_case(flag: Flag, diagnosis: Diagnosis, storage: Storage) -> Eva
     return case
 
 
-async def run_eval_case(case: EvalCase, pipeline: Pipeline, doc_text: str) -> EvalResult:
+async def run_eval_case(
+    case: EvalCase,
+    pipeline: Pipeline,
+    doc_text: str,
+    document_id: str = "",
+    expected_type: str | None = None,
+) -> EvalResult:
     """Run a single eval case against the current pipeline.
 
     This is async because `Pipeline.run` is: the previous sync version created
     the coroutine and never awaited it, so `trace.spans` was always empty,
     `analyze_trace` returned root_cause "none", and every case was reported
     "STILL FAILING" regardless of what the pipeline actually did.
+
+    `document_id` is the *original* document the case came from. It used to be
+    the case's `trace_id`, which is a trace id, not a document id, so the
+    re-run trace carried a synthetic `document_id` and document-keyed behavior
+    (the offline fixture, cache keys) stopped applying.
+
+    `expected_type` is the dataset ground truth. Without it `analyze_trace`
+    skips `check_label_grounding`, so a `misclassification` case passed its
+    deterministic checks automatically and was reported fixed.
     """
     doc = Document(content=doc_text)
+    document_id = document_id or case.trace_id
 
     from forensics.tracing import trace_context
 
-    with trace_context(document_id=case.trace_id) as ctx:
-        await pipeline.run(doc)
+    with trace_context(document_id=document_id) as ctx:
+        await pipeline.run(doc, document_id=document_id)
         trace = ctx.trace
 
     assert trace is not None
 
-    diagnosis = analyze_trace(trace, doc_text)
+    diagnosis = analyze_trace(trace, doc_text, expected_type)
 
     # Fixed = the step that originally failed now passes the deterministic checks.
     step_score = next((s for s in diagnosis.step_scores if s.step_name == case.failing_step), None)
@@ -240,12 +277,25 @@ async def run_eval(tenant_id: str | None = None) -> EvalRun | None:
     results = []
 
     for case in cases:
+        trace = storage.get_trace(case.trace_id)
+        if trace is None:
+            print(f"Warning: Trace {case.trace_id} is gone (case {case.case_id})")
+            continue
         doc_text = _document_text_for_trace(storage, case.trace_id)
         if not doc_text:
             print(f"Warning: No document text for trace {case.trace_id} (case {case.case_id})")
             continue
 
-        result = await run_eval_case(case, pipeline, doc_text)
+        # Re-run against the document the case came from and judge against its
+        # label, so a misclassification case is scored by the label-grounding
+        # check rather than silently skipped.
+        result = await run_eval_case(
+            case,
+            pipeline,
+            doc_text,
+            document_id=trace.document_id,
+            expected_type=document_ground_truth(trace.document_id),
+        )
         result.run_id = run.run_id
 
         storage.create_eval_result(result)
@@ -325,7 +375,13 @@ def create_eval_cases_from_confirmed_flags(tenant_id: str | None = None) -> int:
     storage = Storage()
 
     created = 0
-    seen: set[tuple[str, str]] = set()
+    # Seed the dedupe set from what is already persisted. An in-memory set that
+    # started empty on every call made each `eval-cases` invocation re-insert a
+    # copy for every confirmed diagnosis, so the suite inflated on every run.
+    seen: set[tuple[str, str]] = {
+        (c.trace_id, c.failing_step)
+        for c in storage.list_eval_cases(limit=100000, tenant_id=tenant_id)
+    }
 
     for trace in storage.list_traces(limit=1000, tenant_id=tenant_id):
         diagnosis = storage.get_diagnosis_for_trace(trace.trace_id, tenant_id=tenant_id)
