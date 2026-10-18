@@ -19,6 +19,7 @@ Design notes:
   opaque `IntegrityError`.
 """
 
+import contextlib
 import secrets
 from datetime import UTC, datetime
 
@@ -130,7 +131,7 @@ class AuthManager:
             key_id=secrets.token_hex(6),
             tenant_id=tenant_id,
             key_hash=key_hash,
-            prefix=raw_key[:_PREFIX_CHARS],
+            prefix=raw_key[: len(self.prefix) + 8],
             name=name,
         )
         with self.storage._conn() as conn:
@@ -161,32 +162,41 @@ class AuthManager:
         if len(raw_key.encode()) > _MAX_KEY_BYTES:
             return None
 
+        prefix_len = len(self.prefix) + 8
         with self.storage._conn() as conn:
             cursor = conn.execute(
                 "SELECT * FROM api_keys WHERE prefix = ? AND revoked_at IS NULL",
-                (raw_key[:_PREFIX_CHARS],),
+                (raw_key[:prefix_len],),
             )
-            row = cursor.fetchone()
-            if not row:
+            rows = cursor.fetchall()
+            if not rows:
+                # Constant-time dummy comparison to prevent prefix timing side-channel.
+                with contextlib.suppress(Exception):
+                    bcrypt.checkpw(
+                        raw_key.encode(), bcrypt.hashpw(b"dummy", bcrypt.gensalt(12)).encode()
+                    )
                 return None
             cols = [d[0] for d in cursor.description]
-            data = dict(zip(cols, row, strict=False))
-
-            try:
-                matched = bcrypt.checkpw(raw_key.encode(), str(data["key_hash"]).encode())
-            except ValueError:
-                # A malformed stored hash is a data problem, not a valid key.
-                return None
-            if not matched:
-                return None
-
-            used_at = datetime.now(UTC).isoformat()
-            conn.execute(
-                "UPDATE api_keys SET last_used_at = ? WHERE key_id = ?",
-                (used_at, data["key_id"]),
-            )
-            data["last_used_at"] = used_at
-            return APIKey.model_validate(data)
+            for row in rows:
+                data = dict(zip(cols, row, strict=False))
+                try:
+                    matched = bcrypt.checkpw(raw_key.encode(), str(data["key_hash"]).encode())
+                except ValueError:
+                    continue
+                if matched:
+                    used_at = datetime.now(UTC).isoformat()
+                    conn.execute(
+                        "UPDATE api_keys SET last_used_at = ? WHERE key_id = ?",
+                        (used_at, data["key_id"]),
+                    )
+                    data["last_used_at"] = used_at
+                    return APIKey.model_validate(data)
+            # Constant-time dummy comparison for mismatch.
+            with contextlib.suppress(Exception):
+                bcrypt.checkpw(
+                    raw_key.encode(), bcrypt.hashpw(b"dummy", bcrypt.gensalt(12)).encode()
+                )
+            return None
 
     def list_keys(self, tenant_id: str) -> list[APIKey]:
         """List a tenant's keys, including revoked ones.

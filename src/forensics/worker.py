@@ -54,6 +54,17 @@ async def process_document(
     record that tenant B can read.
     """
     document = Document(content=doc_text)
+    # Persist custom submitted documents so downstream /diagnose and eval can
+    # resolve the source text from the dataset directory.
+    from forensics.config import get_settings
+
+    dataset_dir = get_settings().dataset_dir
+    doc_path = dataset_dir / "documents" / f"{doc_id}.txt"
+    try:
+        doc_path.parent.mkdir(parents=True, exist_ok=True)
+        doc_path.write_text(doc_text)
+    except Exception:
+        pass  # Non-fatal: the trace/diagnosis are the durable records.
     with trace_context(document_id=doc_id, tenant_id=tenant_id) as ctx:
         await pipeline.run(document, document_id=doc_id)
         trace = ctx.trace

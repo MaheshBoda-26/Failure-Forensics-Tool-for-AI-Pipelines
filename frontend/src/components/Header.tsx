@@ -1,5 +1,6 @@
-import React from "react";
+import React, { useState } from "react";
 import { Activity, Play, CheckCircle2, AlertCircle } from "lucide-react";
+import { setApiKey } from "../api/client";
 
 export type NavTab = "home" | "explorer" | "dag" | "analytics";
 
@@ -127,6 +128,25 @@ export const Header: React.FC<HeaderProps> = ({
             <AlertCircle size={12} strokeWidth={2.5} />
           )}
           <span>{backendOnline ? "API CONNECTED" : "OFFLINE / LOCAL"}</span>
+        </div>
+
+        {/* API Key Input */}
+        <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+          <input
+            id="api-key-input"
+            type="text"
+            placeholder="API Key"
+            style={{ fontFamily: "var(--font-mono)", fontSize: "11px", padding: "4px 6px", borderRadius: "4px", border: "1px solid var(--color-ink-3)" }}
+          />
+          <button
+            onClick={() => {
+              const el = document.getElementById("api-key-input") as HTMLInputElement;
+              if (el && el.value) setApiKey(el.value);
+            }}
+            style={{ fontFamily: "var(--font-mono)", fontSize: "11px", padding: "4px 6px", borderRadius: "4px", border: "1px solid var(--color-ink-3)", cursor: "pointer" }}
+          >
+            Set Key
+          </button>
         </div>
 
         {/* Run Demo Button */}

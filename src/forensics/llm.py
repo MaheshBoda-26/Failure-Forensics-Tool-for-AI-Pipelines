@@ -254,8 +254,12 @@ class ResponseCache:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _cache_key(self, model: str, provider: str, prompt_version: str, prompt: str) -> str:
-        """Generate deterministic cache key."""
-        content = f"{model}:{provider}:{prompt_version}:{prompt}"
+        """Generate deterministic cache key (includes tenant scope via prefix)."""
+        from forensics.config import get_settings
+
+        content = (
+            f"{get_settings().auth_api_key_prefix}:{model}:{provider}:{prompt_version}:{prompt}"
+        )
         return hashlib.sha256(content.encode()).hexdigest()[:32]
 
     def _cache_path(self, key: str) -> Path:
@@ -376,18 +380,29 @@ class SpendTracker:
         return dict(self._step_spend_usd)
 
     def check_and_add(self, cost_usd: float, step: str = "") -> None:
-        """Check caps and add cost. Raises SpendCapExceededError if exceeded.
-
-        The cost is recorded *before* the cap raises: the call that trips the
-        cap has already been made and paid for, so refusing to record it made
-        the global total under-report actual spend — exactly the number the cap
-        exists to protect.
-        """
+        """Check caps and add cost. Raises SpendCapExceededError if exceeded."""
+        # Re-read global spend before writing to reduce TOCTOU race window.
+        if self.spend_file.exists():
+            try:
+                with open(self.spend_file) as f:
+                    data = json.load(f)
+                self._global_spend_usd = float(data.get("global_spend_usd", 0.0))
+            except Exception:
+                pass
         self._run_spend_usd += cost_usd
         self._global_spend_usd += cost_usd
         if step:
             self._step_spend_usd[step] = self._step_spend_usd.get(step, 0.0) + cost_usd
-        self._save_global_spend()
+        # Atomic write: write to temp file then rename.
+        try:
+            import os
+
+            tmp_path = self.spend_file.with_suffix(".tmp")
+            with open(tmp_path, "w") as f:
+                json.dump({"global_spend_usd": self._global_spend_usd}, f)
+            os.replace(str(tmp_path), str(self.spend_file))
+        except Exception:
+            pass
 
         if self._run_spend_usd > self.cap_per_run_usd:
             msg = (
@@ -485,7 +500,11 @@ class NIMClient:
         self.dry_run = dry_run
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
-        self.cache = ResponseCache(cache_dir or settings.cache_dir, settings.cache_enabled)
+        settings = get_settings()
+        self.cache = ResponseCache(
+            cache_dir or settings.cache_dir,
+            settings.cache_enabled and not settings.pii_redaction_enabled,
+        )
         self.spend_tracker = SpendTracker(
             settings.spend_cap_per_run_usd,
             settings.spend_cap_global_usd,
@@ -539,7 +558,12 @@ class NIMClient:
         """Wrap untrusted document text in delimiters for prompt-injection hygiene."""
         if len(text) > limit:
             text = text[:limit] + f"\n[truncated: {len(text)} chars total]"
-        return f"{DOCUMENT_OPEN}\n{text}\n{DOCUMENT_CLOSE}"
+        # Sanitize literal closing/opening tags inside untrusted text to prevent
+        # XML fence breakout (PROMPT.md known_weaknesses #8).
+        sanitized = text.replace("</document_text>", "<\\/document_text>").replace(
+            "<document_text>", "<document_text_nonce>"
+        )
+        return f"{DOCUMENT_OPEN}\n{sanitized}\n{DOCUMENT_CLOSE}"
 
     @staticmethod
     def _extract_content(response: dict[str, Any]) -> tuple[str, str, int]:

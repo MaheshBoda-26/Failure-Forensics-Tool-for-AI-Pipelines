@@ -11,6 +11,7 @@ Features:
 - Evidence chain display
 """
 
+import html
 import itertools
 import json
 from pathlib import Path
@@ -20,6 +21,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from forensics.analyzer_simple import analyze_trace
+from forensics.eval_simple import create_eval_cases_from_confirmed_flags
 from forensics.models import FailureCategory, Flag, Trace
 from forensics.storage import Storage
 
@@ -185,7 +187,14 @@ def safe_json_loads(json_str: str) -> dict:
 def load_doc_text(doc_id: str) -> str:
     """Load document text from disk."""
     doc_path = Path(f"dataset/documents/{doc_id}.txt")
-    return doc_path.read_text() if doc_path.exists() else ""
+    try:
+        resolved_path = doc_path.resolve()
+        base_path = Path("dataset/documents").resolve()
+        if not resolved_path.is_relative_to(base_path) or not resolved_path.exists():
+            return ""
+        return resolved_path.read_text()
+    except Exception:
+        return ""
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -337,14 +346,18 @@ def render_diff(expected: Any, actual: Any) -> None:
         st.markdown("**Expected**")
         for typ, text in diffs:
             if typ == "removed":
-                st.markdown(f"<span class='diff-removed'>{text}</span>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<span class='diff-removed'>{html.escape(text)}</span>", unsafe_allow_html=True
+                )
             elif typ == "equal":
                 st.text(text)
     with col2:
         st.markdown("**Actual**")
         for typ, text in diffs:
             if typ == "added":
-                st.markdown(f"<span class='diff-added'>{text}</span>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<span class='diff-added'>{html.escape(text)}</span>", unsafe_allow_html=True
+                )
             elif typ == "equal":
                 st.text(text)
 
@@ -365,7 +378,10 @@ def render_span_detail(span, step_scores: list, doc_text: str) -> None:
     col1, col2, col3 = st.columns([4, 1, 1])
     with col1:
         st.markdown(
-            f'<div class="{css_class}">{icon} <strong>{span.step_name.title()}</strong></div>',
+            f'<div class="{html.escape(css_class)}">'
+            f"{html.escape(str(icon))} "
+            f"<strong>{html.escape(str(span.step_name).title())}</strong>"
+            f"</div>",
             unsafe_allow_html=True,
         )
     with col2:
@@ -421,7 +437,10 @@ def render_span_detail(span, step_scores: list, doc_text: str) -> None:
     if score and score.evidence:
         with st.expander("🔍 Evidence Chain", expanded=True):
             for ev in score.evidence:
-                st.markdown(f'<div class="evidence-item">• {ev}</div>', unsafe_allow_html=True)
+                st.markdown(
+                    f'<div class="evidence-item">• {html.escape(str(ev))}</div>',
+                    unsafe_allow_html=True,
+                )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -552,7 +571,10 @@ def render_flag_interface(trace: Trace, diagnosis, storage: Storage, doc_text: s
 
             with st.expander("📋 Evidence Chain", expanded=True):
                 for ev in diagnosis.evidence_chain:
-                    st.markdown(f'<div class="evidence-item">• {ev}</div>', unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div class="evidence-item">• {html.escape(str(ev))}</div>',
+                        unsafe_allow_html=True,
+                    )
 
             # Confirm/Override
             st.divider()
@@ -575,6 +597,10 @@ def render_flag_interface(trace: Trace, diagnosis, storage: Storage, doc_text: s
                         ),
                         override_reason=diagnosis.override_reason,
                     )
+                    # Feed the confirmed flag into the eval suite the same way
+                    # the FastAPI route does; the sweep is idempotent (dedup on
+                    # (trace, failing step)) so re-clicking cannot inflate it.
+                    create_eval_cases_from_confirmed_flags()
                     st.success("Diagnosis confirmed!")
                     st.rerun()
 
@@ -603,7 +629,7 @@ def render_flag_interface(trace: Trace, diagnosis, storage: Storage, doc_text: s
                             override_reason=override_reason,
                         )
                         st.success("Diagnosis overridden and confirmed!")
-                        st.success("Diagnosis overridden!")
+                        create_eval_cases_from_confirmed_flags()
                         st.rerun()
 
 
@@ -715,7 +741,20 @@ def main() -> None:
     selected_trace = traces[selected_idx] if selected_idx < len(traces) else traces[0]
 
     doc_text = load_doc_text(selected_trace.document_id)
-    diagnosis = analyze_trace(selected_trace, doc_text)
+    # Fetch the persisted diagnosis instead of rebuilding one on every render:
+    # a fresh `analyze_trace` result has a diagnosis_id that exists only in
+    # memory, so Confirm/Override would run an UPDATE against 0 rows. If no
+    # stored diagnosis exists yet, compute it (with the dataset's ground-truth
+    # label) and persist it so the human-review buttons can act on it.
+    diagnosis = storage.get_diagnosis_for_trace(selected_trace.trace_id)
+    if diagnosis is None:
+        expected_type = None
+        for doc_info in labels.get("documents", []):
+            if doc_info.get("doc_id") == selected_trace.document_id:
+                expected_type = doc_info.get("doc_type", "unknown")
+                break
+        diagnosis = analyze_trace(selected_trace, doc_text, expected_type)
+        storage.create_diagnosis(diagnosis)
 
     # ─── Pipeline Graph ───────────────────────────────────────────────────────
     st.divider()

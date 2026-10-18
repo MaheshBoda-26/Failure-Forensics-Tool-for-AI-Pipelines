@@ -58,9 +58,15 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Failure Forensics API", version="0.1.0", lifespan=_lifespan)
 
+settings = get_settings()
+origins = (
+    [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+    if settings.cors_origins
+    else ["http://localhost:5173", "http://localhost:3000"]
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -177,7 +183,7 @@ class PipelineRunRequest(BaseModel):
     silently accepted and then never match.
     """
 
-    doc_id: str = Field(..., min_length=1)
+    doc_id: str = Field(..., min_length=1, pattern=r"^[A-Za-z0-9_-]{1,64}$")
     doc_text: str = Field(..., min_length=1)
     expected_type: DocumentType | None = None
     priority: int = Field(default=0, description="Higher runs first")
@@ -287,10 +293,14 @@ def diagnose_trace(
 
     dataset_dir = get_settings().dataset_dir
     doc_path = dataset_dir / "documents" / f"{trace.document_id}.txt"
-    if not doc_path.exists():
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    doc_text = doc_path.read_text()
+    try:
+        resolved_path = doc_path.resolve()
+        base_path = (dataset_dir / "documents").resolve()
+        if not resolved_path.is_relative_to(base_path) or not resolved_path.exists():
+            raise HTTPException(status_code=404, detail="Document not found")
+        doc_text = resolved_path.read_text()
+    except (HTTPException, OSError):
+        raise HTTPException(status_code=404, detail="Document not found") from None
 
     # Ground-truth type, when the document has a label, so misclassification is
     # observable rather than assumed away. One loader serves the CLI, the eval
@@ -330,6 +340,13 @@ def confirm_diagnosis(
         override_reason=request.override_reason,
     )
 
+    # Reload the updated diagnosis so the eval-case creation uses the overridden
+    # category and so the returned diagnosis reflects the override.
+    updated_diagnosis = storage.get_diagnosis(diagnosis_id, tenant_id=scope)
+    if updated_diagnosis is None:
+        raise HTTPException(status_code=404, detail="Diagnosis not found after update")
+    diagnosis = updated_diagnosis
+
     # Auto-create flag if none exists for this trace
     flags = storage.list_flags_for_trace(diagnosis.trace_id, tenant_id=scope)
     if not flags:
@@ -342,15 +359,19 @@ def confirm_diagnosis(
         storage.create_flag(flag)
         flags = [flag]
 
-    # Auto-create eval cases from the confirmed diagnosis, one per
-    # `(trace, failing step)`. Confirming the same diagnosis twice used to
-    # insert a duplicate case every time.
-    from forensics.eval_simple import flag_to_eval_case
+    # Only create/update eval cases when the user explicitly confirms the
+    # diagnosis (confirmed=True). An override without confirmation should not
+    # corrupt the ground-truth used by the evaluation suite.
+    if request.confirmed:
+        # Auto-create eval cases from the confirmed diagnosis, one per
+        # `(trace, failing step)`. Confirming the same diagnosis twice used to
+        # insert a duplicate case every time.
+        from forensics.eval_simple import flag_to_eval_case
 
-    for flag in flags:
-        case = flag_to_eval_case(flag, diagnosis, storage)
-        if case:
-            storage.create_eval_case(case)
+        for flag in flags:
+            case = flag_to_eval_case(flag, diagnosis, storage)
+            if case:
+                storage.create_eval_case(case)
 
     updated_diagnosis = storage.get_diagnosis(diagnosis_id, tenant_id=scope)
     if not updated_diagnosis:
@@ -415,7 +436,7 @@ async def trigger_eval_run(
         traces = storage.list_traces(limit=20, tenant_id=scope)
         for t in traces:
             diag = storage.get_diagnosis_for_trace(t.trace_id, tenant_id=scope)
-            if diag and diag.root_cause_step:
+            if diag and diag.root_cause_step not in ("", "none"):
                 flag = Flag(
                     trace_id=t.trace_id,
                     user_id="system",

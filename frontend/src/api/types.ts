@@ -33,7 +33,6 @@ export interface Span {
   raw_response: string;
   confidence: number;
   error: string | null;
-  checks: CheckResult[];
 }
 
 export interface Trace {
@@ -96,12 +95,13 @@ export interface AnalyticsSnapshot {
 
 export interface EvalRun {
   run_id: string;
-  baseline_accuracy: number;
-  current_accuracy: number;
+  pipeline_version: string;
+  prompt_versions: Record<string, string>;
+  started_at: string;
+  completed_at: string | null;
   total_cases: number;
-  regressions: string[];
-  improvements: string[];
-  created_at: string;
+  passed_count: number;
+  failed_count: number;
 }
 
 export interface Flag {

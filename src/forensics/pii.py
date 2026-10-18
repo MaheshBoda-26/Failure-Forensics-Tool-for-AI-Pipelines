@@ -71,6 +71,11 @@ class PIIRedactor:
             for cp in custom_patterns:
                 name = cp["name"]
                 pattern = cp["pattern"]
+                # Reject patterns likely to cause catastrophic backtracking (ReDoS)
+                if ".*.*" in pattern or "+*" in pattern or "*+" in pattern or "(?r" in pattern:
+                    raise ValueError(
+                        f"PII_CUSTOM_PATTERNS pattern '{name}' contains unsafe regex (ReDoS risk)"
+                    )
                 self._patterns[name] = re.compile(pattern)
                 replacement = cp.get("replacement")
                 if replacement:

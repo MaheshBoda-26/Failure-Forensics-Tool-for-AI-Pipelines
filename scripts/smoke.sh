@@ -29,13 +29,39 @@ die()  { printf '\n\033[1;31mFAILED: %s\033[0m\n' "$*" >&2; exit 1; }
 
 # Read one field out of a JSON document on stdin; python3 stands in for jq,
 # which is not guaranteed to be installed.
-field() { python3 -c 'import json,sys; v=json.load(sys.stdin); print(eval("v" + sys.argv[1]))' "$1"; }
+field() {
+  python3 -c '
+import json, sys, ast
+v = json.load(sys.stdin)
+expr = sys.argv[1]
+
+def safe_eval(node, target):
+    if isinstance(node, ast.Expression):
+        return safe_eval(node.body, target)
+    if isinstance(node, ast.Subscript):
+        value = safe_eval(node.value, target)
+        slice_node = node.slice
+        if isinstance(slice_node, ast.Index):  # Python < 3.9 compatibility
+            slice_node = slice_node.value
+        if isinstance(slice_node, ast.Constant):
+            key = slice_node.value
+        else:
+            raise ValueError("Unsupported subscript")
+        return value[key] if not isinstance(key, int) or isinstance(value, list) else value[int(key)]
+    if isinstance(node, ast.Constant):
+        return node.value
+    raise ValueError("Unsupported expression")
+
+node = ast.parse(expr, mode="eval")
+print(safe_eval(node, v))
+' "$1"
+}
 
 printf '\033[1mFailure Forensics smoke test\033[0m against %s\n' "$BASE_URL"
 
 # ── health ──────────────────────────────────────────────────────────────────
 step "health"
-STATUS=$("${CURL[@]}" "${BASE_URL}/health" | field "['status']")
+STATUS=$("${CURL[@]}" "${BASE_URL}/health" | field "v['status']")
 [[ "$STATUS" == "ok" ]] || die "/health returned status=${STATUS}"
 ok "service is up"
 
@@ -54,34 +80,34 @@ TRACE_COUNT=$("${CURL[@]}" "${BASE_URL}/traces" | python3 -c 'import json,sys; p
 ok "${TRACE_COUNT} trace(s) already stored"
 if [[ "$TRACE_COUNT" == "0" ]]; then
   printf '  seeding the dataset via POST /pipeline/run-demo (this runs 15 documents)...\n'
-  SAVED=$("${CURL[@]}" -X POST "${BASE_URL}/pipeline/run-demo" | field "['traces_saved']")
+  SAVED=$("${CURL[@]}" -X POST "${BASE_URL}/pipeline/run-demo" | field "v['traces_saved']")
   ok "seeded ${SAVED} trace(s)"
   [[ "$SAVED" -gt 0 ]] || die "run-demo saved nothing"
 fi
 
-TRACE_ID=$("${CURL[@]}" "${BASE_URL}/traces" | field "[0]['trace_id']")
+TRACE_ID=$("${CURL[@]}" "${BASE_URL}/traces" | field "v[0]['trace_id']")
 ok "using trace ${TRACE_ID}"
 
 # ── flag ────────────────────────────────────────────────────────────────────
 step "flag"
 FLAG_ID=$("${CURL[@]}" -X POST "${BASE_URL}/traces/${TRACE_ID}/flag" \
   -H 'Content-Type: application/json' \
-  -d '{"user_id":"smoke","note":"smoke test"}' | field "['flag_id']")
+  -d '{"user_id":"smoke","note":"smoke test"}' | field "v['flag_id']")
 ok "flagged as ${FLAG_ID}"
 
 # ── diagnose ────────────────────────────────────────────────────────────────
 step "diagnose"
 DIAGNOSIS=$("${CURL[@]}" -X POST "${BASE_URL}/traces/${TRACE_ID}/diagnose")
-DIAGNOSIS_ID=$(printf '%s' "$DIAGNOSIS" | field "['diagnosis_id']")
-ROOT_CAUSE=$(printf '%s' "$DIAGNOSIS" | field "['root_cause_step']")
-CONFIDENCE=$(printf '%s' "$DIAGNOSIS" | field "['confidence']")
+DIAGNOSIS_ID=$(printf '%s' "$DIAGNOSIS" | field "v['diagnosis_id']")
+ROOT_CAUSE=$(printf '%s' "$DIAGNOSIS" | field "v['root_cause_step']")
+CONFIDENCE=$(printf '%s' "$DIAGNOSIS" | field "v['confidence']")
 ok "diagnosis ${DIAGNOSIS_ID} blames '${ROOT_CAUSE}' (confidence ${CONFIDENCE})"
 
 # ── confirm (creates an eval case) ──────────────────────────────────────────
 step "confirm"
 CONFIRMED=$("${CURL[@]}" -X POST "${BASE_URL}/diagnoses/${DIAGNOSIS_ID}/confirm" \
   -H 'Content-Type: application/json' \
-  -d '{"confirmed":true}' | field "['confirmed']")
+  -d '{"confirmed":true}' | field "v['confirmed']")
 [[ "$CONFIRMED" == "True" ]] || die "confirm returned confirmed=${CONFIRMED}"
 ok "diagnosis confirmed"
 
@@ -92,11 +118,11 @@ ok "${CASE_COUNT} eval case(s) in the suite"
 # ── analytics (the headline number) ─────────────────────────────────────────
 step "analytics"
 ANALYTICS=$("${CURL[@]}" "${BASE_URL}/analytics")
-TOTAL=$(printf '%s' "$ANALYTICS" | field "['total_traces']")
-FAILURE_RATE=$(printf '%s' "$ANALYTICS" | field "['failure_rate']")
+TOTAL=$(printf '%s' "$ANALYTICS" | field "v['total_traces']")
+FAILURE_RATE=$(printf '%s' "$ANALYTICS" | field "v['failure_rate']")
 ok "total_traces=${TOTAL} failure_rate=${FAILURE_RATE}"
 [[ "$TOTAL" -gt 0 ]] || die "/analytics reports no traces"
-python3 -c "import sys; sys.exit(0 if float('${FAILURE_RATE}') > 0 else 1)" \
+python3 -c 'import sys; rate=float("'$FAILURE_RATE'"); sys.exit(0 if rate > 0 else 1)' \
   || die "/analytics failure_rate is 0 — the demo's headline number is not populated"
 ok "failure rate is non-zero"
 

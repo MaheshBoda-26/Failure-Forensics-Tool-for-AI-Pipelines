@@ -419,11 +419,19 @@ def check_propagation(span: Span, trace: Trace) -> list[CheckResult]:
 
     expected_keywords = type_keywords[classified_lower]
 
-    # Strong signal: summary uses a DIFFERENT document type's keywords
+    # Strong signal: summary uses a DIFFERENT document type's primary noun
     for other_type, other_keywords in type_keywords.items():
         if other_type == classified_lower:
             continue
-        if any(kw in searchable_text.lower() for kw in other_keywords):
+        # Only fail on primary noun keywords, not common sub-terms like "total"
+        primary_nouns = {
+            "contract": ["agreement"],
+            "invoice": ["bill"],
+            "report": ["analysis"],
+            "correspondence": ["letter", "email", "memo"],
+            "mixed": ["mixed"],
+        }.get(other_type, other_keywords)
+        if any(re.search(rf"\\b{kw}\\b", searchable_text, re.IGNORECASE) for kw in primary_nouns):
             msg = (
                 f"Propagation error: classification='{classified_type}' but summarization uses "
                 f"'{other_type}' terminology (context: {searchable_text[:120]})"
@@ -774,8 +782,15 @@ def analyze_trace(trace: Trace, document_text: str, expected_type: str | None = 
                     root_cause_step = judge_result.root_cause_step
                     category = judge_result.category
                     confidence = judge_result.confidence
-                    first_step = judge_result.step_scores[0] if judge_result.step_scores else None
-                    evidence_chain = first_step.evidence if first_step else evidence_chain
+                    matching_step = next(
+                        (
+                            s
+                            for s in judge_result.step_scores
+                            if s.step_name == judge_result.root_cause_step
+                        ),
+                        None,
+                    )
+                    evidence_chain = matching_step.evidence if matching_step else evidence_chain
 
         except Exception:
             # Judge failure: log and fall back to deterministic

@@ -90,6 +90,18 @@ def run(doc_path: Path) -> None:
 
     doc = Document(content=doc_path.read_text())
 
+    # The dataset's ground-truth type lets `check_label_grounding` detect a
+    # valid-but-wrong label (misclassification) instead of staying silent.
+    expected_type: str | None = None
+    labels_path = get_settings().dataset_dir / "labels.json"
+    if labels_path.exists():
+        with open(labels_path) as f:
+            labels = json.load(f)
+        for doc_info in labels.get("documents", []):
+            if doc_info.get("doc_id") == doc_path.stem:
+                expected_type = doc_info.get("doc_type", "unknown")
+                break
+
     async def _run() -> None:
         async with using_llm_client() as client:
             pipeline = Pipeline(client=client)
@@ -99,7 +111,7 @@ def run(doc_path: Path) -> None:
                 assert ctx.trace is not None
                 # Diagnose the unredacted trace, then persist (save_trace redacts
                 # in place when PII_REDACTION_ENABLED is on).
-                diagnosis = analyze_trace(ctx.trace, doc.content)
+                diagnosis = analyze_trace(ctx.trace, doc.content, expected_type)
                 json_path = storage.save_trace(ctx.trace)
 
             # Persist the diagnosis so analytics/eval/UI have a root cause.

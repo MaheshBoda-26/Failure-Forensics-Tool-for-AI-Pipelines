@@ -8,7 +8,7 @@ file and index.
 
 import sqlite3
 from collections.abc import Generator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -221,6 +221,7 @@ class Storage:
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=5000")
         try:
             yield conn
             conn.commit()
@@ -246,8 +247,12 @@ class Storage:
 
     def load_trace(self, trace_id: str) -> Trace | None:
         """Load trace from JSON file."""
-        json_path = self.traces_dir / f"{trace_id}.json"
-        if not json_path.exists():
+        try:
+            json_path = (self.traces_dir / f"{trace_id}.json").resolve()
+            base_path = self.traces_dir.resolve()
+            if not json_path.is_relative_to(base_path) or not json_path.exists():
+                return None
+        except Exception:
             return None
         import json
 
@@ -298,13 +303,14 @@ class Storage:
         because the index is the authority on ownership and a trace whose JSON
         file exists but whose index row is gone must not be served to anyone.
         """
-        if tenant_id is not None:
-            with self._conn() as conn:
-                row = conn.execute(
-                    "SELECT tenant_id FROM traces WHERE trace_id = ?", (trace_id,)
-                ).fetchone()
-            if row is None or row[0] != tenant_id:
-                return None
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT tenant_id FROM traces WHERE trace_id = ?", (trace_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        if tenant_id is not None and row[0] != tenant_id:
+            return None
         return self.load_trace(trace_id)
 
     # --- Flag operations ---
@@ -514,16 +520,21 @@ class Storage:
         if existing is not None:
             return existing
 
-        with self._conn() as conn, suppress(sqlite3.IntegrityError):
-            # A concurrent writer may win the race; the unique index holds, so
-            # the case exists and is the one returned below.
+        with self._conn() as conn:
             conn.execute(
                 """
                 INSERT INTO eval_cases
                 (case_id, trace_id, failing_step, bad_output, corrected_output,
                  category, created_at, pipeline_version, prompt_version, tenant_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+                ON CONFLICT (trace_id, failing_step, tenant_id) DO UPDATE SET
+                    bad_output = excluded.bad_output,
+                    corrected_output = excluded.corrected_output,
+                    category = excluded.category,
+                    pipeline_version = excluded.pipeline_version,
+                    prompt_version = excluded.prompt_version,
+                    corrected_output = excluded.corrected_output
+                """,
                 (
                     case.case_id,
                     case.trace_id,
@@ -537,6 +548,7 @@ class Storage:
                     case.tenant_id,
                 ),
             )
+            conn.commit()
 
         return self.find_eval_case(case.trace_id, case.failing_step, case.tenant_id) or case
 

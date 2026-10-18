@@ -50,6 +50,10 @@ export const TraceSpine: React.FC<TraceSpineProps> = ({
       <div style={{ display: "flex", flexDirection: "column", position: "relative" }}>
         {steps.map((step, idx) => {
           const span = trace.spans.find((s) => s.step_name.toLowerCase() === step.name);
+          const stepScore = diagnosis?.step_scores?.find((s) => s.step_name === step.name);
+          const stepChecks = stepScore
+            ? Object.keys(stepScore.deterministic_checks).length
+            : 0;
           const isFailing = rootCauseStep === step.name;
           const isDownstream = failingIndex !== -1 && idx > failingIndex;
           const isPassed = !isFailing && !isDownstream;
@@ -197,7 +201,7 @@ export const TraceSpine: React.FC<TraceSpineProps> = ({
                         color: "var(--color-copper)",
                       }}
                     >
-                      ✓ {span?.checks?.length ?? 3} checks passed
+                      {stepChecks > 0 ? `✓ ${stepChecks} checks passed` : "✓ passed"}
                     </span>
                   )}
                 </div>

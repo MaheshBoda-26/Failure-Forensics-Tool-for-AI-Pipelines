@@ -180,20 +180,27 @@ class EvalScheduler:
         previous = self._latest_completed_run()
         previous_accuracy = _accuracy(previous) if previous is not None else None
 
-        run = await run_eval()
-        if run is None:
-            logger.info("Scheduled eval skipped: no eval cases")
-            return None
-
-        current_accuracy = _accuracy(run)
-        alerts = self.evaluate_run(
-            previous=previous,
-            previous_accuracy=previous_accuracy,
-            run=run,
-            current_accuracy=current_accuracy,
-        )
+        alerts: list[dict[str, Any]] = []
+        for tenant in self.storage.get_auth().list_tenants():
+            if not tenant.active:
+                continue
+            run = await run_eval(tenant_id=tenant.tenant_id)
+            if run is not None:
+                current_accuracy = _accuracy(run)
+                previous_accuracy = _accuracy(previous) if previous is not None else None
+                alerts.extend(
+                    self.evaluate_run(
+                        previous=previous,
+                        previous_accuracy=previous_accuracy,
+                        run=run,
+                        current_accuracy=current_accuracy,
+                    )
+                )
+                previous = run
+        if not alerts:
+            pass
         await self._deliver_alerts(alerts)
-        return alerts
+        return alerts if alerts else None
 
     async def _deliver_alerts(self, alerts: list[dict[str, Any]]) -> None:
         """Send each alert independently.

@@ -461,6 +461,11 @@ def finalize_trace(
             span.raw_response, _ = redactor.redact(span.raw_response)
             span.input_json, _ = redactor.redact(span.input_json)
             span.output_json, _ = redactor.redact(span.output_json)
+            # An error message can echo sensitive data it was parsing (an
+            # exception quoting the offending text), so it gets the same
+            # treatment as the payloads.
+            if span.error:
+                span.error, _ = redactor.redact(span.error)
         if trace.final_output is not None:
             dumped, _ = redactor.redact_json(trace.final_output.model_dump(mode="json"))
             trace.final_output = PipelineOutput.model_validate(dumped)
@@ -469,7 +474,7 @@ def finalize_trace(
     write_trace_json(trace, traces_dir)
 
     if db_path is not None:
-        conn = init_db(db_path)
+        conn = init_db(db_path, migrate_schema=False)
         try:
             write_trace_to_db(trace, conn)
         finally:
@@ -502,7 +507,13 @@ def write_trace_json(trace: Trace, traces_dir: Path) -> Path:
     leftover `.<trace_id>.tmp` is litter that looks like data.
     """
     traces_dir.mkdir(parents=True, exist_ok=True)
-    file_path = traces_dir / f"{trace.trace_id}.json"
+    try:
+        file_path = (traces_dir / f"{trace.trace_id}.json").resolve()
+        base_path = traces_dir.resolve()
+        if not file_path.is_relative_to(base_path):
+            raise ValueError("Invalid trace_id")
+    except Exception as exc:
+        raise ValueError("Invalid trace path") from exc
 
     tmp_path: Path | None = None
     try:
@@ -526,12 +537,13 @@ def write_trace_json(trace: Trace, traces_dir: Path) -> Path:
     return file_path
 
 
-def init_db(db_path: Path) -> sqlite3.Connection:
+def init_db(db_path: Path, migrate_schema: bool = True) -> sqlite3.Connection:
     """Initialize SQLite database with traces and spans tables."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")
 
     # Traces table
     conn.execute(
@@ -580,11 +592,12 @@ def init_db(db_path: Path) -> sqlite3.Connection:
 
     conn.commit()
 
-    # Add tenant_id to a database written before multi-tenancy, and create the
-    # auth tables. Both callers of `init_db` need this: `Storage()` creates the
-    # full schema, but the CLI's `finalize_trace` path only ever comes through
-    # here, and a trace written without a tenant would be invisible to its owner.
-    migrate(conn)
+    if migrate_schema:
+        # Add tenant_id to a database written before multi-tenancy, and create the
+        # auth tables. Both callers of `init_db` need this: `Storage()` creates the
+        # full schema, but the CLI's `finalize_trace` path only ever comes through
+        # here, and a trace written without a tenant would be invisible to its owner.
+        migrate(conn)
     return conn
 
 

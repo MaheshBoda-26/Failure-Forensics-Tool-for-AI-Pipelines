@@ -30,12 +30,24 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
     0
   );
   const totalCost = trace.total_cost_usd;
-  const allChecks = trace.spans.flatMap((s) => s.checks || []);
+  const allChecks: Array<{ check: string; passed: boolean }> = (diagnosis?.step_scores || []).flatMap(
+    (stepScore: StepScore) =>
+      Object.entries(stepScore.deterministic_checks).map(([check, passed]) => ({ check, passed }))
+  );
   const passedChecks = allChecks.filter((c) => c.passed).length;
 
   const currentSpan = trace.spans.find(
     (s) => s.step_name.toLowerCase() === selectedStep.toLowerCase()
   );
+  const currentStepScore = diagnosis?.step_scores?.find((s) => s.step_name === selectedStep);
+  const currentStepChecks = currentStepScore
+    ? Object.keys(currentStepScore.deterministic_checks).length
+    : 0;
+  const isFailingStep =
+    currentSpan?.status === "failure" || diagnosis?.root_cause_step === selectedStep;
+  const rootCauseStageIndex = diagnosis
+    ? ["intake", "extraction", "classification", "summarization"].indexOf(diagnosis.root_cause_step) + 1
+    : -1;
 
   const handleConfirm = async () => {
     if (!diagnosis) return;
@@ -59,7 +71,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
       setIsConfirming(true);
       await api.confirmDiagnosis(
         diagnosis.diagnosis_id,
-        false,
+        true,
         category,
         "Engineer manual override from trace inspector"
       );
@@ -131,7 +143,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
             <span style={{ fontSize: "13px", color: "var(--color-ink-2)" }}>{trace.document_id}.txt</span>
           </div>
 
-          {diagnosis && diagnosis.root_cause_step && (
+          {diagnosis && diagnosis.root_cause_step && diagnosis.root_cause_step !== "none" && (
             <span
               style={{
                 display: "inline-flex",
@@ -250,7 +262,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
         <div>
           <span>CHECKS EVALUATED: </span>
           <span style={{ color: "var(--color-ink)", fontWeight: 600 }}>
-            {allChecks.length ? `${passedChecks} / ${allChecks.length} PASS` : "18 / 20 PASS"}
+            {allChecks.length ? `${passedChecks} / ${allChecks.length} PASS` : "—"}
           </span>
         </div>
         <div>
@@ -376,7 +388,9 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                         marginTop: "4px",
                       }}
                     >
-                      Stage 03 ({diagnosis.root_cause_step})
+                      {rootCauseStageIndex >= 1
+                        ? `Stage 0${rootCauseStageIndex} (${diagnosis.root_cause_step})`
+                        : diagnosis.root_cause_step}
                     </div>
                   </div>
                   <div>
@@ -616,7 +630,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                   Stage: {selectedStep}
                 </span>
                 <span style={{ fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--color-ink-3)" }}>
-                  Checks ({currentSpan?.checks?.length || 0})
+                  Checks ({currentStepChecks})
                 </span>
               </div>
               <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)" }}>
@@ -681,9 +695,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                     fontFamily: "var(--font-mono)",
                     fontSize: "11px",
                     fontWeight: 600,
-                    color: currentSpan?.status === "failure" || selectedStep === "classification"
-                      ? "var(--color-cinnabar)"
-                      : "var(--color-ink-3)",
+                    color: isFailingStep ? "var(--color-cinnabar)" : "var(--color-ink-3)",
                     textTransform: "uppercase",
                   }}
                 >
@@ -694,11 +706,11 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                     margin: 0,
                     padding: "14px",
                     backgroundColor:
-                      selectedStep === "classification"
+                      isFailingStep
                         ? "var(--color-cinnabar-tint)"
                         : "var(--color-chalk)",
                     border: `1px solid ${
-                      selectedStep === "classification"
+                      isFailingStep
                         ? "var(--color-cinnabar)"
                         : "var(--color-rule)"
                     }`,

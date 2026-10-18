@@ -93,9 +93,14 @@ def _document_text_for_trace(storage: Storage, trace_id: str) -> str:
     if trace is None:
         return ""
     doc_path = _dataset_dir() / "documents" / f"{trace.document_id}.txt"
-    if not doc_path.exists():
+    try:
+        resolved_path = doc_path.resolve()
+        base_path = (_dataset_dir() / "documents").resolve()
+        if not resolved_path.is_relative_to(base_path) or not resolved_path.exists():
+            return ""
+        return resolved_path.read_text()
+    except Exception:
         return ""
-    return doc_path.read_text()
 
 
 def _corrected_output(bad_output: Any, document_id: str) -> dict[str, Any]:
@@ -223,9 +228,55 @@ async def run_eval_case(
 
     diagnosis = analyze_trace(trace, doc_text, expected_type)
 
-    # Fixed = the step that originally failed now passes the deterministic checks.
     step_score = next((s for s in diagnosis.step_scores if s.step_name == case.failing_step), None)
-    fixed = step_score.local_pass if step_score else False
+
+    # Compare the re-run span's output against the reference outputs.
+    failing_span = next((s for s in trace.spans if s.step_name == case.failing_step), None)
+    bad_output = case.bad_output
+    corrected_output = case.corrected_output
+
+    # A case is only "fixed" when the failing step passes deterministic checks
+    # AND the output does not reproduce the bad/corrected reference (so a
+    # semantic issue that deterministic checks miss is still caught).
+    output_matches_bad = False
+    output_has_corrected = False
+    if failing_span is not None:
+        try:
+            output_data = json.loads(failing_span.output_json) if failing_span.output_json else {}
+        except Exception:
+            output_data = {}
+        # Check if output reproduces the bad output (e.g., same hallucinated entities)
+        if isinstance(output_data, dict) and isinstance(bad_output, dict):
+            # If the bad output had entities, verify they are not all present again
+            bad_entities = (
+                bad_output.get("entities", [])
+                if isinstance(bad_output.get("entities"), list)
+                else []
+            )
+            current_entities = (
+                output_data.get("entities", [])
+                if isinstance(output_data.get("entities"), list)
+                else []
+            )
+            # If the corrected output requires specific entities, check them
+            corrected_entities = (
+                corrected_output.get("entities", [])
+                if isinstance(corrected_output.get("entities"), list)
+                else []
+            )
+            output_has_corrected = bool(corrected_entities) and all(
+                any(e.get("value") == c.get("value") for e in current_entities)
+                for c in corrected_entities
+            )
+            output_matches_bad = bool(bad_entities) and any(
+                e.get("value") == b.get("value") for b in bad_entities for e in current_entities
+            )
+        else:
+            output_matches_bad = bool(bad_output) and (str(output_data) == str(bad_output))
+    fixed = (step_score.local_pass if step_score else False) and not output_matches_bad
+    if output_has_corrected and not fixed:
+        # If the output has the corrected reference but still fails checks, it is fixed
+        fixed = True
 
     score = 1.0 if fixed else 0.0
 
@@ -408,7 +459,7 @@ def create_eval_cases_from_confirmed_flags(tenant_id: str | None = None) -> int:
             continue
         seen.add(key)
 
-        flags = storage.list_flags_for_trace(trace.trace_id)
+        flags = storage.list_flags_for_trace(trace.trace_id, tenant_id=tenant_id)
         if not flags:
             print(f"Warning: confirmed diagnosis on trace {trace.trace_id} has no flag; skipping")
             continue

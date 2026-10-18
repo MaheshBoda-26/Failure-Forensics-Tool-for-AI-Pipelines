@@ -184,6 +184,10 @@ class Settings(BaseSettings):
     host: str = Field(default="127.0.0.1")
     port: int = Field(default=8000, ge=1, le=65535)
     static_dir: Path = Field(default=Path("frontend/dist"))
+    cors_origins: str = Field(
+        default="",
+        description="Comma-separated allowed CORS origins; empty allows localhost only",
+    )
 
     # --- OpenTelemetry ---
     # The flat fields exist only to bind the env names spec 01 documents
@@ -317,6 +321,13 @@ class Settings(BaseSettings):
         path = Path(v)
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    @field_validator("alert_webhook_url", mode="after")
+    @classmethod
+    def validate_webhook_url(cls, v: str | None) -> str | None:
+        if v is not None and v.strip() and not v.startswith("https://"):
+            raise ValueError("ALERT_WEBHOOK_URL must use https://")
+        return v
 
     @field_validator("alert_webhook_url", "alert_webhook_secret", mode="before")
     @classmethod
