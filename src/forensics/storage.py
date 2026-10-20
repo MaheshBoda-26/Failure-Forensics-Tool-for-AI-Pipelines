@@ -221,6 +221,9 @@ class Storage:
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        # Wait for a writer instead of failing immediately with "database is
+        # locked": the API, the worker, and the scheduler share one file.
+        conn.execute("PRAGMA busy_timeout=5000")
         try:
             yield conn
             conn.commit()
@@ -245,9 +248,17 @@ class Storage:
         return self.traces_dir / f"{trace.trace_id}.json"
 
     def load_trace(self, trace_id: str) -> Trace | None:
-        """Load trace from JSON file."""
-        json_path = self.traces_dir / f"{trace_id}.json"
-        if not json_path.exists():
+        """Load trace from JSON file.
+
+        The id comes from a URL path, so it is resolved and contained before it
+        becomes a filename: `../..%2Fetc%2Fpasswd` must not read outside
+        `traces_dir`. The index lookup in `get_trace` already restricts which
+        ids exist, but a filesystem read should not rely on that.
+        """
+        from forensics.documents import contained_path
+
+        json_path = contained_path(self.traces_dir / f"{trace_id}.json", self.traces_dir)
+        if json_path is None or not json_path.exists():
             return None
         import json
 

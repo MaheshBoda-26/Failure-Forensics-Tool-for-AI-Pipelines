@@ -47,8 +47,12 @@ def documents_dir(kind: str = "dataset") -> Path:
     return Path(base) / "documents"
 
 
-def _contained(path: Path, root: Path) -> Path | None:
-    """Resolve `path` and return it only when it stays inside `root`."""
+def contained_path(path: Path, root: Path) -> Path | None:
+    """Resolve `path` and return it only when it stays inside `root`.
+
+    Shared by every case where an id from outside the process is turned into a
+    filename, so a trace id gets the same guarantee a document id does.
+    """
     try:
         resolved = path.resolve()
         resolved_root = root.resolve()
@@ -62,7 +66,7 @@ def safe_document_path(doc_id: str, kind: str = "dataset") -> Path | None:
     if not is_valid_doc_id(doc_id):
         return None
     root = documents_dir(kind)
-    return _contained(root / f"{doc_id}.txt", root)
+    return contained_path(root / f"{doc_id}.txt", root)
 
 
 def read_document(doc_id: str) -> str | None:
@@ -96,7 +100,7 @@ def store_document(doc_id: str, text: str) -> Path | None:
 
     root = documents_dir("uploads")
     root.mkdir(parents=True, exist_ok=True)
-    target = _contained(root / f"{doc_id}.txt", root)
+    target = contained_path(root / f"{doc_id}.txt", root)
     if target is None:
         return None
 
@@ -145,6 +149,7 @@ def resolve_document_text(trace: Trace) -> str:
 __all__ = [
     "DOC_ID_PATTERN",
     "DOC_ID_REGEX",
+    "contained_path",
     "document_text_from_trace",
     "documents_dir",
     "has_dataset_document",
