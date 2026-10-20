@@ -13,6 +13,30 @@ interface TraceDetailViewProps {
   onRefreshTrace: () => Promise<void>;
 }
 
+/**
+ * Parse a span payload for display without ever throwing during render.
+ *
+ * `input_json`/`output_json` are model-controlled text, and a span from a
+ * `prompt_schema` failure is not JSON at all. A bare `JSON.parse` in JSX threw
+ * `SyntaxError` and unmounted the whole app.
+ */
+function parseSpanJson(raw: string | undefined): { ok: true; value: unknown } | { ok: false; raw: string } {
+  const text = raw ?? "";
+  try {
+    return { ok: true, value: JSON.parse(text) };
+  } catch {
+    return { ok: false, raw: text };
+  }
+}
+
+function renderSpanJson(raw: string | undefined, fallback: unknown): string {
+  if (!raw) {
+    return JSON.stringify(fallback, null, 2);
+  }
+  const parsed = parseSpanJson(raw);
+  return JSON.stringify(parsed.ok ? parsed.value : parsed.raw, null, 2);
+}
+
 export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
   trace,
   diagnosis,
@@ -45,6 +69,10 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
     : 0;
   const isFailingStep =
     currentSpan?.status === "failure" || diagnosis?.root_cause_step === selectedStep;
+  // `"none"` is the analyzer's "everything passed" marker; a missing diagnosis
+  // is "not diagnosed yet". Neither is a failure.
+  const hasRootCause =
+    !!diagnosis?.root_cause_step && diagnosis.root_cause_step !== "none";
   const rootCauseStageIndex = diagnosis
     ? ["intake", "extraction", "classification", "summarization"].indexOf(diagnosis.root_cause_step) + 1
     : -1;
@@ -71,7 +99,11 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
       setIsConfirming(true);
       await api.confirmDiagnosis(
         diagnosis.diagnosis_id,
-        false,
+        // An override is an engineer confirming a *different* category, not a
+        // rejection. Sending `false` stored confirmed=0, and the eval sweep
+        // only promotes confirmed diagnoses, so overridden cases from this view
+        // were silently excluded from the regression suite.
+        true,
         category,
         "Engineer manual override from trace inspector"
       );
@@ -244,19 +276,19 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
         <div>
           <span>DURATION: </span>
           <span style={{ color: "var(--color-ink)", fontWeight: 600 }}>
-            {trace.total_latency_ms ? `${Math.round(trace.total_latency_ms)}ms` : "1,247ms"}
+            {trace.total_latency_ms != null ? `${Math.round(trace.total_latency_ms)}ms` : "—"}
           </span>
         </div>
         <div>
           <span>TOTAL TOKENS: </span>
           <span style={{ color: "var(--color-ink)", fontWeight: 600 }}>
-            {totalTokens ? totalTokens.toLocaleString() : "1,842"}
+            {totalTokens.toLocaleString()}
           </span>
         </div>
         <div>
           <span>EST. COST: </span>
           <span style={{ color: "var(--color-ink)", fontWeight: 600 }}>
-            {totalCost ? `$${totalCost.toFixed(4)}` : "$0.0034"}
+            ${totalCost.toFixed(4)}
           </span>
         </div>
         <div>
@@ -423,7 +455,8 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                       textTransform: "uppercase",
                     }}
                   >
-                    FAILED CHECKS EVIDENCE CHAIN ({diagnosis.evidence_chain?.length || 0})
+                    {hasRootCause ? "FAILED CHECKS EVIDENCE CHAIN" : "EVIDENCE CHAIN"} (
+                    {diagnosis.evidence_chain?.length || 0})
                   </div>
 
                   {diagnosis.evidence_chain && diagnosis.evidence_chain.length > 0 ? (
@@ -431,17 +464,21 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                       <div
                         key={idx}
                         style={{
-                          border: "1px solid var(--color-cinnabar)",
-                          backgroundColor: "var(--color-cinnabar-tint)",
+                          border: `1px solid ${
+                            hasRootCause ? "var(--color-cinnabar)" : "var(--color-rule)"
+                          }`,
+                          backgroundColor: hasRootCause
+                            ? "var(--color-cinnabar-tint)"
+                            : "var(--color-chalk)",
                           padding: "10px 14px",
                           borderRadius: "var(--radius-1)",
                           fontFamily: "var(--font-mono)",
                           fontSize: "12px",
-                          color: "var(--color-cinnabar)",
+                          color: hasRootCause ? "var(--color-cinnabar)" : "var(--color-ink-2)",
                         }}
                       >
                         <div style={{ fontWeight: 600 }}>
-                          [FAIL] {item}
+                          [{hasRootCause ? "FAIL" : "PASS"}] {item}
                         </div>
                       </div>
                     ))
@@ -457,7 +494,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                         color: "var(--color-ink-2)",
                       }}
                     >
-                      [FAIL] label_grounding: Expected document category did not ground in text tokens.
+                      No evidence recorded for this diagnosis.
                     </div>
                   )}
 
@@ -675,16 +712,10 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                   }}
                 >
                   {currentSpan?.prompt ||
-                    JSON.stringify(
-                      currentSpan?.input_json
-                        ? JSON.parse(currentSpan.input_json)
-                        : {
-                            document_id: trace.document_id,
-                            step: selectedStep,
-                          },
-                      null,
-                      2
-                    )}
+                    renderSpanJson(currentSpan?.input_json, {
+                      document_id: trace.document_id,
+                      step: selectedStep,
+                    })}
                 </pre>
               </div>
 
@@ -724,17 +755,11 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                   }}
                 >
                   {currentSpan?.raw_response ||
-                    JSON.stringify(
-                      currentSpan?.output_json
-                        ? JSON.parse(currentSpan.output_json)
-                        : {
-                            classification: "invoice_receipt_v2",
-                            confidence: 0.42,
-                            error: "label not in DocumentType enum",
-                          },
-                      null,
-                      2
-                    )}
+                    renderSpanJson(currentSpan?.output_json, {
+                      document_id: trace.document_id,
+                      step: selectedStep,
+                      status: "no output recorded",
+                    })}
                 </pre>
               </div>
             </div>

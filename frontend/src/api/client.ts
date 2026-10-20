@@ -1,8 +1,9 @@
-import { Trace, Diagnosis, AnalyticsSnapshot, EvalRun, Flag, FailureCategory, EvalResult } from "./types";
+import { Trace, Diagnosis, AnalyticsSnapshot, EvalRun, EvalRunSummary, Flag, FailureCategory, EvalResult } from "./types";
 
 const API_BASE = "";
 
-const STORAGE_KEY = "forensics-api-key";
+// localStorage key *name*, not a credential.
+const API_KEY_STORAGE = "forensics-api-key"; // pragma: allowlist secret
 
 function getApiKey(): string | null {
   return localStorage.getItem(API_KEY_STORAGE);
@@ -99,11 +100,11 @@ export const api = {
     return handleResponse<EvalResult[]>(res);
   },
 
-  async triggerEvalRun(): Promise<EvalRun> {
+  async triggerEvalRun(): Promise<EvalRunSummary> {
     const res = await apiFetch(`${API_BASE}/eval/run`, {
       method: "POST",
     });
-    return handleResponse<EvalRun>(res);
+    return handleResponse<EvalRunSummary>(res);
   },
 
   async runDemoPipeline(): Promise<{ status: string; traces_saved: number }> {

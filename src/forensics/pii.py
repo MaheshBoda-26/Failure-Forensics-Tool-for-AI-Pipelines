@@ -6,9 +6,12 @@ Configurable per entity type via environment variables.
 
 import contextlib
 import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # Pre-compiled patterns (fast, no backtracking)
 # Ordered by specificity to avoid partial matches
@@ -16,8 +19,17 @@ PATTERNS: dict[str, re.Pattern[str]] = {
     # Accepts both underscore and hyphen separators: the spec's example
     # (`sk-or-abc123…`) and real OpenRouter keys (`sk-or-v1-…`) are hyphenated,
     # so a pattern requiring `sk_or_` silently redacted nothing.
+    #
+    # The last two alternatives cover keys this tool itself mints (`ffk_…`) and
+    # the widely-used OpenAI-style `sk-…` form. Without them a trace could store
+    # the caller's own API key in plaintext while reporting redaction enabled.
     "api_key": re.compile(
-        r"\b(?:nvapi-[A-Za-z0-9_-]{16,}|(?:sk|pk|rk)[-_](?:or|live|test)[-_][A-Za-z0-9_-]{16,})\b"
+        r"\b(?:"
+        r"nvapi-[A-Za-z0-9_-]{16,}"
+        r"|(?:sk|pk|rk)[-_](?:or|live|test)[-_][A-Za-z0-9_-]{16,}"
+        r"|ffk_[A-Za-z0-9_-]{16,}"
+        r"|sk-[A-Za-z0-9_-]{20,}"
+        r")\b"
     ),
     "email": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"),
     "phone": re.compile(r"(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b"),
@@ -55,7 +67,7 @@ class PIIRedactor:
         self,
         enabled: bool = True,
         entity_types: frozenset[str] | None = None,
-        custom_patterns: list[dict[str, str]] | None = None,
+        custom_patterns: list[Any] | None = None,
         replacement_char: str = "█",
     ) -> None:
         self.enabled = enabled
@@ -67,13 +79,28 @@ class PIIRedactor:
         # Custom patterns may pin an explicit replacement string; without one
         # they fall back to the block character like the built-ins.
         self._custom_replacements: dict[str, str] = {}
-        if custom_patterns:
+        if isinstance(custom_patterns, list):
             for cp in custom_patterns:
-                name = cp["name"]
-                pattern = cp["pattern"]
-                self._patterns[name] = re.compile(pattern)
+                # Malformed entries are skipped rather than raised on: this
+                # constructor runs while a finished trace is being persisted, so
+                # raising here would lose the trace over a config typo.
+                # `validate_startup` rejects the same value loudly at boot.
+                if not isinstance(cp, dict):
+                    continue
+                name = cp.get("name")
+                pattern = cp.get("pattern")
+                if not isinstance(name, str) or not name.strip():
+                    continue
+                if not isinstance(pattern, str) or not pattern.strip():
+                    continue
+                try:
+                    compiled = re.compile(pattern)
+                except re.error:
+                    logger.warning("Skipping invalid PII custom pattern %r", name)
+                    continue
+                self._patterns[name] = compiled
                 replacement = cp.get("replacement")
-                if replacement:
+                if isinstance(replacement, str) and replacement:
                     self._custom_replacements[name] = replacement
 
     def redact(self, text: str) -> tuple[str, list[Redaction]]:
@@ -161,6 +188,49 @@ class PIIRedactor:
         return _redact_obj(data), all_redactions
 
 
+def parse_custom_patterns(raw: str) -> list[dict[str, str]]:
+    """Parse `PII_CUSTOM_PATTERNS` into validated entries, or raise ValueError.
+
+    One parser for the two callers with opposite needs: `validate_startup`
+    wants a loud error naming the bad value, and `create_redactor_from_settings`
+    wants to keep going. Invalid regexes, a non-array JSON value, and entries
+    missing `name`/`pattern` are all rejected here instead of crashing mid-run.
+    """
+    if not raw or not raw.strip():
+        return []
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"PII_CUSTOM_PATTERNS is not valid JSON: {exc}") from exc
+
+    if not isinstance(parsed, list):
+        raise ValueError("PII_CUSTOM_PATTERNS must be a JSON array of {name, pattern} objects")
+
+    patterns: list[dict[str, str]] = []
+    for index, entry in enumerate(parsed):
+        if not isinstance(entry, dict):
+            raise ValueError(f"PII_CUSTOM_PATTERNS[{index}] must be an object")
+        name = entry.get("name")
+        pattern = entry.get("pattern")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"PII_CUSTOM_PATTERNS[{index}] is missing a non-empty 'name'")
+        if not isinstance(pattern, str) or not pattern.strip():
+            raise ValueError(f"PII_CUSTOM_PATTERNS[{index}] is missing a non-empty 'pattern'")
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise ValueError(
+                f"PII_CUSTOM_PATTERNS[{index}] ('{name}') is not a valid regex: {exc}"
+            ) from exc
+        item = {"name": name, "pattern": pattern}
+        replacement = entry.get("replacement")
+        if isinstance(replacement, str) and replacement:
+            item["replacement"] = replacement
+        patterns.append(item)
+    return patterns
+
+
 def create_redactor_from_settings() -> PIIRedactor:
     """Create a PIIRedactor from application settings."""
     from forensics.config import get_settings
@@ -172,10 +242,12 @@ def create_redactor_from_settings() -> PIIRedactor:
         else frozenset()
     )
 
-    custom_patterns = []
+    custom_patterns: list[dict[str, str]] = []
     if settings.pii_custom_patterns:
-        with contextlib.suppress(json.JSONDecodeError):
-            custom_patterns = json.loads(settings.pii_custom_patterns)
+        # Non-fatal here by design: this runs while a finished trace is being
+        # persisted. `validate_startup` is where a malformed value must fail.
+        with contextlib.suppress(ValueError):
+            custom_patterns = parse_custom_patterns(settings.pii_custom_patterns)
 
     return PIIRedactor(
         enabled=settings.pii_redaction_enabled,
@@ -221,5 +293,6 @@ __all__ = [
     "PIIRedactor",
     "Redaction",
     "create_redactor_from_settings",
+    "parse_custom_patterns",
     "redact_diagnosis",
 ]

@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from forensics.analyzer_simple import analyze_trace
 from forensics.auth import AuthManager
 from forensics.config import get_settings
+from forensics.documents import DOC_ID_REGEX, read_document, resolve_document_text
 from forensics.models import (
     DEFAULT_TENANT_ID,
     AnalyticsSnapshot,
@@ -58,10 +59,30 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Failure Forensics API", version="0.1.0", lifespan=_lifespan)
 
+
+def _cors_origins() -> list[str]:
+    """Browser origins allowed to call the API, from `CORS_ORIGINS`.
+
+    Never `["*"]`: the middleware below enables credentials, and a wildcard
+    origin with credentials lets any page an operator visits drive the API with
+    their authorization header. A literal `*` in the setting disables
+    credentials instead, which is the only coherent combination.
+    """
+    raw = get_settings().cors_origins
+    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    return origins or ["http://localhost:5173", "http://127.0.0.1:8000"]
+
+
+try:
+    _CORS_ORIGINS = _cors_origins()
+except Exception:
+    # `tests/test_imports.py` imports this module without a full environment.
+    _CORS_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:8000"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_CORS_ORIGINS,
+    allow_credentials="*" not in _CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -177,7 +198,7 @@ class PipelineRunRequest(BaseModel):
     silently accepted and then never match.
     """
 
-    doc_id: str = Field(..., min_length=1)
+    doc_id: str = Field(..., min_length=1, pattern=DOC_ID_REGEX)
     doc_text: str = Field(..., min_length=1)
     expected_type: DocumentType | None = None
     priority: int = Field(default=0, description="Higher runs first")
@@ -227,9 +248,18 @@ def list_traces(
     authorization: Annotated[str | None, Header()] = None,
 ) -> list[Trace]:
     tenant = get_current_tenant(authorization)
-    return get_storage().list_traces(
-        status=status, limit=limit, offset=offset, tenant_id=tenant_scope(tenant)
-    )
+    scope = tenant_scope(tenant)
+    storage = get_storage()
+    traces = storage.list_traces(status=status, limit=limit, offset=offset, tenant_id=scope)
+
+    # Attach the latest verdict in one query rather than one per trace. The run
+    # status alone cannot distinguish a semantic failure (the pipeline finished
+    # but produced wrong output) from a clean run, so a client that only sees
+    # `status` paints every seeded failure green.
+    verdicts = storage.latest_root_cause_steps([t.trace_id for t in traces], tenant_id=scope)
+    for trace in traces:
+        trace.root_cause_step = verdicts.get(trace.trace_id)
+    return traces
 
 
 @app.get("/traces/{trace_id}", response_model=Trace)
@@ -285,12 +315,14 @@ def diagnose_trace(
     if not trace:
         raise HTTPException(status_code=404, detail="Trace not found")
 
-    dataset_dir = get_settings().dataset_dir
-    doc_path = dataset_dir / "documents" / f"{trace.document_id}.txt"
-    if not doc_path.exists():
+    # Resolve the source text without ever building a path from an unvalidated
+    # id: `read_document` applies an allowlist and a resolve-and-contain check,
+    # so `doc_id="../../some_file"` can no longer read the host filesystem.
+    # Uploads live outside the dataset, and a trace whose file is gone can still
+    # be analyzed from its own intake span.
+    doc_text = resolve_document_text(trace)
+    if not doc_text:
         raise HTTPException(status_code=404, detail="Document not found")
-
-    doc_text = doc_path.read_text()
 
     # Ground-truth type, when the document has a label, so misclassification is
     # observable rather than assumed away. One loader serves the CLI, the eval
@@ -330,11 +362,25 @@ def confirm_diagnosis(
         override_reason=request.override_reason,
     )
 
+    # Everything below reads the *updated* row. Passing the pre-update object
+    # into `flag_to_eval_case` discarded the override the caller had just sent,
+    # so a case could be built from the category and reason the human rejected.
+    updated_diagnosis = storage.get_diagnosis(diagnosis_id, tenant_id=scope)
+    if not updated_diagnosis:
+        raise HTTPException(status_code=404, detail="Diagnosis not found after update")
+
+    # A rejection is a verdict too: `confirmed=False` means "the analyzer is
+    # wrong", which must not create a flag or an eval case that bakes the wrong
+    # expectation into the suite. A clean trace ("none") is likewise not a
+    # regression case.
+    if not updated_diagnosis.confirmed or updated_diagnosis.root_cause_step in ("", "none"):
+        return updated_diagnosis
+
     # Auto-create flag if none exists for this trace
-    flags = storage.list_flags_for_trace(diagnosis.trace_id, tenant_id=scope)
+    flags = storage.list_flags_for_trace(updated_diagnosis.trace_id, tenant_id=scope)
     if not flags:
         flag = Flag(
-            trace_id=diagnosis.trace_id,
+            trace_id=updated_diagnosis.trace_id,
             user_id="api_user",
             note="Auto-created on diagnosis confirm",
             tenant_id=tenant.tenant_id,
@@ -348,13 +394,10 @@ def confirm_diagnosis(
     from forensics.eval_simple import flag_to_eval_case
 
     for flag in flags:
-        case = flag_to_eval_case(flag, diagnosis, storage)
+        case = flag_to_eval_case(flag, updated_diagnosis, storage)
         if case:
             storage.create_eval_case(case)
 
-    updated_diagnosis = storage.get_diagnosis(diagnosis_id, tenant_id=scope)
-    if not updated_diagnosis:
-        raise HTTPException(status_code=404, detail="Diagnosis not found after update")
     return updated_diagnosis
 
 
@@ -411,11 +454,14 @@ async def trigger_eval_run(
     create_eval_cases_from_confirmed_flags(scope)
     cases = storage.list_eval_cases(limit=100, tenant_id=scope)
     if not cases:
-        # Seed eval cases from diagnosed failure traces
+        # Seed eval cases from diagnosed failure traces. A passing trace stores
+        # `root_cause_step="none"`, which is a non-empty string: the old
+        # truthiness check therefore treated every clean run as a failure and
+        # marked it confirmed, filling the suite with bogus cases.
         traces = storage.list_traces(limit=20, tenant_id=scope)
         for t in traces:
             diag = storage.get_diagnosis_for_trace(t.trace_id, tenant_id=scope)
-            if diag and diag.root_cause_step:
+            if diag and diag.root_cause_step not in ("", "none"):
                 flag = Flag(
                     trace_id=t.trace_id,
                     user_id="system",
@@ -438,9 +484,12 @@ async def trigger_eval_run(
                 (run.passed_count / run.total_cases) if run.total_cases > 0 else 0.0
             ),
         }
+    # No run was created. `run_id` is null rather than a placeholder: the client
+    # used to follow the invented id to `/eval/runs/.../results` and surface a
+    # 404 as an error banner for a perfectly healthy, empty suite.
     return {
-        "status": "ok",
-        "run_id": "eval_benchmark_suite",
+        "status": "empty",
+        "run_id": None,
         "total_cases": 0,
         "passed_count": 0,
         "failed_count": 0,
@@ -476,10 +525,12 @@ async def trigger_pipeline_demo(
         pipeline = Pipeline(client=client)
         for doc_info in docs:
             doc_id = doc_info["doc_id"]
-            doc_path = dataset_dir / "documents" / f"{doc_id}.txt"
-            if not doc_path.exists():
+            # Validated, contained lookup: labels.json is trusted, but the same
+            # helper keeps this path from disagreeing with the request path
+            # about what a safe document id is.
+            doc_text = read_document(doc_id)
+            if not doc_text:
                 continue
-            doc_text = doc_path.read_text()
             document = Document(content=doc_text)
             # Traces written by this endpoint belong to the calling tenant, so a
             # run triggered by tenant A is not listed for tenant B.

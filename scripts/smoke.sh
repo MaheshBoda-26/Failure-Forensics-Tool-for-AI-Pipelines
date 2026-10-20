@@ -28,8 +28,27 @@ ok()   { printf '  \033[1;32mok\033[0m %s\n' "$*"; }
 die()  { printf '\n\033[1;31mFAILED: %s\033[0m\n' "$*" >&2; exit 1; }
 
 # Read one field out of a JSON document on stdin; python3 stands in for jq,
-# which is not guaranteed to be installed.
-field() { python3 -c 'import json,sys; v=json.load(sys.stdin); print(eval("v" + sys.argv[1]))' "$1"; }
+# which is not guaranteed to be installed. The path is a sequence of `['key']`
+# and `[0]` segments and is *parsed*, never evaluated: this script may be run
+# against an untrusted endpoint, and `eval()` on a value derived from that
+# endpoint's response is arbitrary code execution on the caller's machine.
+field() {
+  python3 -c '
+import json
+import re
+import sys
+
+QUOTES = ("\x22", "\x27")
+value = json.load(sys.stdin)
+for raw in re.findall(r"\[(.*?)\]", sys.argv[1]):
+    token = raw.strip()
+    if len(token) >= 2 and token[0] in QUOTES and token[-1] == token[0]:
+        value = value[token[1:-1]]
+    else:
+        value = value[int(token)]
+print(value)
+' "$1"
+}
 
 printf '\033[1mFailure Forensics smoke test\033[0m against %s\n' "$BASE_URL"
 
@@ -59,7 +78,20 @@ if [[ "$TRACE_COUNT" == "0" ]]; then
   [[ "$SAVED" -gt 0 ]] || die "run-demo saved nothing"
 fi
 
-TRACE_ID=$("${CURL[@]}" "${BASE_URL}/traces" | field "[0]['trace_id']")
+TRACE_ID=$("${CURL[@]}" "${BASE_URL}/traces" | python3 -c '
+import json
+import sys
+
+traces = json.load(sys.stdin)
+# Prefer a trace the analyzer blamed a step for: confirming a clean diagnosis
+# correctly creates no eval case, and the demo dataset always has failures.
+failing = next(
+    (t for t in traces if t.get("root_cause_step") not in (None, "", "none")),
+    traces[0] if traces else None,
+)
+print(failing["trace_id"] if failing else "")
+')
+[[ -n "$TRACE_ID" ]] || die "no traces available"
 ok "using trace ${TRACE_ID}"
 
 # ── flag ────────────────────────────────────────────────────────────────────
@@ -86,8 +118,14 @@ CONFIRMED=$("${CURL[@]}" -X POST "${BASE_URL}/diagnoses/${DIAGNOSIS_ID}/confirm"
 ok "diagnosis confirmed"
 
 CASE_COUNT=$("${CURL[@]}" "${BASE_URL}/eval/cases" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
-[[ "$CASE_COUNT" -gt 0 ]] || die "confirming produced no eval case"
-ok "${CASE_COUNT} eval case(s) in the suite"
+if [[ "$ROOT_CAUSE" == "none" || -z "$ROOT_CAUSE" ]]; then
+  # A clean diagnosis is a rejection of the analyzer's failure claim, so the new
+  # confirm handler deliberately creates no eval case for it.
+  ok "trace is clean; no eval case expected"
+else
+  [[ "$CASE_COUNT" -gt 0 ]] || die "confirming produced no eval case"
+  ok "${CASE_COUNT} eval case(s) in the suite"
+fi
 
 # ── analytics (the headline number) ─────────────────────────────────────────
 step "analytics"
@@ -96,7 +134,9 @@ TOTAL=$(printf '%s' "$ANALYTICS" | field "['total_traces']")
 FAILURE_RATE=$(printf '%s' "$ANALYTICS" | field "['failure_rate']")
 ok "total_traces=${TOTAL} failure_rate=${FAILURE_RATE}"
 [[ "$TOTAL" -gt 0 ]] || die "/analytics reports no traces"
-python3 -c "import sys; sys.exit(0 if float('${FAILURE_RATE}') > 0 else 1)" \
+# The value comes from the endpoint's response, so it is passed as an argument
+# (data), never interpolated into the Python source (code).
+python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) > 0 else 1)' "$FAILURE_RATE" \
   || die "/analytics failure_rate is 0 — the demo's headline number is not populated"
 ok "failure rate is non-zero"
 

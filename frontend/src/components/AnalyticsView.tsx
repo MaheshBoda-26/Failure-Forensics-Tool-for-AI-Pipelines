@@ -22,13 +22,18 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     try {
       setIsRunningEval(true);
       const res = await api.triggerEvalRun();
+      if (!res.run_id) {
+        setEvalNotice("No eval cases yet — confirm a diagnosis to create one.");
+        setEvalResults([]);
+        await onRefreshAnalytics();
+        return;
+      }
       setEvalNotice(`✓ Eval run ${res.run_id} completed: ${res.passed_count}/${res.total_cases} cases passed`);
       await onRefreshAnalytics();
-      // Fetch results for the new run
-      if (res.run_id) {
-        const results = await api.getEvalResults(res.run_id);
-        setEvalResults(results);
-      }
+      // Only fetch results for a run that exists: the empty-suite response has
+      // no run id, and following an invented one surfaced a 404 as an error.
+      const results = await api.getEvalResults(res.run_id);
+      setEvalResults(results);
     } catch (err: unknown) {
       setEvalNotice(`Error running eval: ${(err as Error).message}`);
     } finally {
@@ -47,11 +52,20 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     }
   }, [evalRuns]);
 
-  const passRate = analytics ? Math.round((1 - analytics.failure_rate) * 100) : 84;
-  const totalTraces = analytics?.total_traces || 15;
-  const topCategory = analytics?.failures_by_category
-    ? Object.entries(analytics.failures_by_category).sort((a, b) => b[1] - a[1])[0]?.[0] || "misclassification"
-    : "misclassification";
+  // Derived strictly from the response. The previous `analytics ? ... : 84`
+  // fallbacks rendered a healthy-looking dashboard (84% pass rate, 15 traces,
+  // 180ms) before any data had loaded, which is indistinguishable from a real
+  // measurement. `null` renders as an em dash instead.
+  const passRate = analytics ? Math.round((1 - analytics.failure_rate) * 100) : null;
+  const totalTraces = analytics?.total_traces ?? 0;
+  const categoryCounts = analytics?.failures_by_category ?? {};
+  const totalCategoryFailures = Object.values(categoryCounts).reduce((a, b) => a + b, 0);
+  const topCategoryEntry = Object.entries(categoryCounts).sort((a, b) => b[1] - a[1])[0];
+  const topCategory = topCategoryEntry?.[0] ?? null;
+  const topCategoryShare =
+    topCategoryEntry && totalCategoryFailures > 0
+      ? Math.round((topCategoryEntry[1] / totalCategoryFailures) * 100)
+      : null;
 
   // Compute stage vulnerability percentages from real data
   const stageVulnerability = useMemo(() => {
@@ -165,10 +179,10 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
               marginTop: "6px",
             }}
           >
-            {passRate}%
+            {passRate === null ? "—" : `${passRate}%`}
           </div>
           <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-copper)", marginTop: "6px" }}>
-            ↑ +3.8% vs baseline ({totalTraces} traces tracked)
+            {totalTraces} traces tracked
           </div>
         </div>
 
@@ -201,10 +215,12 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
               textTransform: "capitalize",
             }}
           >
-            {topCategory.replace("_", " ")}
+            {topCategory ? topCategory.replace(/_/g, " ") : "—"}
           </div>
           <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-2)", marginTop: "6px" }}>
-            68% of all stage failures
+            {topCategoryShare === null
+              ? "No classified failures yet"
+              : `${topCategoryShare}% of classified failures`}
           </div>
         </div>
 
@@ -236,9 +252,9 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
               marginTop: "6px",
             }}
           >
-            {analytics?.avg_time_to_root_cause_seconds
+            {analytics?.avg_time_to_root_cause_seconds != null
               ? `${Math.round(analytics.avg_time_to_root_cause_seconds * 1000)}ms`
-              : "180ms"}
+              : "—"}
           </div>
           <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-copper)", marginTop: "6px" }}>
             Deterministic backward trace analyzer
@@ -399,19 +415,18 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
               evalResults.map((result) => {
                 const category = result.details?.category || "unknown";
                 const isFixed = result.fixed;
-                const delta = isFixed ? "+0.0%" : "-0.0%"; // Would need baseline data for real delta
                 return (
                   <tr key={result.result_id} style={{ borderBottom: "1px solid var(--color-rule)", backgroundColor: isFixed ? "transparent" : "var(--color-cinnabar-tint)" }}>
                     <td style={{ padding: "12px 20px", fontWeight: 600, color: "var(--color-ink)" }}>{result.case_id.slice(0, 14)}</td>
                     <td style={{ padding: "12px 20px", color: isFixed ? "var(--color-ink-2)" : "var(--color-cinnabar)" }}><span>{String(category)}</span></td>
                     <td style={{ padding: "12px 20px" }}>{result.step_name}</td>
-                    <td style={{ padding: "12px 20px" }}>100%</td>
+                    {/* No baseline is persisted per case, so these cells show
+                        the measured score rather than an invented delta. */}
+                    <td style={{ padding: "12px 20px" }}>—</td>
                     <td style={{ padding: "12px 20px", fontWeight: 700, color: isFixed ? "var(--color-copper)" : "var(--color-cinnabar)" }}>
-                      {isFixed ? "100%" : "0%"}
+                      {(result.score * 100).toFixed(0)}%
                     </td>
-                    <td style={{ padding: "12px 20px", color: isFixed ? "var(--color-copper)" : "var(--color-cinnabar)", fontWeight: 700 }}>
-                      {delta}
-                    </td>
+                    <td style={{ padding: "12px 20px" }}>—</td>
                     <td style={{ padding: "12px 20px", color: isFixed ? "var(--color-copper)" : "var(--color-cinnabar)", fontWeight: 700 }}>
                       {isFixed ? "FIXED" : "REGRESSION"}
                     </td>

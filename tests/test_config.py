@@ -135,6 +135,9 @@ def test_missing_model_field_fails(monkeypatch):
     """Missing required model field should fail."""
     env = _make_env()
     del env["PIPELINE_MODEL_ID"]  # Missing required field
+    # The autouse fixture seeds a complete environment; remove the field here so
+    # this test really exercises the missing-value path.
+    monkeypatch.delenv("PIPELINE_MODEL_ID", raising=False)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
 

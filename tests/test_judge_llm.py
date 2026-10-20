@@ -192,8 +192,9 @@ def test_judge_runs_on_a_deterministic_failure_and_can_override(
     assert diagnosis.category is FailureCategory.CONTEXT_LOSS
     assert diagnosis.analyzer_version == "0.1.0-deterministic+judge"
     # An override means the verdict's provenance, not the analyzer's, is reported.
-    assert diagnosis.model_id == "nvidia/nemotron-3.5-content-safety"
-    assert diagnosis.provider == "nvidia"
+    # The configured judge model, not a literal from one developer's `.env`.
+    assert diagnosis.model_id == get_settings().judge_model.model_id
+    assert diagnosis.provider == get_settings().judge_model.provider
 
 
 def test_judge_agreement_does_not_mark_a_fallback(
@@ -338,8 +339,8 @@ def test_judge_verdict_is_stored_on_the_diagnosis(
     assert analysis.confidence == pytest.approx(0.77)
     assert analysis.step_scores[0].semantic_issues == ["tone does not match the source"]
     # model_id/provider are facts about the call, filled in by the analyzer.
-    assert analysis.model_id == "nvidia/nemotron-3.5-content-safety"
-    assert analysis.provider == "nvidia"
+    assert analysis.model_id == get_settings().judge_model.model_id
+    assert analysis.provider == get_settings().judge_model.provider
 
 
 def test_judge_cost_is_tagged_separately_in_the_ledger(
@@ -357,7 +358,10 @@ def test_judge_cost_is_tagged_separately_in_the_ledger(
     # The same number is on the verdict, so analytics need not reach into the client.
     assert diagnosis.judge_analysis is not None
     assert diagnosis.judge_analysis.cost_usd == pytest.approx(EXPECTED_JUDGE_COST)
-    assert client.nim.spend_tracker.run_spend_usd == pytest.approx(EXPECTED_JUDGE_COST)
+    # The judge call is made from `analyze_trace`, outside any `run_spend()`
+    # scope, so it lands in the durable ledger (and in the per-step tag above)
+    # rather than in the context-local per-run counter.
+    assert client.nim.spend_tracker.global_spend_usd == pytest.approx(EXPECTED_JUDGE_COST)
 
 
 def test_pipeline_spend_is_not_misattributed_to_the_judge(

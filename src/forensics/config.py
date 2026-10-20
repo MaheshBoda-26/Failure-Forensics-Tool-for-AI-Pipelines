@@ -5,9 +5,11 @@ fast at startup on an unknown model slug, an unset API key, or a judge model
 that shares a provider family with the pipeline models.
 """
 
+import ipaddress
 import warnings
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -184,6 +186,15 @@ class Settings(BaseSettings):
     host: str = Field(default="127.0.0.1")
     port: int = Field(default=8000, ge=1, le=65535)
     static_dir: Path = Field(default=Path("frontend/dist"))
+    cors_origins: str = Field(
+        default="http://localhost:5173,http://127.0.0.1:8000",
+        description=(
+            "Comma-separated browser origins allowed to call the API. An explicit "
+            "list — never '*' — because the CORS middleware enables credentials, "
+            "and `*` plus credentials would let any page an operator visits drive "
+            "the API with their key."
+        ),
+    )
 
     # --- OpenTelemetry ---
     # The flat fields exist only to bind the env names spec 01 documents
@@ -317,6 +328,32 @@ class Settings(BaseSettings):
         path = Path(v)
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    @model_validator(mode="before")
+    @classmethod
+    def allow_keyless_dry_run(cls, data: Any) -> Any:
+        """Accept an unset key when `DRY_RUN=true`.
+
+        `DRY_RUN` makes no network calls, so requiring a credential to construct
+        `Settings` at all made the documented offline demo impossible: the
+        process died in model validation before it could reach the code that
+        honours the flag. A real run still fails fast without a key.
+        """
+        if not isinstance(data, dict):
+            return data
+        if not _is_truthy(data.get("dry_run", data.get("DRY_RUN"))):
+            return data
+
+        present = data.get("api_key", data.get("NVIDIA_API_KEY"))
+        secret = present.get_secret_value() if isinstance(present, SecretStr) else present
+        if present is None or not str(secret or "").strip():
+            # Both spellings: the field is aliased to NVIDIA_API_KEY, and which
+            # key pydantic-settings hands a `mode="before"` validator depends on
+            # the source (env, dotenv, init kwargs).
+            # Not a credential: an obvious placeholder, never sent anywhere.
+            data["api_key"] = "dry-run-placeholder"  # pragma: allowlist secret
+            data["NVIDIA_API_KEY"] = "dry-run-placeholder"  # pragma: allowlist secret
+        return data
 
     @field_validator("alert_webhook_url", "alert_webhook_secret", mode="before")
     @classmethod
@@ -492,20 +529,88 @@ def reset_settings() -> None:
     _settings = None
 
 
+def _is_truthy(value: Any) -> bool:
+    """Coerce an env-style flag ("true", "1", "yes", "on") to a bool."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _validate_pii_custom_patterns(settings: Settings) -> None:
+    """Fail startup on a malformed `PII_CUSTOM_PATTERNS` value.
+
+    Redaction runs at the *end* of a pipeline run, so an invalid regex used to
+    surface only after the LLM calls had already been paid for. Validating here
+    turns it into an immediate, actionable startup error.
+    """
+    from forensics.pii import parse_custom_patterns
+
+    parse_custom_patterns(settings.pii_custom_patterns)
+
+
+def _validate_alert_webhook(settings: Settings) -> None:
+    """Reject an alert webhook that could be used for SSRF.
+
+    `ALERT_WEBHOOK_URL` is delivered by the server, not the browser, so pointing
+    it at a link-local address reaches cloud metadata and at a loopback address
+    reaches services bound only to the host. Plain HTTP is only acceptable in
+    dry-run/development mode, where no real credential is sent.
+    """
+    url = settings.alert_webhook_url
+    if not url:
+        return
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("ALERT_WEBHOOK_URL must be an http(s) URL")
+    if parsed.scheme == "http" and not settings.dry_run:
+        raise ValueError("ALERT_WEBHOOK_URL must use https:// (http:// only with DRY_RUN=true)")
+
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        raise ValueError("ALERT_WEBHOOK_URL must include a host")
+    if settings.dry_run:
+        return
+    if host in {"localhost", "metadata", "metadata.google.internal"}:
+        raise ValueError(f"ALERT_WEBHOOK_URL host '{host}' is not allowed")
+
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return  # a normal DNS name
+    if (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+        or address.is_unspecified
+    ):
+        raise ValueError(f"ALERT_WEBHOOK_URL must not target a private/loopback address ({host})")
+
+
 def validate_startup() -> None:
     """Run all startup validations. Raises on failure."""
     settings = get_settings()
 
-    # Validate API key format (basic check)
+    # Validate API key format (basic check). Dry-run makes no network call, so a
+    # key is neither required nor checked — that is what lets the offline demo
+    # run on a clean checkout with no `.env`.
     key = settings.api_key
     key_str = key.get_secret_value() if isinstance(key, SecretStr) else str(key)
-    if not key_str.startswith(("nvapi-", "sk-")):
-        raise ValueError(
-            "NVIDIA_API_KEY does not look like a valid NVIDIA NIM key "
-            "(expected 'nvapi-' or 'sk-' prefix)"
-        )
-    if not settings.api_base_url.startswith("https://"):
-        raise ValueError("NVIDIA_BASE_URL must be an https:// URL")
+    if not settings.dry_run:
+        if not key_str.startswith(("nvapi-", "sk-")):
+            raise ValueError(
+                "NVIDIA_API_KEY does not look like a valid NVIDIA NIM key "
+                "(expected 'nvapi-' or 'sk-' prefix)"
+            )
+        if not settings.api_base_url.startswith("https://"):
+            raise ValueError("NVIDIA_BASE_URL must be an https:// URL")
+
+    _validate_pii_custom_patterns(settings)
+    _validate_alert_webhook(settings)
 
     # Ensure directories exist
     settings.traces_dir.mkdir(parents=True, exist_ok=True)

@@ -59,6 +59,61 @@ DATE_FORMATS = (
     re.compile(r"^\d{1,2}\s+[A-Za-z]{3,9}\.?$"),
 )
 
+# Definitional vocabulary per document type, used by `check_propagation`.
+# Each entry is `(pattern, conclusive)`: a conclusive marker stands on its own,
+# weaker ones must appear at least twice before they count. Whole-word matching
+# matters — `\bbill\b` does not fire on "billing", and `\breport\b` does not
+# fire on "reported".
+TYPE_MARKERS: dict[str, tuple[tuple[re.Pattern[str], bool], ...]] = {
+    "contract": tuple(
+        (re.compile(pattern, re.IGNORECASE), conclusive)
+        for pattern, conclusive in (
+            (r"\bcontracts?\b", True),
+            (r"\bagreements?\b", True),
+            (r"\bclauses?\b", False),
+            (r"\bhereto\b", False),
+            (r"\bherein\b", False),
+            (r"\bindemnif\w*\b", False),
+            (r"\btermination\b", False),
+        )
+    ),
+    "invoice": tuple(
+        (re.compile(pattern, re.IGNORECASE), conclusive)
+        for pattern, conclusive in (
+            (r"\binvoices?\b", True),
+            (r"\breceipts?\b", True),
+            (r"\bremittance\b", False),
+            (r"\bsubtotal\b", False),
+            (r"\bamount\s+due\b", False),
+            (r"\bpayment\s+terms\b", False),
+        )
+    ),
+    "report": tuple(
+        (re.compile(pattern, re.IGNORECASE), conclusive)
+        for pattern, conclusive in (
+            (r"\breports?\b", True),
+            (r"\bfindings\b", False),
+            (r"\bmethodology\b", False),
+            (r"\bexecutive\s+summary\b", False),
+        )
+    ),
+    "correspondence": tuple(
+        (re.compile(pattern, re.IGNORECASE), conclusive)
+        for pattern, conclusive in (
+            (r"\bletters?\b", True),
+            (r"\bemails?\b", True),
+            (r"\bmemo(?:randum)?s?\b", True),
+            (r"\bdear\b", False),
+            (r"\bsincerely\b", False),
+            (r"\bregards\b", False),
+        )
+    ),
+    # A `mixed` document legitimately mentions several shapes, so it is exempt
+    # from single-type exclusivity; these markers exist only for the weak-signal
+    # check on a document that was classified as `mixed`.
+    "mixed": ((re.compile(r"\bmixed\b", re.IGNORECASE), False),),
+}
+
 # Built-in checks are registered by `forensics.checks` when it is first
 # imported. That import is deliberately NOT done here at module scope:
 # `checks` imports `CheckResult` and the built-in implementations from this
@@ -70,6 +125,26 @@ DATE_FORMATS = (
 def is_recognisable_date(value: str) -> bool:
     """True when a date entity is a date in a format a model legitimately emits."""
     return any(pattern.match(value) for pattern in DATE_FORMATS)
+
+
+def normalize_for_match(value: str) -> str:
+    """Collapse whitespace and case so two spellings of a value compare equal."""
+    return " ".join(value.split()).casefold()
+
+
+def text_contains_entity(value: str, text: str) -> bool:
+    """True when `text` contains `value`, exactly or case/whitespace-insensitively.
+
+    One grounding rule for extraction, context preservation, eval-case repair
+    and the UI. Using a strict `value in text` in some of those places and the
+    normalized form in others meant an entity that *passed* grounding was then
+    dropped from the corrected output and reported lost from the summary.
+    """
+    if not value or not text:
+        return False
+    if value in text:
+        return True
+    return normalize_for_match(value) in normalize_for_match(text)
 
 
 @dataclass
@@ -182,12 +257,21 @@ def check_entity_grounding(span: Span, document_text: str) -> list[CheckResult]:
 
         # Also check substrings of the document for better fuzzy matching
         if best_ratio < 0.85 and len(value) > 3:
-            # Slide a window over the document to find best match
+            # Slide a window over the document to find best match. `quick_ratio`
+            # is a cheap upper bound on `ratio`, so windows that cannot possibly
+            # reach 0.85 are skipped: the full ratio is O(n²) in the window, and
+            # this loop runs once per entity per document.
+            value_lower = value.lower()
             for i in range(len(document_text) - len(value) + 1):
                 sub = document_text[i : i + len(value)]
-                ratio = difflib.SequenceMatcher(None, value.lower(), sub.lower()).ratio()
+                window_matcher = difflib.SequenceMatcher(None, value_lower, sub.lower())
+                if window_matcher.quick_ratio() < 0.85:
+                    continue
+                ratio = window_matcher.ratio()
                 if ratio > best_ratio:
                     best_ratio = ratio
+                    if best_ratio >= 0.999:
+                        break
 
         if best_ratio >= 0.85:
             msg = (
@@ -334,7 +418,7 @@ def check_context_preservation(span: Span, trace: Trace, document_text: str) -> 
         value = entity_data.get("value", "")
         entity_type = entity_data.get("entity_type", "")
 
-        if value and value in document_text:
+        if value and text_contains_entity(value, document_text):
             grounded_entities.append((value, entity_type))
 
     if not grounded_entities:
@@ -352,7 +436,7 @@ def check_context_preservation(span: Span, trace: Trace, document_text: str) -> 
     searchable_text = f"{summary} {' '.join(key_points)}"
 
     for value, entity_type in grounded_entities:
-        if value in searchable_text:
+        if text_contains_entity(value, searchable_text):
             msg = f"Grounded entity '{value}' ({entity_type}) preserved in summarization"
             results.append(CheckResult("context_preservation", True, msg, span.step_name))
         else:
@@ -368,8 +452,15 @@ def check_propagation(span: Span, trace: Trace) -> list[CheckResult]:
     Propagation error: step N was correct, but step N+1 misread its output.
     Currently checks: classification → summarization (doc type consistency).
 
-    Only triggers if summarization is substantial enough to reasonably
-    contain document-type terminology, or if it uses OTHER type's terminology.
+    Matching is whole-word against *definitional* markers only. The previous
+    version substring-matched generic words ("total", "amount", "due", "party",
+    "section", "multiple", "various", "bill"), so any invoice summary mentioning
+    an amount due, any report summary mentioning a section, and virtually every
+    "mixed" document summary was reported as a propagation error.
+
+    A single definitional noun ("invoice", "receipt", "report", "letter",
+    "contract") is conclusive; weaker markers ("subtotal", "clause", "findings")
+    only count when at least two distinct ones appear.
     """
     results: list[CheckResult] = []
 
@@ -405,34 +496,40 @@ def check_propagation(span: Span, trace: Trace) -> list[CheckResult]:
     if word_count < 3:
         return results
 
-    type_keywords = {
-        "contract": ["contract", "agreement", "party", "clause", "effective"],
-        "invoice": ["invoice", "bill", "total", "due", "amount"],
-        "report": ["report", "analysis", "findings", "section"],
-        "correspondence": ["letter", "email", "memo", "dear", "sincerely"],
-        "mixed": ["mixed", "multiple", "various"],
-    }
-
     classified_lower = classified_type.lower()
-    if classified_lower not in type_keywords:
+    if classified_lower not in TYPE_MARKERS:
         return results
 
-    expected_keywords = type_keywords[classified_lower]
+    # Strong signal: summary uses a DIFFERENT document type's terminology.
+    # A "mixed" document legitimately mentions several shapes, so it is exempt
+    # from single-type exclusivity.
+    if classified_lower != "mixed":
+        for other_type, markers in TYPE_MARKERS.items():
+            if other_type in (classified_lower, "mixed"):
+                continue
+            conclusive = False
+            weak_matches: set[str] = set()
+            for pattern, is_conclusive in markers:
+                if not pattern.search(searchable_text):
+                    continue
+                if is_conclusive:
+                    conclusive = True
+                    break
+                weak_matches.add(pattern.pattern)
+            if conclusive or len(weak_matches) >= 2:
+                msg = (
+                    f"Propagation error: classification='{classified_type}' but summarization "
+                    f"uses '{other_type}' terminology (context: {searchable_text[:120]})"
+                )
+                results.append(CheckResult("propagation", False, msg, span.step_name))
+                return results
 
-    # Strong signal: summary uses a DIFFERENT document type's keywords
-    for other_type, other_keywords in type_keywords.items():
-        if other_type == classified_lower:
-            continue
-        if any(kw in searchable_text.lower() for kw in other_keywords):
-            msg = (
-                f"Propagation error: classification='{classified_type}' but summarization uses "
-                f"'{other_type}' terminology (context: {searchable_text[:120]})"
-            )
-            results.append(CheckResult("propagation", False, msg, span.step_name))
-            return results
-
-    # Weak signal: summary lacks expected terminology (only if substantial)
-    if word_count >= 10 and not any(kw in searchable_text.lower() for kw in expected_keywords):
+    # Weak signal: a substantial summary with none of the expected terminology.
+    # The word floor is deliberately high: a short summary is legitimately terse
+    # and proves nothing about propagation.
+    if word_count >= 15 and not any(
+        pattern.search(searchable_text) for pattern, _ in TYPE_MARKERS[classified_lower]
+    ):
         msg = (
             f"Propagation error: classification='{classified_type}' but summarization lacks "
             f"expected terminology (context: {searchable_text[:120]})"
@@ -774,8 +871,19 @@ def analyze_trace(trace: Trace, document_text: str, expected_type: str | None = 
                     root_cause_step = judge_result.root_cause_step
                     category = judge_result.category
                     confidence = judge_result.confidence
-                    first_step = judge_result.step_scores[0] if judge_result.step_scores else None
-                    evidence_chain = first_step.evidence if first_step else evidence_chain
+                    # Evidence must describe the step the judge blamed. Indexing
+                    # `step_scores[0]` attached "intake" (the first span) to a
+                    # failure in "summarization".
+                    blamed_step = next(
+                        (
+                            score
+                            for score in judge_result.step_scores
+                            if score.step_name == judge_result.root_cause_step
+                        ),
+                        judge_result.step_scores[0] if judge_result.step_scores else None,
+                    )
+                    if blamed_step is not None:
+                        evidence_chain = blamed_step.evidence
 
         except Exception:
             # Judge failure: log and fall back to deterministic

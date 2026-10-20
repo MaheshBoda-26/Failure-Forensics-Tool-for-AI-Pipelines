@@ -25,6 +25,7 @@ import uuid
 from typing import Any
 
 from forensics.analyzer_simple import analyze_trace
+from forensics.documents import has_dataset_document, store_document
 from forensics.llm import using_llm_client
 from forensics.models import DEFAULT_TENANT_ID, Document
 from forensics.pipeline import Pipeline
@@ -61,11 +62,22 @@ async def process_document(
     if trace is None:
         raise RuntimeError("pipeline produced no trace")
 
+    # Persist an uploaded document so `POST /traces/{id}/diagnose` and the eval
+    # loop can resolve it later. Without this every trace created through
+    # `POST /pipeline/run` answered 404 on diagnose and was silently skipped by
+    # the evaluator. Dataset documents are never copied or shadowed.
+    if not has_dataset_document(doc_id):
+        store_document(doc_id, doc_text)
+
     # Analyze *before* `save_trace`: finalize_trace redacts the trace in place
     # when PII_REDACTION_ENABLED is on, and an entity-grounding check run against
     # a redacted payload flags every real entity as a hallucination. The
     # diagnosis is scrubbed at its own write boundary (`create_diagnosis`).
-    diagnosis = analyze_trace(trace, doc_text, expected_type)
+    #
+    # Off the event loop: the analyzer does O(N·M) fuzzy matching per entity and,
+    # with JUDGE_ENABLED, blocks on a thread-pool future. Running it inline
+    # stalled every other task in the worker's `asyncio.gather` batch.
+    diagnosis = await asyncio.to_thread(analyze_trace, trace, doc_text, expected_type)
     diagnosis.tenant_id = tenant_id
     storage.save_trace(trace)
     storage.create_diagnosis(diagnosis)

@@ -58,7 +58,13 @@ class DocumentType(StrEnum):
 class Document(BaseModel):
     """Input document."""
 
-    doc_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    # A doc id becomes a filename component (`documents/<doc_id>.txt`), so it is
+    # constrained at the model boundary as well as at the path build site.
+    doc_id: str = Field(
+        default_factory=lambda: uuid.uuid4().hex[:12],
+        pattern=r"^[A-Za-z0-9_-]{1,64}$",
+        description="Filename-safe document identifier",
+    )
     content: str = Field(..., min_length=1, description="Raw document text")
     type: DocumentType | None = Field(default=None, description="Ground truth type if known")
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -224,6 +230,14 @@ class Trace(VersionedModel, TenantScoped):
     total_latency_ms: int = Field(default=0, ge=0)
     total_tokens: int = Field(default=0, ge=0)
     total_cost_usd: float = Field(default=0.0, ge=0.0)
+    #: Latest diagnosis verdict for this trace, populated on list responses so a
+    #: client can distinguish a semantic failure (the run completed, the output
+    #: was wrong) from a clean run without a second request per row. `None`
+    #: means "no diagnosis on file"; `"none"` means "diagnosed clean".
+    root_cause_step: str | None = Field(
+        default=None,
+        description="Root cause from the latest diagnosis, when one exists",
+    )
 
 
 class StepScore(BaseModel):

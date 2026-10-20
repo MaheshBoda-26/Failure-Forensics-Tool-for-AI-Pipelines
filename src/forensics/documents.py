@@ -1,0 +1,156 @@
+"""Document-id validation and safe document lookup.
+
+A `document_id` arrives in a request body (`POST /pipeline/run`) or in a trace
+file, and several code paths turn it into a filename
+(`documents/<doc_id>.txt`). Without validation, `doc_id="../../secrets"` reads
+any `.txt` file the process can see. Two guards live here so every caller
+shares them:
+
+* a strict allowlist (`^[A-Za-z0-9_-]{1,64}$`) applied at the input boundary,
+* resolve-and-contain on the resulting path, so a symlink or a crafted id
+  cannot escape the documents directory.
+
+Uploaded documents are persisted under the *data* directory rather than the
+read-only dataset, so a trace created by `POST /pipeline/run` stays diagnosable
+and evaluable after the request that created it has returned. Lookup checks the
+dataset first (labelled fixtures win) and then the upload directory.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import tempfile
+from pathlib import Path
+
+from forensics.config import get_settings
+from forensics.models import Trace
+
+#: Allowlist for a document id. Deliberately excludes `.`, `/`, `\`, and any
+#: whitespace, so no id can express a path.
+DOC_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+#: Same expression as a string, for pydantic `Field(pattern=...)`.
+DOC_ID_REGEX = DOC_ID_PATTERN.pattern
+
+
+def is_valid_doc_id(doc_id: object) -> bool:
+    """True when `doc_id` is safe to use as a filename component."""
+    return isinstance(doc_id, str) and DOC_ID_PATTERN.fullmatch(doc_id) is not None
+
+
+def documents_dir(kind: str = "dataset") -> Path:
+    """`dataset/documents` or `data/documents`, from settings."""
+    settings = get_settings()
+    base = settings.dataset_dir if kind == "dataset" else settings.data_dir
+    return Path(base) / "documents"
+
+
+def _contained(path: Path, root: Path) -> Path | None:
+    """Resolve `path` and return it only when it stays inside `root`."""
+    try:
+        resolved = path.resolve()
+        resolved_root = root.resolve()
+    except OSError:  # pragma: no cover - resolve() only raises on a path loop
+        return None
+    return resolved if resolved.is_relative_to(resolved_root) else None
+
+
+def safe_document_path(doc_id: str, kind: str = "dataset") -> Path | None:
+    """Path for `doc_id` inside the documents directory, or None if unsafe."""
+    if not is_valid_doc_id(doc_id):
+        return None
+    root = documents_dir(kind)
+    return _contained(root / f"{doc_id}.txt", root)
+
+
+def read_document(doc_id: str) -> str | None:
+    """Read a document by id: dataset first, then the upload directory."""
+    for kind in ("dataset", "uploads"):
+        path = safe_document_path(doc_id, kind)
+        if path is not None and path.is_file():
+            try:
+                return path.read_text()
+            except OSError:
+                continue
+    return None
+
+
+def has_dataset_document(doc_id: str) -> bool:
+    """True when the labelled dataset already ships this document."""
+    path = safe_document_path(doc_id, "dataset")
+    return path is not None and path.is_file()
+
+
+def store_document(doc_id: str, text: str) -> Path | None:
+    """Persist an uploaded document so later diagnosis/eval can resolve it.
+
+    Written to `data/documents/` (never the checked-in dataset) and atomically,
+    so a crash mid-write cannot leave a half document that a later read treats
+    as the real source text. The dataset always wins on lookup, so an upload
+    cannot shadow a labelled fixture.
+    """
+    if not is_valid_doc_id(doc_id) or not text:
+        return None
+
+    root = documents_dir("uploads")
+    root.mkdir(parents=True, exist_ok=True)
+    target = _contained(root / f"{doc_id}.txt", root)
+    if target is None:
+        return None
+
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=root, prefix=f".{doc_id}.", suffix=".tmp", delete=False
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            tmp.write(text)
+        os.replace(tmp_path, target)
+    except OSError:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+        return None
+    return target
+
+
+def document_text_from_trace(trace: Trace) -> str:
+    """Recover the source text from a trace's own intake span.
+
+    The intake span records the normalized text the pipeline actually saw, so a
+    trace whose document file is gone (an upload on an ephemeral disk, an eval
+    case from before uploads were persisted) is still analyzable.
+    """
+    for span in trace.spans:
+        if span.step_name != "intake":
+            continue
+        try:
+            payload = json.loads(span.output_json or "{}")
+        except ValueError:
+            return ""
+        if isinstance(payload, dict):
+            cleaned = payload.get("cleaned_text")
+            if isinstance(cleaned, str):
+                return cleaned
+        return ""
+    return ""
+
+
+def resolve_document_text(trace: Trace) -> str:
+    """Best available source text for `trace`: file first, intake span second."""
+    return read_document(trace.document_id) or document_text_from_trace(trace)
+
+
+__all__ = [
+    "DOC_ID_PATTERN",
+    "DOC_ID_REGEX",
+    "document_text_from_trace",
+    "documents_dir",
+    "has_dataset_document",
+    "is_valid_doc_id",
+    "read_document",
+    "resolve_document_text",
+    "safe_document_path",
+    "store_document",
+]

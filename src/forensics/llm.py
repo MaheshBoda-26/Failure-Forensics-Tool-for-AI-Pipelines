@@ -7,9 +7,13 @@ fallback and both plain and reasoning-model response shapes.
 """
 
 import asyncio
+import contextlib
+import contextvars
 import hashlib
 import json
+import os
 import re
+import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Generator
 from contextlib import asynccontextmanager, contextmanager
@@ -322,7 +326,19 @@ class ResponseCache:
 
 
 class SpendTracker:
-    """Tracks per-run and global spend, enforces caps."""
+    """Tracks per-run and global spend, enforces caps.
+
+    Two pieces of state with different scoping:
+
+    * **Per-run spend** lives in a `ContextVar`, so concurrent pipeline runs on
+      one client (an `asyncio.gather` batch, two requests in the API) each see
+      their own total. A shared attribute meant one run reset another's counter
+      and both runs' costs added up against a single per-run cap.
+    * **Global spend** is a file on disk, updated under a file lock with a
+      read-modify-write. Writing the in-memory total over the file lost every
+      concurrent update; loading the file only at `__init__` meant a long-lived
+      process never saw spend recorded by its peers.
+    """
 
     def __init__(
         self,
@@ -334,8 +350,13 @@ class SpendTracker:
         self.cap_global_usd = cap_global_usd
         self.spend_file = spend_file or Path("data/spend.json")
         self.spend_file.parent.mkdir(parents=True, exist_ok=True)
-        self._run_spend_usd = 0.0
+        # A per-instance ContextVar: two trackers in one process must not share
+        # a run counter.
+        self._run_spend: contextvars.ContextVar[float] = contextvars.ContextVar(
+            f"spend_run_{id(self)}", default=0.0
+        )
         self._global_spend_usd = self._load_global_spend()
+        self._lock = threading.Lock()
         # Per-step attribution. `judge` is the tag the operator cares about:
         # judge calls are optional and semantic, so their cost has to be
         # separable from the pipeline's own spend.
@@ -351,20 +372,59 @@ class SpendTracker:
                 return 0.0
         return 0.0
 
-    def _save_global_spend(self) -> None:
+    @contextlib.contextmanager
+    def _ledger_lock(self) -> Generator[None, None, None]:
+        """Exclusive advisory lock across threads *and* processes."""
+        lock_path = self.spend_file.with_name(f"{self.spend_file.name}.lock")
         try:
-            with open(self.spend_file, "w") as f:
-                json.dump({"global_spend_usd": self._global_spend_usd}, f)
-        except Exception:
-            pass
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        except OSError:
+            yield
+            return
+
+        try:
+            try:
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            except (ImportError, OSError):
+                # No advisory locking (Windows, exotic filesystem): the thread
+                # lock in `check_and_add` still serializes this process.
+                pass
+            yield
+        finally:
+            try:
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except (ImportError, OSError):
+                pass
+            os.close(fd)
+
+    def _write_global_spend(self, value: float) -> None:
+        """Atomically replace the ledger so a crash cannot truncate it."""
+        tmp_path = self.spend_file.with_name(f".{self.spend_file.name}.{os.getpid()}.tmp")
+        try:
+            tmp_path.write_text(json.dumps({"global_spend_usd": value}))
+            os.replace(tmp_path, self.spend_file)
+        except OSError:
+            tmp_path.unlink(missing_ok=True)
+
+    def begin_run(self) -> contextvars.Token[float]:
+        """Start a run in the current context and return a token for `end_run`."""
+        return self._run_spend.set(0.0)
+
+    def end_run(self, token: contextvars.Token[float]) -> None:
+        """Restore the previous run counter (nested runs stay independent)."""
+        self._run_spend.reset(token)
 
     def reset_run(self) -> None:
         """Reset per-run spend counter."""
-        self._run_spend_usd = 0.0
+        self._run_spend.set(0.0)
 
     @property
     def run_spend_usd(self) -> float:
-        return self._run_spend_usd
+        return self._run_spend.get()
 
     @property
     def global_spend_usd(self) -> float:
@@ -373,7 +433,8 @@ class SpendTracker:
     @property
     def step_spend_usd(self) -> dict[str, float]:
         """Cost attributed to each tagged step (e.g. ``{"judge": 0.012}``)."""
-        return dict(self._step_spend_usd)
+        with self._lock:
+            return dict(self._step_spend_usd)
 
     def check_and_add(self, cost_usd: float, step: str = "") -> None:
         """Check caps and add cost. Raises SpendCapExceededError if exceeded.
@@ -383,23 +444,24 @@ class SpendTracker:
         the global total under-report actual spend — exactly the number the cap
         exists to protect.
         """
-        self._run_spend_usd += cost_usd
-        self._global_spend_usd += cost_usd
-        if step:
-            self._step_spend_usd[step] = self._step_spend_usd.get(step, 0.0) + cost_usd
-        self._save_global_spend()
+        run_total = self._run_spend.get() + cost_usd
+        self._run_spend.set(run_total)
 
-        if self._run_spend_usd > self.cap_per_run_usd:
-            msg = (
-                f"Per-run spend cap exceeded: "
-                f"${self._run_spend_usd:.4f} > ${self.cap_per_run_usd:.2f}"
-            )
+        with self._lock:
+            if step:
+                self._step_spend_usd[step] = self._step_spend_usd.get(step, 0.0) + cost_usd
+            with self._ledger_lock():
+                # Re-read under the lock so a peer process's write since our
+                # last load is preserved instead of overwritten.
+                global_total = self._load_global_spend() + cost_usd
+                self._global_spend_usd = global_total
+                self._write_global_spend(global_total)
+
+        if run_total > self.cap_per_run_usd:
+            msg = f"Per-run spend cap exceeded: ${run_total:.4f} > ${self.cap_per_run_usd:.2f}"
             raise SpendCapExceededError(msg, "per_run")
-        if self._global_spend_usd > self.cap_global_usd:
-            msg = (
-                f"Global spend cap exceeded: "
-                f"${self._global_spend_usd:.4f} > ${self.cap_global_usd:.2f}"
-            )
+        if global_total > self.cap_global_usd:
+            msg = f"Global spend cap exceeded: ${global_total:.4f} > ${self.cap_global_usd:.2f}"
             raise SpendCapExceededError(msg, "global")
 
 
@@ -1032,7 +1094,22 @@ class NIMClient:
             return await self.structured(
                 primary, prompt, response_model, system, prompt_version, step, document_id
             )
-        except (RateLimitError, ServerError, ModelNotFoundError):
+        except QuotaExhaustedError:
+            # Deliberately first: it subclasses RateLimitError, and the whole
+            # point of the class is that the *shared* NIM worker quota is spent.
+            # Falling back to a different model still burns that quota, so the
+            # fallback would make the failure slower and more expensive.
+            raise
+        except (
+            RateLimitError,
+            ServerError,
+            ModelNotFoundError,
+            # A timeout/connection reset and a schema-invalid reply are both
+            # reasons to try the other model. Omitting them meant a transport
+            # blip skipped the fallback entirely.
+            TransportError,
+            StructuredOutputError,
+        ):
             if fallback.model_id == primary.model_id:
                 # Re-requesting the same weights cannot succeed where the first
                 # attempt failed. On NIM's free tier it actively hurts: a 503
@@ -1089,12 +1166,16 @@ class LLMClient:
 
     @contextmanager
     def run_spend(self) -> Generator[None, None, None]:
-        """Context manager to track spend for a single pipeline run."""
-        self.nim.spend_tracker.reset_run()
+        """Track spend for exactly one pipeline run, in this context.
+
+        The counter is task-local (a `ContextVar`) and restored on exit, so two
+        runs sharing one client cannot reset or pool their per-run totals.
+        """
+        token = self.nim.spend_tracker.begin_run()
         try:
             yield
         finally:
-            pass  # Spend is tracked incrementally
+            self.nim.spend_tracker.end_run(token)
 
     def _get_step_prompt(self, step: str, input_data: dict[str, Any]) -> tuple[str, str | None]:
         """Get prompt and system message for a pipeline step.

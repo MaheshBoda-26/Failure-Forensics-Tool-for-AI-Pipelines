@@ -37,9 +37,10 @@ Known gaps, stated plainly:
 
 - Python 3.12 (pinned in `pyproject.toml`; `uv` manages the venv). 3.13 is not
   supported yet.)
-- Node.js 18+ (for the React frontend)
+- Node.js 20.19+ or 22.12+ (for the React frontend — `vite@8` and
+  `@rolldown/*` declare `"node": "^20.19.0 || >=22.12.0"`)
 - An NVIDIA NIM API key in `.env` (copy `.env.example`) — *not required for demo
-  mode, which runs offline*
+  mode with `DRY_RUN=true`, which runs fully offline*
 
 ## Quickstart
 
@@ -52,10 +53,14 @@ make check                  # ruff + mypy strict + pytest
 
 ## Demo (No API Key Required)
 
+`DRY_RUN=true` reproduces the five seeded failures from the checked-in dataset
+without a credential or a network call. Without it, `demo` calls the real model
+and therefore needs `NVIDIA_API_KEY`.
+
 ```bash
-python -m forensics.cli demo                 # all 15 documents, with tracing
+DRY_RUN=true python -m forensics.cli demo    # all 15 documents, offline
 python -m forensics.cli validate-dataset     # dataset integrity
-python -m forensics.cli run dataset/documents/contract_001.txt
+DRY_RUN=true python -m forensics.cli run dataset/documents/contract_001.txt
 python -m forensics.cli analytics
 make run-web                                 # React UI + API
 ```

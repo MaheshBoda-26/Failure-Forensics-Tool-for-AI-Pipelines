@@ -20,6 +20,12 @@ import {
   CheckCircle2,
 } from "lucide-react";
 
+/** A trace failed when the run errored *or* its diagnosis blames a step. */
+function isFailedTrace(trace: Trace): boolean {
+  if (trace.status === "failure") return true;
+  return !!trace.root_cause_step && trace.root_cause_step !== "none";
+}
+
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<NavTab>("home");
   const [traces, setTraces] = useState<Trace[]>([]);
@@ -98,8 +104,11 @@ export const App: React.FC = () => {
       const matchesSearch =
         t.trace_id.toLowerCase().includes(searchFilter.toLowerCase()) ||
         t.document_id.toLowerCase().includes(searchFilter.toLowerCase());
+      // A seeded failure completes its run without raising, so `status` is
+      // "success" while the diagnosis blames a step. Both signals count.
+      const isFailure = isFailedTrace(t);
       const matchesStatus =
-        statusFilter === "all" || t.status.toLowerCase() === statusFilter.toLowerCase();
+        statusFilter === "all" || (statusFilter === "failure" ? isFailure : !isFailure);
       return matchesSearch && matchesStatus;
     });
   }, [traces, searchFilter, statusFilter]);
@@ -511,7 +520,7 @@ export const App: React.FC = () => {
                 ) : (
                   filteredTraces.map((t) => {
                     const isSelected = t.trace_id === selectedTrace?.trace_id;
-                    const isFail = t.status === "failure";
+                    const isFail = isFailedTrace(t);
                     return (
                       <div
                         key={t.trace_id}
@@ -537,15 +546,15 @@ export const App: React.FC = () => {
                               color: isFail ? "var(--color-cinnabar)" : "var(--color-copper)",
                             }}
                           >
-                            ● {t.status}
+                            ● {isFail ? "failure" : t.status}
                           </span>
                         </div>
                         <div style={{ fontSize: "12px", color: "var(--color-ink-2)", marginTop: "2px" }}>
                           {t.document_id}.txt
                         </div>
                         <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "var(--color-ink-3)", marginTop: "6px", fontFamily: "var(--font-mono)" }}>
-                          <span>{t.spans?.length || 4} spans</span>
-                          <span>{t.total_latency_ms ? `${Math.round(t.total_latency_ms)}ms` : "1,247ms"}</span>
+                          <span>{t.spans?.length ?? 0} spans</span>
+                          <span>{t.total_latency_ms != null ? `${Math.round(t.total_latency_ms)}ms` : "—"}</span>
                         </div>
                       </div>
                     );

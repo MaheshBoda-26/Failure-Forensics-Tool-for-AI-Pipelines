@@ -53,6 +53,13 @@ export interface Trace {
   completed_at: string | null;
   total_tokens: number;
   total_cost_usd: number;
+  /**
+   * Root cause of the latest diagnosis, when one exists. `null` means "not
+   * diagnosed"; `"none"` means "diagnosed clean". The run `status` alone cannot
+   * express a semantic failure: the pipeline completes successfully while the
+   * output is wrong.
+   */
+  root_cause_step?: string | null;
 }
 
 export interface StepScore {
@@ -102,6 +109,20 @@ export interface EvalRun {
   total_cases: number;
   passed_count: number;
   failed_count: number;
+}
+
+/**
+ * Body of `POST /eval/run`. It is a summary of the run that was just executed,
+ * not an `EvalRun`: the endpoint returns counts directly, and `run_id` is null
+ * when the suite is empty and no run was created.
+ */
+export interface EvalRunSummary {
+  status: "ok" | "empty";
+  run_id: string | null;
+  total_cases: number;
+  passed_count: number;
+  failed_count: number;
+  current_accuracy: number;
 }
 
 export interface Flag {

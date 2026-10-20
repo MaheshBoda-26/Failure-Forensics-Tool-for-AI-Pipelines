@@ -277,75 +277,80 @@ def traced_step(step_name: str) -> Callable[[F], F]:
             started_at = _utc_now()
             input_data = _span_payload(args, kwargs)
 
+            # The span object is created up front and published as the current
+            # span, so work *inside* the step can see it. It used to be created
+            # only on completion and then left in the context: `get_current_span`
+            # returned the previous, already-finished span for the whole of the
+            # next step, and the last one never cleared.
+            span = Span(
+                span_id=_new_id(),
+                trace_id=trace.trace_id,
+                # Inherit the trace's tenant. Omitting this defaulted every
+                # span to "default" even when its trace belonged to tenant A,
+                # so the JSON and the `spans` table disagreed with the trace
+                # about ownership.
+                tenant_id=trace.tenant_id,
+                step_name=step_name,
+                input_json=json.dumps(input_data, default=_safe_repr),
+                # Placeholders; `record` fills these in when the step returns.
+                output_json="{}",
+                model_id="n/a",
+                provider="n/a",
+                prompt="",
+                raw_response="",
+                latency_ms=0,
+                status="success",
+                # Bracket the actual work: started_at is captured before the
+                # step runs, not when the span is written.
+                started_at=started_at,
+            )
+            token = _current_span.set(span)
+
             def record(elapsed_ms: int, result: Any, error: str | None) -> None:
-                status = "failure" if error else "success"
-                output_json = _serialize_payload(result)
+                span.status = "failure" if error else "success"
+                span.latency_ms = elapsed_ms
+                span.error = error
+                span.output_json = _serialize_payload(result)
+                span.ended_at = _utc_now()
 
                 # Consume whatever the step published. A step that raises after
                 # a successful LLM call still reports failure, but the model and
                 # token counts stay attached so the cost is not lost.
                 telemetry = _take_telemetry()
                 if telemetry is None:
-                    model_id, provider = "n/a", "n/a"
-                    prompt, raw_response = f"Step: {step_name}", output_json
-                    prompt_tokens = completion_tokens = reasoning_tokens = 0
-                    confidence: int | None = None
+                    span.model_id, span.provider = "n/a", "n/a"
+                    span.prompt = f"Step: {step_name}"
+                    span.raw_response = span.output_json
+                    span.prompt_tokens = span.completion_tokens = span.reasoning_tokens = 0
                 else:
-                    model_id, provider = telemetry.model_id, telemetry.provider
-                    prompt = telemetry.prompt
-                    raw_response = telemetry.raw_response or output_json
-                    prompt_tokens = telemetry.prompt_tokens
-                    completion_tokens = telemetry.completion_tokens
-                    reasoning_tokens = telemetry.reasoning_tokens
-                    confidence = telemetry.confidence
+                    span.model_id, span.provider = telemetry.model_id, telemetry.provider
+                    span.prompt = telemetry.prompt
+                    span.raw_response = telemetry.raw_response or span.output_json
+                    span.prompt_tokens = telemetry.prompt_tokens
+                    span.completion_tokens = telemetry.completion_tokens
+                    span.reasoning_tokens = telemetry.reasoning_tokens
+                    if telemetry.confidence is not None:
+                        span.confidence = telemetry.confidence
 
-                span = Span(
-                    span_id=_new_id(),
-                    trace_id=trace.trace_id,
-                    # Inherit the trace's tenant. Omitting this defaulted every
-                    # span to "default" even when its trace belonged to tenant A,
-                    # so the JSON and the `spans` table disagreed with the trace
-                    # about ownership.
-                    tenant_id=trace.tenant_id,
-                    step_name=step_name,
-                    input_json=json.dumps(input_data, default=_safe_repr),
-                    output_json=output_json,
-                    model_id=model_id,
-                    provider=provider,
-                    prompt=prompt,
-                    raw_response=raw_response,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    reasoning_tokens=reasoning_tokens,
-                    latency_ms=elapsed_ms,
-                    status=status,  # type: ignore[arg-type]
-                    error=error,
-                    # Bracket the actual work: started_at is captured before the
-                    # step runs, not when the span is written. Setting both here
-                    # made every span report ~0 duration in its timestamps while
-                    # latency_ms held the real value, which invalidated all
-                    # time-to-detection / time-to-root-cause metrics and made
-                    # `ORDER BY started_at` unreliable on DB round-trip.
-                    started_at=started_at,
-                    ended_at=_utc_now(),
-                )
-                if confidence is not None:
-                    span.confidence = confidence
                 trace.spans.append(span)
-                _current_span.set(span)
 
             # Fast path: an async step is detected BEFORE running it, so the
             # span brackets the awaited work instead of the coroutine creation.
             if inspect.iscoroutinefunction(func):
-                return _await_and_record(func(*args, **kwargs), trace, record, started_at)
+                return _await_and_record(func(*args, **kwargs), trace, record, started_at, token)
 
             try:
-                result = func(*args, **kwargs)
-            except Exception as e:
-                record(int((time.perf_counter() - start_time) * 1000), None, str(e))
-                raise
-            record(int((time.perf_counter() - start_time) * 1000), result, None)
-            return result
+                try:
+                    result = func(*args, **kwargs)
+                except Exception as e:
+                    record(int((time.perf_counter() - start_time) * 1000), None, str(e))
+                    raise
+                record(int((time.perf_counter() - start_time) * 1000), result, None)
+                return result
+            finally:
+                # Always restore the previous span, even if `record` itself
+                # fails, so one broken span cannot poison every later step.
+                _current_span.reset(token)
 
         return wrapper  # type: ignore[return-value]
 
@@ -357,20 +362,26 @@ async def _await_and_record(
     trace: Trace,
     record: Callable[[int, Any, str | None], None],
     started_at: datetime,
+    token: contextvars.Token[Span | None] | None = None,
 ) -> Any:
     """Await an async traced step and record exactly one span for it.
 
     `started_at` is captured by the sync wrapper before the coroutine is created,
-    so the recorded span brackets the awaited work.
+    so the recorded span brackets the awaited work. The context token is reset
+    here because only this coroutine can run its `finally`.
     """
     start_time = time.perf_counter()
     try:
-        result = await awaitable
-    except Exception as e:
-        record(int((time.perf_counter() - start_time) * 1000), None, str(e))
-        raise
-    record(int((time.perf_counter() - start_time) * 1000), result, None)
-    return result
+        try:
+            result = await awaitable
+        except Exception as e:
+            record(int((time.perf_counter() - start_time) * 1000), None, str(e))
+            raise
+        record(int((time.perf_counter() - start_time) * 1000), result, None)
+        return result
+    finally:
+        if token is not None:
+            _current_span.reset(token)
 
 
 def _span_cost_usd(span: Span) -> float:
@@ -617,6 +628,11 @@ def write_trace_to_db(trace: Trace, conn: sqlite3.Connection) -> None:
             trace.tenant_id,
         ),
     )
+
+    # Re-saving a trace (a retried step, a re-analysis) generates fresh span ids,
+    # so `INSERT OR REPLACE` alone left the previous rows behind as orphans that
+    # inflated span counts and duplicate check results.
+    conn.execute("DELETE FROM spans WHERE trace_id = ?", (trace.trace_id,))
 
     for span in trace.spans:
         conn.execute(

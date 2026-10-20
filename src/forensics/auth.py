@@ -7,9 +7,10 @@ exists exactly once, in the return value of `create_api_key`.
 
 Design notes:
 
-* Keys are looked up by `prefix` (the first 12 characters, e.g. `ffk_abc123def`)
-  rather than by scanning every row, so validating a key costs one indexed read
-  plus one bcrypt comparison regardless of how many tenants exist.
+* Keys are looked up by `prefix` (the configured prefix plus 8 characters of
+  the key's own randomness, e.g. `ffk_abc123def`) rather than by scanning every
+  row, so validating a key costs one indexed read plus one bcrypt comparison
+  regardless of how many tenants exist.
 * Bcrypt refuses inputs longer than 72 bytes. A caller-supplied
   `Authorization` header is attacker-controlled, so an over-long key is rejected
   before it reaches bcrypt instead of raising a 500.
@@ -21,6 +22,7 @@ Design notes:
 
 import secrets
 from datetime import UTC, datetime
+from typing import Any
 
 import bcrypt
 
@@ -31,8 +33,25 @@ from forensics.storage import Storage
 #: Our own keys are ~36 characters; this bound only ever rejects hostile input.
 _MAX_KEY_BYTES = 200
 
-#: Characters of the key retained for identification (`ffk_` + 8 chars).
-_PREFIX_CHARS = 12
+#: Characters of key entropy retained for identification, on top of the
+#: configured prefix. Eight URL-safe characters is 48 bits of distinguishing
+#: power, which makes a collision between two live keys negligible while
+#: keeping the identifying prefix short enough to display.
+_PREFIX_ENTROPY_CHARS = 8
+
+
+def _key_prefix(raw_key: str, configured_prefix: str) -> str:
+    """The identification prefix for `raw_key`.
+
+    Built from the configured prefix *plus* eight characters of the key's own
+    entropy rather than a fixed 12-character slice. A fixed slice made every
+    key share the same prefix whenever `AUTH_API_KEY_PREFIX` was 12 characters
+    or longer (`ffk_prod_env_`), so only the first key minted could ever
+    authenticate: lookup fetched that one row, and bcrypt rejected every other
+    key.
+    """
+    length = len(configured_prefix) + _PREFIX_ENTROPY_CHARS
+    return raw_key[:length]
 
 
 class AuthManager:
@@ -130,7 +149,7 @@ class AuthManager:
             key_id=secrets.token_hex(6),
             tenant_id=tenant_id,
             key_hash=key_hash,
-            prefix=raw_key[:_PREFIX_CHARS],
+            prefix=_key_prefix(raw_key, self.prefix),
             name=name,
         )
         with self.storage._conn() as conn:
@@ -164,22 +183,31 @@ class AuthManager:
         with self.storage._conn() as conn:
             cursor = conn.execute(
                 "SELECT * FROM api_keys WHERE prefix = ? AND revoked_at IS NULL",
-                (raw_key[:_PREFIX_CHARS],),
+                (_key_prefix(raw_key, self.prefix),),
             )
-            row = cursor.fetchone()
-            if not row:
+            rows = cursor.fetchall()
+            if not rows:
                 return None
             cols = [d[0] for d in cursor.description]
-            data = dict(zip(cols, row, strict=False))
 
-            try:
-                matched = bcrypt.checkpw(raw_key.encode(), str(data["key_hash"]).encode())
-            except ValueError:
-                # A malformed stored hash is a data problem, not a valid key.
-                return None
-            if not matched:
+            # More than one row is not expected with the entropy-bearing prefix
+            # above, but a database written by an older build can still hold
+            # keys that share one. Checking every candidate is what makes those
+            # keys keep working instead of silently 401ing.
+            matched_row: tuple[Any, ...] | None = None
+            for row in rows:
+                candidate = dict(zip(cols, row, strict=False))
+                try:
+                    if bcrypt.checkpw(raw_key.encode(), str(candidate["key_hash"]).encode()):
+                        matched_row = row
+                        break
+                except ValueError:
+                    # A malformed stored hash is a data problem, not a valid key.
+                    continue
+            if matched_row is None:
                 return None
 
+            data = dict(zip(cols, matched_row, strict=False))
             used_at = datetime.now(UTC).isoformat()
             conn.execute(
                 "UPDATE api_keys SET last_used_at = ? WHERE key_id = ?",

@@ -23,7 +23,9 @@ export const DAGGraphView: React.FC<DAGGraphViewProps> = ({ trace, diagnosis }) 
     // Order: intake, extraction, classification, summarization
     const stepOrder = ["intake", "extraction", "classification", "summarization"];
 
-    return trace.spans
+    // Copy before sorting: `.sort` mutates in place, and mutating the
+    // `trace.spans` prop during render reorders the parent's data.
+    return [...trace.spans]
       .sort((a, b) => stepOrder.indexOf(a.step_name) - stepOrder.indexOf(b.step_name))
       .map((span, idx) => {
         const stepScore = stepScoresMap.get(span.step_name);

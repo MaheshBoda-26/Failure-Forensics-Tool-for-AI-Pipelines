@@ -11,6 +11,7 @@ Features:
 - Evidence chain display
 """
 
+import html
 import itertools
 import json
 from pathlib import Path
@@ -19,7 +20,8 @@ from typing import Any
 import plotly.graph_objects as go
 import streamlit as st
 
-from forensics.analyzer_simple import analyze_trace
+from forensics.analyzer_simple import analyze_trace, text_contains_entity
+from forensics.documents import read_document
 from forensics.eval_simple import create_eval_cases_from_confirmed_flags
 from forensics.models import FailureCategory, Flag, Trace
 from forensics.storage import Storage
@@ -184,9 +186,13 @@ def safe_json_loads(json_str: str) -> dict:
 
 
 def load_doc_text(doc_id: str) -> str:
-    """Load document text from disk."""
-    doc_path = Path(f"dataset/documents/{doc_id}.txt")
-    return doc_path.read_text() if doc_path.exists() else ""
+    """Load a document's text, dataset first then API uploads.
+
+    Goes through `forensics.documents`, which validates the id and contains the
+    resolved path, so a trace carrying `doc_id="../../etc/passwd"` cannot read
+    the host filesystem through this viewer.
+    """
+    return read_document(doc_id) or ""
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -338,14 +344,23 @@ def render_diff(expected: Any, actual: Any) -> None:
         st.markdown("**Expected**")
         for typ, text in diffs:
             if typ == "removed":
-                st.markdown(f"<span class='diff-removed'>{text}</span>", unsafe_allow_html=True)
+                # `text` is document/model output. Escaped before interpolation:
+                # `unsafe_allow_html` makes an unescaped value script execution
+                # in the viewer's browser.
+                st.markdown(
+                    f"<span class='diff-removed'>{html.escape(text)}</span>",
+                    unsafe_allow_html=True,
+                )
             elif typ == "equal":
                 st.text(text)
     with col2:
         st.markdown("**Actual**")
         for typ, text in diffs:
             if typ == "added":
-                st.markdown(f"<span class='diff-added'>{text}</span>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<span class='diff-added'>{html.escape(text)}</span>",
+                    unsafe_allow_html=True,
+                )
             elif typ == "equal":
                 st.text(text)
 
@@ -366,7 +381,8 @@ def render_span_detail(span, step_scores: list, doc_text: str) -> None:
     col1, col2, col3 = st.columns([4, 1, 1])
     with col1:
         st.markdown(
-            f'<div class="{css_class}">{icon} <strong>{span.step_name.title()}</strong></div>',
+            f'<div class="{css_class}">{icon} '
+            f"<strong>{html.escape(span.step_name.title())}</strong></div>",
             unsafe_allow_html=True,
         )
     with col2:
@@ -422,7 +438,10 @@ def render_span_detail(span, step_scores: list, doc_text: str) -> None:
     if score and score.evidence:
         with st.expander("🔍 Evidence Chain", expanded=True):
             for ev in score.evidence:
-                st.markdown(f'<div class="evidence-item">• {ev}</div>', unsafe_allow_html=True)
+                st.markdown(
+                    f'<div class="evidence-item">• {html.escape(str(ev))}</div>',
+                    unsafe_allow_html=True,
+                )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -489,7 +508,11 @@ def render_diff_view(trace: Trace, doc_text: str, labels: dict) -> None:
                         start = getattr(ent, "start_offset", "")
                         end = getattr(ent, "end_offset", "")
 
-                    in_doc = val in doc_text
+                    # Same grounding rule as the analyzer (exact, then
+                    # case/whitespace-insensitive): a strict membership test
+                    # marked entities ❌ in the diff view that had passed
+                    # extraction grounding.
+                    in_doc = text_contains_entity(str(val), doc_text)
                     status = "✅" if in_doc else "❌"
                     st.write(f"{status} **{val}** ({typ}) [{start}:{end}]")
 
@@ -553,7 +576,10 @@ def render_flag_interface(trace: Trace, diagnosis, storage: Storage, doc_text: s
 
             with st.expander("📋 Evidence Chain", expanded=True):
                 for ev in diagnosis.evidence_chain:
-                    st.markdown(f'<div class="evidence-item">• {ev}</div>', unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div class="evidence-item">• {html.escape(str(ev))}</div>',
+                        unsafe_allow_html=True,
+                    )
 
             # Confirm/Override
             st.divider()

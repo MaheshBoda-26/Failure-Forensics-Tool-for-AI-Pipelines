@@ -8,7 +8,7 @@ file and index.
 
 import sqlite3
 from collections.abc import Generator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -307,6 +307,37 @@ class Storage:
                 return None
         return self.load_trace(trace_id)
 
+    def latest_root_cause_steps(
+        self, trace_ids: list[str], tenant_id: str | None = None
+    ) -> dict[str, str]:
+        """`trace_id -> root_cause_step` for the latest diagnosis of each trace.
+
+        One query for a whole listing: the alternative (one diagnosis lookup per
+        trace) turns listing 100 traces into 101 round trips, and the sidebar
+        needs the verdict for every row to tell a semantic failure from a clean
+        run.
+        """
+        if not trace_ids:
+            return {}
+
+        placeholders = ",".join("?" for _ in trace_ids)
+        sql = (
+            "SELECT trace_id, root_cause_step, created_at FROM diagnoses "
+            f"WHERE trace_id IN ({placeholders})"
+        )
+        params: list[Any] = list(trace_ids)
+        if tenant_id is not None:
+            sql += " AND tenant_id = ?"
+            params.append(tenant_id)
+        # Newest first, so the first row seen per trace is the current verdict.
+        sql += " ORDER BY created_at DESC"
+
+        verdicts: dict[str, str] = {}
+        with self._conn() as conn:
+            for trace_id, root_cause_step, _created_at in conn.execute(sql, params):
+                verdicts.setdefault(trace_id, root_cause_step)
+        return verdicts
+
     # --- Flag operations ---
 
     def create_flag(self, flag: Flag) -> Flag:
@@ -510,33 +541,54 @@ class Storage:
         """
         import json
 
+        from forensics.pii import create_redactor_from_settings
+
         existing = self.find_eval_case(case.trace_id, case.failing_step, case.tenant_id)
         if existing is not None:
             return existing
 
-        with self._conn() as conn, suppress(sqlite3.IntegrityError):
-            # A concurrent writer may win the race; the unique index holds, so
-            # the case exists and is the one returned below.
-            conn.execute(
-                """
-                INSERT INTO eval_cases
-                (case_id, trace_id, failing_step, bad_output, corrected_output,
-                 category, created_at, pipeline_version, prompt_version, tenant_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-                (
-                    case.case_id,
-                    case.trace_id,
-                    case.failing_step,
-                    json.dumps(case.bad_output),
-                    json.dumps(case.corrected_output),
-                    case.category.value,
-                    case.created_at.isoformat(),
-                    case.pipeline_version,
-                    case.prompt_version,
-                    case.tenant_id,
-                ),
-            )
+        # Eval cases carry the failing model output and a derived correction —
+        # both copied from the trace — so they land under a different table with
+        # the same sensitive content. Scrub them at this boundary too, or
+        # enabling redaction still left the payloads in plaintext here.
+        bad_output = case.bad_output
+        corrected_output = case.corrected_output
+        redactor = create_redactor_from_settings()
+        if redactor.enabled:
+            bad_output, _ = redactor.redact_json(bad_output)
+            corrected_output, _ = redactor.redact_json(corrected_output)
+
+        try:
+            with self._conn() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO eval_cases
+                    (case_id, trace_id, failing_step, bad_output, corrected_output,
+                     category, created_at, pipeline_version, prompt_version, tenant_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                    (
+                        case.case_id,
+                        case.trace_id,
+                        case.failing_step,
+                        json.dumps(bad_output),
+                        json.dumps(corrected_output),
+                        case.category.value,
+                        case.created_at.isoformat(),
+                        case.pipeline_version,
+                        case.prompt_version,
+                        case.tenant_id,
+                    ),
+                )
+        except sqlite3.IntegrityError:
+            # A concurrent writer may win the race on the unique index; in that
+            # case the row already exists and is the one to return. Any other
+            # integrity failure (a missing parent trace, say) is a real error
+            # and must not be swallowed into "here is your unpersisted object".
+            existing = self.find_eval_case(case.trace_id, case.failing_step, case.tenant_id)
+            if existing is None:
+                raise
+            return existing
 
         return self.find_eval_case(case.trace_id, case.failing_step, case.tenant_id) or case
 

@@ -4,13 +4,15 @@ Turns confirmed flags into eval cases, re-runs the accumulated dataset against
 the current pipeline, and tracks whether known failures are still failing or fixed.
 """
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from forensics.analyzer_simple import analyze_trace
+from forensics.analyzer_simple import analyze_trace, text_contains_entity
 from forensics.config import get_settings
+from forensics.documents import resolve_document_text
 from forensics.models import (
     DEFAULT_TENANT_ID,
     Diagnosis,
@@ -83,22 +85,22 @@ def document_ground_truth(document_id: str) -> str | None:
     return None
 
 
-def _document_text_for_trace(storage: Storage, trace_id: str) -> str:
+def _document_text_for_trace(storage: Storage, trace_id: str, tenant_id: str | None = None) -> str:
     """Resolve the source document text for a trace.
 
     A case carries a trace id; the trace carries the document id. Resolving
-    through the trace is what makes the document lookup possible at all.
+    through the trace is what makes the document lookup possible at all, and
+    `resolve_document_text` covers both the labelled dataset and documents
+    uploaded through the API (which is why an uploaded trace is no longer
+    silently skipped by the eval loop).
     """
-    trace = storage.get_trace(trace_id)
+    trace = storage.get_trace(trace_id, tenant_id=tenant_id)
     if trace is None:
         return ""
-    doc_path = _dataset_dir() / "documents" / f"{trace.document_id}.txt"
-    if not doc_path.exists():
-        return ""
-    return doc_path.read_text()
+    return resolve_document_text(trace)
 
 
-def _corrected_output(bad_output: Any, document_id: str) -> dict[str, Any]:
+def _corrected_output(bad_output: Any, doc_text: str) -> dict[str, Any]:
     """Derive a corrected reference output from a failing one.
 
     `bad_output` is `Any` on purpose: a span's serialized output is whatever
@@ -116,10 +118,8 @@ def _corrected_output(bad_output: Any, document_id: str) -> dict[str, Any]:
     if not isinstance(bad_output, dict):
         return {"raw": bad_output, "_needs_golden": True}
     if "entities" in bad_output and isinstance(bad_output["entities"], list):
-        doc_path = _dataset_dir() / "documents" / f"{document_id}.txt"
-        if not doc_path.exists():
+        if not doc_text:
             return {**bad_output, "_needs_golden": True}
-        doc_text = doc_path.read_text()
         kept: list[Any] = []
         for entity in bad_output["entities"]:
             # Guard against malformed entries: a non-dict entity cannot be
@@ -127,7 +127,11 @@ def _corrected_output(bad_output: Any, document_id: str) -> dict[str, Any]:
             if not isinstance(entity, dict):
                 continue
             value = entity.get("value")
-            if isinstance(value, str) and value and value in doc_text:
+            # Same grounding rule as the analyzer: exact, then normalized
+            # case-insensitive. A case-sensitive comparison here dropped
+            # entities that had *passed* extraction grounding, so the reference
+            # output was wrong in the opposite direction.
+            if isinstance(value, str) and value and text_contains_entity(value, doc_text):
                 kept.append(entity)
         return {**bad_output, "entities": kept}
     return {**bad_output, "_needs_golden": True}
@@ -142,7 +146,7 @@ def flag_to_eval_case(flag: Flag, diagnosis: Diagnosis, storage: Storage) -> Eva
     golden file: when a human supplied an override_reason it is preserved in
     `corrected_output["_note"]` so the provenance is never lost.
     """
-    trace = storage.get_trace(flag.trace_id)
+    trace = storage.get_trace(flag.trace_id, tenant_id=flag.tenant_id)
     if not trace:
         return None
 
@@ -169,7 +173,7 @@ def flag_to_eval_case(flag: Flag, diagnosis: Diagnosis, storage: Storage) -> Eva
         return None
 
     # Build the corrected output deterministically from the bad output.
-    corrected_output = _corrected_output(bad_output, trace.document_id)
+    corrected_output = _corrected_output(bad_output, resolve_document_text(trace))
     if diagnosis.override_reason:
         corrected_output["_note"] = diagnosis.override_reason
 
@@ -215,13 +219,16 @@ async def run_eval_case(
 
     from forensics.tracing import trace_context
 
-    with trace_context(document_id=document_id) as ctx:
+    with trace_context(document_id=document_id, tenant_id=case.tenant_id) as ctx:
         await pipeline.run(doc, document_id=document_id)
         trace = ctx.trace
 
     assert trace is not None
 
-    diagnosis = analyze_trace(trace, doc_text, expected_type)
+    # `analyze_trace` does O(N·M) fuzzy matching, and the judge path blocks on a
+    # thread pool. Running it inline in the event loop stalled every other task
+    # (including the API's own requests when an eval ran in-process).
+    diagnosis = await asyncio.to_thread(analyze_trace, trace, doc_text, expected_type)
 
     # Fixed = the step that originally failed now passes the deterministic checks.
     step_score = next((s for s in diagnosis.step_scores if s.step_name == case.failing_step), None)
@@ -277,11 +284,11 @@ async def run_eval(tenant_id: str | None = None) -> EvalRun | None:
     results = []
 
     for case in cases:
-        trace = storage.get_trace(case.trace_id)
+        trace = storage.get_trace(case.trace_id, tenant_id=case.tenant_id)
         if trace is None:
             print(f"Warning: Trace {case.trace_id} is gone (case {case.case_id})")
             continue
-        doc_text = _document_text_for_trace(storage, case.trace_id)
+        doc_text = _document_text_for_trace(storage, case.trace_id, tenant_id=case.tenant_id)
         if not doc_text:
             print(f"Warning: No document text for trace {case.trace_id} (case {case.case_id})")
             continue
@@ -396,7 +403,7 @@ def create_eval_cases_from_confirmed_flags(tenant_id: str | None = None) -> int:
         if effective_step in ("", "none"):
             continue
 
-        doc_text = _document_text_for_trace(storage, trace.trace_id)
+        doc_text = _document_text_for_trace(storage, trace.trace_id, tenant_id=tenant_id)
         if not doc_text:
             print(f"Warning: no document text for trace {trace.trace_id}; skipping")
             continue
@@ -408,7 +415,7 @@ def create_eval_cases_from_confirmed_flags(tenant_id: str | None = None) -> int:
             continue
         seen.add(key)
 
-        flags = storage.list_flags_for_trace(trace.trace_id)
+        flags = storage.list_flags_for_trace(trace.trace_id, tenant_id=tenant_id)
         if not flags:
             print(f"Warning: confirmed diagnosis on trace {trace.trace_id} has no flag; skipping")
             continue

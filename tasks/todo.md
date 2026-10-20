@@ -180,3 +180,60 @@ More real defects found while doing this pass:
   react/lucide ranges) that disagreed with `package.json`. `npm install` resynced it; `npm ci` and
   `npm run build` now both work from a clean checkout, which the deploy build depends on.
 - `forensics ping`'s docstring promised a connectivity test it deliberately does not make.
+
+---
+
+# Review findings (2026-10-20) — security, runtime, logic, frontend
+
+Skills applied: `systematic-debugging` (root cause first), `verification-before-completion`
+(every claim re-run), `test-fixing` (suite green throughout).
+
+## Security
+- [x] Path traversal in document lookups — `forensics/documents.py` allowlist +
+      resolve-and-contain; applied to `api.py`, `eval_simple.py`, `streamlit_app.py`,
+      and as a pydantic `pattern` on `PipelineRunRequest.doc_id` / `Document.doc_id`
+- [x] Stored XSS in the Streamlit explorer — `html.escape` on diff text, step names, evidence
+- [x] API-key prefix collisions — prefix = configured prefix + 8 chars of key entropy;
+      validation iterates every candidate row
+- [x] `scripts/smoke.sh` — parsed field paths, no `eval()`; failure rate passed via `argv`
+- [x] CORS — `CORS_ORIGINS` setting, explicit origins, credentials never combined with `*`
+- [x] PII — `parse_custom_patterns` (startup rejects bad regex/non-list/missing keys; the
+      persistence path skips instead of crashing), `ffk_`/`sk-` key patterns, eval-case
+      payloads redacted in `Storage.create_eval_case`
+- [x] `ALERT_WEBHOOK_URL` — scheme + private/loopback/link-local validation at startup
+
+## Build & runtime
+- [x] `client.ts` `API_KEY_STORAGE` identifier (was `STORAGE_KEY` + undeclared use)
+- [x] Clean checkout: conftest seeds models/key + `SPEND_FILE`/`SCHEDULER_DB_PATH` under
+      `tmp_path`; judge tests assert configured ids; `DRY_RUN=true` builds Settings with no key
+- [x] `TraceDetailView` parses span payloads through a non-throwing helper
+- [x] Uploaded documents persisted to `data/documents/` and resolved by eval/diagnose
+      (plus intake-span fallback for pre-existing traces)
+- [x] README Node requirement matches `vite@8` (`^20.19 || >=22.12`) and documents `DRY_RUN`
+
+## Backend logic & concurrency
+- [x] `/eval/run` ignores `root_cause_step == "none"` when seeding
+- [x] Confirmation re-reads the row and only creates cases for confirmed, real failures
+- [x] Judge override takes evidence from the step it blamed
+- [x] Propagation check uses whole-word definitional markers; `mixed` exempt
+- [x] One grounding rule (`text_contains_entity`) across analyzer, eval repair, Streamlit
+- [x] `SpendTracker`: context-local per-run counter + locked read-modify-write ledger;
+      `analyze_trace` runs via `asyncio.to_thread` so it cannot block the loop
+- [x] `run_with_fallback` covers transport/schema errors and never retries quota exhaustion
+- [x] Tenant scoping in `eval_simple` and the scheduled-eval baseline
+- [x] `_current_span` reset after each step; spans deleted before a re-save
+
+## Frontend
+- [x] Override sends `confirmed: true`
+- [x] `POST /eval/run` typed as `EvalRunSummary`; empty suite returns `run_id: null`
+- [x] Sidebar/filter use the diagnosis verdict as well as run status
+- [x] `DAGGraphView` copies before sorting
+- [x] Fake metrics/banners removed (duration, tokens, cost, MTTR, pass rate, delta, `[FAIL]`)
+- [x] Vite proxy covers `/jobs` and `/scheduler`
+
+## Verification
+- [x] `ruff check` / `ruff format --check` / `mypy` clean
+- [x] `pytest` — 417 passed (27 new regression tests in `tests/test_review_findings.py`)
+- [x] `npm run build` (tsc + vite) exit 0
+- [x] `bash -n scripts/smoke.sh` + field-path smoke check
+- [x] `DRY_RUN=true forensics demo` — 15 traces, 5/5 seeded failures reproduced

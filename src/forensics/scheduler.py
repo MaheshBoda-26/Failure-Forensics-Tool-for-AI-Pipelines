@@ -33,7 +33,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from forensics.config import get_settings
 from forensics.eval_simple import run_eval
-from forensics.models import EvalRun
+from forensics.models import DEFAULT_TENANT_ID, EvalRun
 from forensics.storage import Storage
 
 logger = logging.getLogger(__name__)
@@ -210,8 +210,15 @@ class EvalScheduler:
                 logger.exception("Alert %s could not be delivered", alert["alert_type"])
 
     def _latest_completed_run(self) -> EvalRun | None:
-        """Most recent eval run that actually evaluated something."""
-        for run in self.storage.list_eval_runs(limit=10):
+        """Most recent eval run that actually evaluated something.
+
+        Scoped to the default tenant: scheduled runs are stamped with it, while
+        an ad-hoc run triggered by one tenant is stamped with that tenant's id.
+        Without the filter, a single tenant's small manual run became the
+        baseline for the instance-wide scheduled eval and produced bogus
+        regression alerts.
+        """
+        for run in self.storage.list_eval_runs(limit=10, tenant_id=DEFAULT_TENANT_ID):
             if run.total_cases > 0:
                 return run
         return None

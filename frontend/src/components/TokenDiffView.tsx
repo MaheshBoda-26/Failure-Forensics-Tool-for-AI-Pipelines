@@ -13,6 +13,7 @@ export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }
   const rootCauseSpan = rootCauseStep ? trace.spans.find(s => s.step_name === rootCauseStep) : trace.spans[2] || trace.spans[0];
   // NOTE: the backend does not expose a ground-truth document type yet; the API
   // is written so this can be wired to a real `expected_type` field later.
+  // Reporting "UNKNOWN" is honest; the previous banner claimed a diff count.
   const groundTruthType = "UNKNOWN";
 
   const parseJson = (jsonStr: string) => {
@@ -25,6 +26,15 @@ export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }
 
   const inputJson = rootCauseSpan ? parseJson(rootCauseSpan.input_json) : {};
   const outputJson = rootCauseSpan ? parseJson(rootCauseSpan.output_json) : {};
+
+  // The failure verdict, taken from the diagnosis rather than from the mere
+  // existence of a Diagnosis object (a passing trace has one too).
+  const hasRootCause = !!rootCauseStep && rootCauseStep !== "none";
+  const checks = diagnosis?.step_scores?.flatMap((step) =>
+    Object.values(step.deterministic_checks)
+  ) ?? [];
+  const failedChecks = checks.filter((passed) => !passed).length;
+  const passedChecks = checks.length - failedChecks;
 
   return (
     <div
@@ -58,10 +68,10 @@ export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }
 
         <div style={{ display: "flex", gap: "16px", fontFamily: "var(--font-mono)", fontSize: "11px" }}>
           <span style={{ color: "var(--color-copper)", display: "flex", alignItems: "center", gap: "4px" }}>
-            <Plus size={12} /> 1 ADDITION
+            <Plus size={12} /> {passedChecks} CHECK{passedChecks === 1 ? "" : "S"} PASSED
           </span>
           <span style={{ color: "var(--color-cinnabar)", display: "flex", alignItems: "center", gap: "4px" }}>
-            <Minus size={12} /> 1 ENUM VIOLATION
+            <Minus size={12} /> {failedChecks} FAILED
           </span>
         </div>
       </div>
@@ -120,7 +130,9 @@ export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }
 }, null, 2)}
           </pre>
           <div style={{ fontSize: "12px", color: "var(--color-ink-3)", lineHeight: 1.5 }}>
-            Ground truth requires document classification to match enum key <code>{groundTruthType || "UNKNOWN"}</code> with confidence above 0.70 grounded in text tokens.
+            The API does not expose a labelled ground truth for this document, so this
+            pane shows the pass criteria only. The actual classification and confidence
+            the pipeline produced are on the right.
           </div>
         </div>
 
@@ -141,7 +153,7 @@ export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }
           >
             <span>ACTUAL EXECUTION (TRACE {trace.trace_id})</span>
             <span style={{ backgroundColor: "var(--color-cinnabar-tint)", padding: "2px 6px", borderRadius: "2px" }}>
-              {diagnosis?.root_cause_step ? "ROOT CAUSE" : "BREAK DETECTED"}
+              {hasRootCause ? "ROOT CAUSE" : "NO FAILURE"}
             </span>
           </div>
 
@@ -165,12 +177,12 @@ export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }
   confidence: outputJson.confidence || 0,
   expected_entities: outputJson.entities || {},
   grounded_token_spans: outputJson.grounded_token_spans || [],
-  validation_status: diagnosis ? "SCHEMA_VIOLATION" : "VALID"
+  validation_status: hasRootCause ? "SCHEMA_VIOLATION" : "VALID"
 }, null, 2)}
           </pre>
           <div style={{ fontSize: "12px", color: "var(--color-cinnabar)", lineHeight: 1.5, fontWeight: 500 }}>
-            {diagnosis && diagnosis.root_cause_step !== "none"
-              ? `Root cause: ${diagnosis.category} at ${diagnosis.root_cause_step} (${(diagnosis.confidence * 100).toFixed(1)}% confidence)`
+            {hasRootCause
+              ? `Root cause: ${diagnosis?.category} at ${rootCauseStep} (${((diagnosis?.confidence ?? 0) * 100).toFixed(1)}% confidence)`
               : "No deterministic failure detected."}
           </div>
         </div>
