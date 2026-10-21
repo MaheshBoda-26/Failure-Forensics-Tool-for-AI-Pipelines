@@ -5,6 +5,7 @@ data/*.db
 data/*.db-*
 data/traces/*.json
 data/cache/
+data/documents/
 data/spend.json
 
 # Secrets

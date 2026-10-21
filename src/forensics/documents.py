@@ -25,7 +25,7 @@ import tempfile
 from pathlib import Path
 
 from forensics.config import get_settings
-from forensics.models import Trace
+from forensics.models import DEFAULT_TENANT_ID, Trace
 
 #: Allowlist for a document id. Deliberately excludes `.`, `/`, `\`, and any
 #: whitespace, so no id can express a path.
@@ -40,11 +40,34 @@ def is_valid_doc_id(doc_id: object) -> bool:
     return isinstance(doc_id, str) and DOC_ID_PATTERN.fullmatch(doc_id) is not None
 
 
-def documents_dir(kind: str = "dataset") -> Path:
-    """`dataset/documents` or `data/documents`, from settings."""
+def _tenant_component(tenant_id: str | None) -> str:
+    """A filename-safe tenant directory name.
+
+    Tenant ids are generated (`uuid4().hex[:12]`) or `default`, but the value can
+    reach here from a database row, so it is validated with the same allowlist a
+    document id uses. An invalid value lands in the default tenant rather than
+    becoming a path component.
+    """
+    if tenant_id and is_valid_doc_id(tenant_id):
+        return tenant_id
+    return DEFAULT_TENANT_ID
+
+
+def documents_dir(kind: str = "dataset", tenant_id: str | None = None) -> Path:
+    """`dataset/documents` or a tenant's upload directory, from settings.
+
+    Dataset documents are read-only fixtures and deliberately shared: they are
+    checked in and identical for every tenant. Uploads are namespaced by tenant
+    so two tenants submitting the same `doc_id` cannot overwrite each other's
+    source text — which previously let tenant B poison every later diagnosis of
+    tenant A's trace.
+    """
     settings = get_settings()
     base = settings.dataset_dir if kind == "dataset" else settings.data_dir
-    return Path(base) / "documents"
+    root = Path(base) / "documents"
+    if kind == "dataset":
+        return root
+    return root / _tenant_component(tenant_id)
 
 
 def contained_path(path: Path, root: Path) -> Path | None:
@@ -61,18 +84,41 @@ def contained_path(path: Path, root: Path) -> Path | None:
     return resolved if resolved.is_relative_to(resolved_root) else None
 
 
-def safe_document_path(doc_id: str, kind: str = "dataset") -> Path | None:
+def safe_document_path(
+    doc_id: str, kind: str = "dataset", tenant_id: str | None = None
+) -> Path | None:
     """Path for `doc_id` inside the documents directory, or None if unsafe."""
     if not is_valid_doc_id(doc_id):
         return None
-    root = documents_dir(kind)
+    root = documents_dir(kind, tenant_id)
     return contained_path(root / f"{doc_id}.txt", root)
 
 
-def read_document(doc_id: str) -> str | None:
-    """Read a document by id: dataset first, then the upload directory."""
-    for kind in ("dataset", "uploads"):
-        path = safe_document_path(doc_id, kind)
+def _flat_uploads_dir() -> Path:
+    """The pre-tenant-scoping flat upload directory (`data/documents`)."""
+    return Path(get_settings().data_dir) / "documents"
+
+
+def read_document(doc_id: str, tenant_id: str | None = None) -> str | None:
+    """Read a document by id: labelled dataset, then this tenant's uploads.
+
+    The legacy flat `data/documents/<doc_id>.txt` location is still consulted
+    for the default tenant so documents stored before tenant scoping remain
+    readable; a non-default tenant never falls back to it, because that is the
+    path that leaked another tenant's text.
+    """
+    if not is_valid_doc_id(doc_id):
+        return None
+
+    roots: list[Path] = [documents_dir("dataset")]
+    if tenant_id is None or tenant_id == DEFAULT_TENANT_ID:
+        roots.append(documents_dir("uploads", DEFAULT_TENANT_ID))
+        roots.append(_flat_uploads_dir())
+    else:
+        roots.append(documents_dir("uploads", tenant_id))
+
+    for root in roots:
+        path = contained_path(root / f"{doc_id}.txt", root)
         if path is not None and path.is_file():
             try:
                 return path.read_text()
@@ -87,18 +133,19 @@ def has_dataset_document(doc_id: str) -> bool:
     return path is not None and path.is_file()
 
 
-def store_document(doc_id: str, text: str) -> Path | None:
-    """Persist an uploaded document so later diagnosis/eval can resolve it.
+def store_document(doc_id: str, text: str, tenant_id: str | None = None) -> Path | None:
+    """Persist an uploaded document in the owning tenant's directory.
 
-    Written to `data/documents/` (never the checked-in dataset) and atomically,
-    so a crash mid-write cannot leave a half document that a later read treats
-    as the real source text. The dataset always wins on lookup, so an upload
-    cannot shadow a labelled fixture.
+    Written under `data/documents/<tenant_id>/` (never the checked-in dataset)
+    and atomically, so a crash mid-write cannot leave a half document that a
+    later read treats as the real source text. The dataset always wins on
+    lookup, so an upload cannot shadow a labelled fixture, and one tenant cannot
+    overwrite another tenant's upload.
     """
     if not is_valid_doc_id(doc_id) or not text:
         return None
 
-    root = documents_dir("uploads")
+    root = documents_dir("uploads", tenant_id)
     root.mkdir(parents=True, exist_ok=True)
     target = contained_path(root / f"{doc_id}.txt", root)
     if target is None:
@@ -142,8 +189,12 @@ def document_text_from_trace(trace: Trace) -> str:
 
 
 def resolve_document_text(trace: Trace) -> str:
-    """Best available source text for `trace`: file first, intake span second."""
-    return read_document(trace.document_id) or document_text_from_trace(trace)
+    """Best available source text for `trace`: file first, intake span second.
+
+    The lookup is scoped to the trace's own tenant, so a trace is never
+    evaluated against another tenant's document with the same id.
+    """
+    return read_document(trace.document_id, trace.tenant_id) or document_text_from_trace(trace)
 
 
 __all__ = [

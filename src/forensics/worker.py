@@ -28,6 +28,7 @@ from forensics.analyzer_simple import analyze_trace
 from forensics.documents import has_dataset_document, store_document
 from forensics.llm import using_llm_client
 from forensics.models import DEFAULT_TENANT_ID, Document
+from forensics.pii import create_redactor_from_settings
 from forensics.pipeline import Pipeline
 from forensics.queue import Job, JobQueue
 from forensics.storage import Storage
@@ -65,9 +66,19 @@ async def process_document(
     # Persist an uploaded document so `POST /traces/{id}/diagnose` and the eval
     # loop can resolve it later. Without this every trace created through
     # `POST /pipeline/run` answered 404 on diagnose and was silently skipped by
-    # the evaluator. Dataset documents are never copied or shadowed.
+    # the evaluator. Dataset documents are never copied or shadowed, and the
+    # upload lands in the owning tenant's directory so a same-named upload from
+    # another tenant cannot overwrite it.
+    #
+    # The file is redacted first when redaction is enabled: the JSON trace is
+    # scrubbed by `finalize_trace`, but this side file was written verbatim, so
+    # `PII_REDACTION_ENABLED=true` still left plaintext documents on disk.
     if not has_dataset_document(doc_id):
-        store_document(doc_id, doc_text)
+        persisted_text = doc_text
+        redactor = create_redactor_from_settings()
+        if redactor.enabled:
+            persisted_text, _ = redactor.redact(persisted_text)
+        store_document(doc_id, persisted_text, tenant_id=tenant_id)
 
     # Analyze *before* `save_trace`: finalize_trace redacts the trace in place
     # when PII_REDACTION_ENABLED is on, and an entity-grounding check run against

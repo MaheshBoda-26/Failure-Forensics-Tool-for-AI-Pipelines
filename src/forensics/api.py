@@ -528,7 +528,7 @@ async def trigger_pipeline_demo(
             # Validated, contained lookup: labels.json is trusted, but the same
             # helper keeps this path from disagreeing with the request path
             # about what a safe document id is.
-            doc_text = read_document(doc_id)
+            doc_text = read_document(doc_id, tenant.tenant_id)
             if not doc_text:
                 continue
             document = Document(content=doc_text)

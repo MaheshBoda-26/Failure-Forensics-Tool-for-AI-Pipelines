@@ -352,7 +352,18 @@ class Storage:
     # --- Flag operations ---
 
     def create_flag(self, flag: Flag) -> Flag:
-        """Create a new flag."""
+        """Create a new flag.
+
+        A flag note is free text typed by a human and can contain the very PII
+        the trace was scrubbed of, so it is redacted at this write boundary like
+        every other payload column.
+        """
+        from forensics.pii import create_redactor_from_settings
+
+        redactor = create_redactor_from_settings()
+        if redactor.enabled and flag.note:
+            flag.note, _ = redactor.redact(flag.note)
+
         with self._conn() as conn:
             conn.execute(
                 """
@@ -507,7 +518,20 @@ class Storage:
         override_category: str | None = None,
         override_reason: str | None = None,
     ) -> None:
-        """Update diagnosis confirmation status."""
+        """Update diagnosis confirmation status.
+
+        `override_reason` is human-authored free text and is redacted here for
+        the same reason `create_flag` redacts a note: the initial diagnosis was
+        scrubbed by `create_diagnosis`, and this later UPDATE used to write the
+        reason straight back into SQLite unscrubbed.
+        """
+        from forensics.pii import create_redactor_from_settings
+
+        if override_reason:
+            redactor = create_redactor_from_settings()
+            if redactor.enabled:
+                override_reason, _ = redactor.redact(override_reason)
+
         with self._conn() as conn:
             conn.execute(
                 """
