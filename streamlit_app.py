@@ -14,6 +14,7 @@ Features:
 import html
 import itertools
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -128,12 +129,40 @@ def load_traces(limit: int = 200) -> list:
 
 @st.cache_data(ttl=30)
 def load_labels() -> dict:
-    """Load ground truth labels."""
-    labels_path = Path("dataset/labels.json")
+    """Load ground truth labels from the configured dataset directory.
+
+    A hardcoded `Path("dataset/labels.json")` silently returned no labels when
+    the process CWD was not the repository root, so every classification was
+    judged without ground truth.
+    """
+    from forensics.config import get_settings
+
+    labels_path = Path(get_settings().dataset_dir) / "labels.json"
     if labels_path.exists():
         with open(labels_path) as f:
             return json.load(f)
     return {"documents": []}
+
+
+def ensure_flag_for(trace: Trace, diagnosis: Any) -> None:
+    """Create a review flag when a confirm/override would otherwise be a no-op.
+
+    `create_eval_cases_from_confirmed_flags` skips any trace that has no `flags`
+    row, so confirming from this UI printed "Diagnosis confirmed!" while quietly
+    creating zero eval cases.
+    """
+    storage = get_storage()
+    if storage.list_flags_for_trace(trace.trace_id):
+        return
+    storage.create_flag(
+        Flag(
+            trace_id=trace.trace_id,
+            user_id="streamlit_user",
+            note="Flagged via Streamlit UI for human review",
+            diagnosis_id=diagnosis.diagnosis_id if diagnosis is not None else None,
+            tenant_id=trace.tenant_id,
+        )
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -489,7 +518,7 @@ def render_diff_view(trace: Trace, doc_text: str, labels: dict) -> None:
                 st.markdown(f"**Actual** {'✅' if match else '❌'}")
                 st.code(actual_type)
             with col3:
-                if not match:
+                if not match and failure_category:
                     st.error(f"Seeded: {failure_category}")
 
         elif span.step_name == "extraction":
@@ -567,75 +596,106 @@ def render_flag_interface(trace: Trace, diagnosis, storage: Storage, doc_text: s
                 st.caption(f"• {f.flag_id[:12]} by {f.user_id}")
 
     with col2:
-        # Diagnosis display with confirm/override
-        if diagnosis.root_cause_step != "none":
+        # Diagnosis display with confirm/override. The whole column is rendered
+        # even when the analyzer reports `"none"`: hiding it behind
+        # `root_cause_step != "none"` made a false negative impossible to review
+        # or override, which is exactly the case a human needs to correct.
+        has_failure = diagnosis.root_cause_step not in ("", "none")
+
+        if has_failure:
             cat_display = get_category_display(diagnosis.category.value)
             root_cause = f"**Root Cause:** {diagnosis.root_cause_step} — {cat_display}"
             st.error(root_cause)
             st.metric("Confidence", f"{diagnosis.confidence:.0%}")
+        else:
+            st.success("No deterministic failure detected.")
+            st.caption(
+                "If you believe this run is wrong (a false negative), override the "
+                "diagnosis below with the step and category you expected."
+            )
 
-            with st.expander("📋 Evidence Chain", expanded=True):
-                for ev in diagnosis.evidence_chain:
-                    st.markdown(
-                        f'<div class="evidence-item">• {html.escape(str(ev))}</div>',
-                        unsafe_allow_html=True,
+        with st.expander("📋 Evidence Chain", expanded=has_failure):
+            for ev in diagnosis.evidence_chain:
+                st.markdown(
+                    f'<div class="evidence-item">• {html.escape(str(ev))}</div>',
+                    unsafe_allow_html=True,
+                )
+
+        # Confirm/Override
+        st.divider()
+        st.markdown("**Human Review**")
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if st.button("✅ Confirm Diagnosis", type="secondary", use_container_width=True):
+                # A flag row is what the eval sweep keys on; without it the
+                # confirm was a silent no-op that still reported success.
+                ensure_flag_for(trace, diagnosis)
+                # Confirm the diagnosis itself. `Storage` has no `update_flag`;
+                # confirmation lives on the diagnosis row and is what
+                # `create_eval_cases_from_confirmed_flags` gates on.
+                storage.update_diagnosis_confirmation(
+                    diagnosis.diagnosis_id,
+                    confirmed=True,
+                    overridden=diagnosis.overridden,
+                    override_category=(
+                        diagnosis.override_category.value if diagnosis.override_category else None
+                    ),
+                    override_reason=diagnosis.override_reason,
+                    override_step=diagnosis.override_step,
+                )
+                # Feed the confirmed flag into the eval suite the same way the
+                # FastAPI route does; the sweep is idempotent (dedup on
+                # (trace, failing step)) so re-clicking cannot inflate it.
+                created = create_eval_cases_from_confirmed_flags()
+                st.success(f"Diagnosis confirmed! Eval cases created: {created}")
+                st.rerun()
+
+        with col_b:
+            if st.button("✏️ Override Diagnosis", use_container_width=True):
+                st.session_state[f"override_{trace.trace_id}"] = True
+                st.rerun()
+
+        # Override form
+        if st.session_state.get(f"override_{trace.trace_id}", False):
+            with st.form(f"override_form_{trace.trace_id}"):
+                st.markdown("**Override Diagnosis**")
+                step_options = ["intake", "extraction", "classification", "summarization"]
+                default_step = (
+                    diagnosis.override_step
+                    if diagnosis.override_step in step_options
+                    else (
+                        diagnosis.root_cause_step
+                        if diagnosis.root_cause_step in step_options
+                        else "extraction"
                     )
-
-            # Confirm/Override
-            st.divider()
-            st.markdown("**Human Review**")
-
-            col_a, col_b = st.columns(2)
-            with col_a:
-                if st.button("✅ Confirm Diagnosis", type="secondary", use_container_width=True):
-                    # Confirm the diagnosis itself. `Storage` has no
-                    # `update_flag`; confirmation lives on the diagnosis row and
-                    # is what `create_eval_cases_from_confirmed_flags` gates on.
+                )
+                new_step = st.selectbox(
+                    "Failing Step",
+                    options=step_options,
+                    index=step_options.index(default_step),
+                    help="A missed failure has no step to inherit, so it is chosen here.",
+                )
+                new_category = st.selectbox(
+                    "New Category",
+                    options=[c.value for c in FailureCategory],
+                    format_func=lambda x: get_category_display(x),
+                )
+                override_reason = st.text_area("Reason for Override")
+                submitted = st.form_submit_button("Submit Override")
+                if submitted:
+                    ensure_flag_for(trace, diagnosis)
                     storage.update_diagnosis_confirmation(
                         diagnosis.diagnosis_id,
                         confirmed=True,
-                        overridden=diagnosis.overridden,
-                        override_category=(
-                            diagnosis.override_category.value
-                            if diagnosis.override_category
-                            else None
-                        ),
-                        override_reason=diagnosis.override_reason,
+                        overridden=True,
+                        override_category=new_category,
+                        override_reason=override_reason,
+                        override_step=new_step,
                     )
-                    # Feed the confirmed flag into the eval suite the same way
-                    # the FastAPI route does; the sweep is idempotent (dedup on
-                    # (trace, failing step)) so re-clicking cannot inflate it.
-                    create_eval_cases_from_confirmed_flags()
-                    st.success("Diagnosis confirmed!")
+                    created = create_eval_cases_from_confirmed_flags()
+                    st.success(f"Diagnosis overridden and confirmed! Eval cases created: {created}")
                     st.rerun()
-
-            with col_b:
-                if st.button("✏️ Override Diagnosis", use_container_width=True):
-                    st.session_state[f"override_{trace.trace_id}"] = True
-                    st.rerun()
-
-            # Override form
-            if st.session_state.get(f"override_{trace.trace_id}", False):
-                with st.form(f"override_form_{trace.trace_id}"):
-                    st.markdown("**Override Diagnosis**")
-                    new_category = st.selectbox(
-                        "New Category",
-                        options=[c.value for c in FailureCategory],
-                        format_func=lambda x: get_category_display(x),
-                    )
-                    override_reason = st.text_area("Reason for Override")
-                    submitted = st.form_submit_button("Submit Override")
-                    if submitted:
-                        storage.update_diagnosis_confirmation(
-                            diagnosis.diagnosis_id,
-                            confirmed=True,
-                            overridden=True,
-                            override_category=new_category,
-                            override_reason=override_reason,
-                        )
-                        st.success("Diagnosis overridden and confirmed!")
-                        create_eval_cases_from_confirmed_flags()
-                        st.rerun()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -679,7 +739,10 @@ def main() -> None:
             import subprocess
 
             result = subprocess.run(
-                ["python", "-m", "forensics.cli", "demo"],
+                # `sys.executable`, not "python": under `streamlit run` the
+                # process interpreter is the venv's, while a bare "python" is
+                # the system one, which has no `forensics` package installed.
+                [sys.executable, "-m", "forensics.cli", "demo"],
                 capture_output=True,
                 text=True,
                 cwd=Path.cwd(),
@@ -701,7 +764,9 @@ def main() -> None:
         # `Trace` has no `diagnosis` attribute: diagnoses live in their own
         # table. Reading `t.diagnosis` raised AttributeError as soon as a
         # category other than "All" was selected, so join via storage.
-        storage = Storage()
+        # Reuse the cached Storage: constructing one here re-ran the schema DDL
+        # and migrations on every rerender with a category filter selected.
+        storage = get_storage()
         matching: list[Trace] = []
         for t in traces:
             diag = storage.get_diagnosis_for_trace(t.trace_id)
@@ -756,7 +821,7 @@ def main() -> None:
         expected_type = None
         for doc_info in labels.get("documents", []):
             if doc_info.get("doc_id") == selected_trace.document_id:
-                expected_type = doc_info.get("doc_type", "unknown")
+                expected_type = doc_info.get("doc_type")
                 break
         diagnosis = analyze_trace(selected_trace, doc_text, expected_type)
         storage.create_diagnosis(diagnosis)
