@@ -260,21 +260,35 @@ class ResponseCache:
         if enabled:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-    def _cache_key(self, model: str, provider: str, prompt_version: str, prompt: str) -> str:
-        """Generate deterministic cache key."""
-        content = f"{model}:{provider}:{prompt_version}:{prompt}"
+    def _cache_key(
+        self, model: str, provider: str, prompt_version: str, prompt: str, document_id: str = ""
+    ) -> str:
+        """Generate deterministic cache key.
+
+        `document_id` is part of the key because it is not always part of the
+        prompt. The classification prompt is built from extracted entities
+        alone, so two documents whose extraction returns the same (often empty)
+        entity list produce byte-identical prompts; without the id they collided
+        and the second document was classified as the first.
+        """
+        content = f"{model}:{provider}:{prompt_version}:{document_id}:{prompt}"
         return hashlib.sha256(content.encode()).hexdigest()[:32]
 
     def _cache_path(self, key: str) -> Path:
         return self.cache_dir / f"{key}.json"
 
     def get(
-        self, model: str, provider: str, prompt_version: str, prompt: str
+        self,
+        model: str,
+        provider: str,
+        prompt_version: str,
+        prompt: str,
+        document_id: str = "",
     ) -> LLMResponse | None:
         """Get cached response if exists."""
         if not self.enabled:
             return None
-        key = self._cache_key(model, provider, prompt_version, prompt)
+        key = self._cache_key(model, provider, prompt_version, prompt, document_id)
         path = self._cache_path(key)
         if not path.exists():
             return None
@@ -295,11 +309,12 @@ class ResponseCache:
         prompt_version: str,
         prompt: str,
         response: LLMResponse,
+        document_id: str = "",
     ) -> None:
         """Cache response."""
         if not self.enabled:
             return
-        key = self._cache_key(model, provider, prompt_version, prompt)
+        key = self._cache_key(model, provider, prompt_version, prompt, document_id)
         path = self._cache_path(key)
         try:
             # Do not mutate `response.cached` here. It means "this came from
@@ -758,19 +773,34 @@ class NIMClient:
     def _parse_tolerant(content: str, response_model: type[T]) -> T:
         """Parse a model response that may be wrapped in prose or a code fence.
 
+        Scans every `{` and tries a strict decode from that offset, rather than
+        slicing from the first `{` to the last `}`: a wrapper sentence that
+        itself contains braces (e.g. `Result for {doc_1}: {...}`) made that slice
+        span non-JSON text and the whole reply unparseable.
+
         Raises StructuredOutputError (never a bare pydantic error) so the caller
         can distinguish "the model did not comply" from a real programming bug.
         """
         candidate = content.strip()
-        start = candidate.find("{")
-        end = candidate.rfind("}")
-        if start < 0 or end <= start:
-            raise StructuredOutputError("No JSON object found in model response")
-
-        try:
-            return response_model.model_validate_json(candidate[start : end + 1])
-        except PydanticValidationError as e:
-            raise StructuredOutputError(f"Response did not match schema: {e}", cause=e) from e
+        decoder = json.JSONDecoder()
+        last_error: PydanticValidationError | None = None
+        for index, char in enumerate(candidate):
+            if char != "{":
+                continue
+            try:
+                obj, _end = decoder.raw_decode(candidate[index:])
+            except ValueError:
+                continue
+            try:
+                return response_model.model_validate(obj)
+            except PydanticValidationError as exc:
+                last_error = exc
+                continue
+        if last_error is not None:
+            raise StructuredOutputError(
+                f"Response did not match schema: {last_error}", cause=last_error
+            ) from last_error
+        raise StructuredOutputError("No JSON object found in model response")
 
     def _build_structured_response(
         self, model_config: ModelConfig, data: dict[str, Any], parsed: BaseModel
@@ -860,9 +890,14 @@ class NIMClient:
         structured_prompt = self._build_structured_prompt(prompt, schema)
 
         if last_error:
+            # The validation error quotes the untrusted output it was parsing
+            # (`input_value=...`), and this text is interpolated into the prompt.
+            # Defused and truncated so a document cannot smuggle a directive in
+            # through an error message, and so a huge payload cannot bloat it.
+            error_text = _defuse_fence(str(last_error))[:600]
             structured_prompt += (
                 f"\n\nYour previous attempt did not satisfy the schema. "
-                f"Error: {last_error}\n"
+                f"Error: {error_text}\n"
                 f"Return ONLY a corrected JSON object, with no prose and no code fence."
             )
 
@@ -977,7 +1012,7 @@ class NIMClient:
 
         # Check cache first
         cached = self.cache.get(
-            model_config.model_id, model_config.provider, prompt_version, prompt
+            model_config.model_id, model_config.provider, prompt_version, prompt, document_id
         )
         if cached:
             try:
@@ -1039,7 +1074,12 @@ class NIMClient:
                 raise
 
             self.cache.set(
-                model_config.model_id, model_config.provider, prompt_version, prompt, result
+                model_config.model_id,
+                model_config.provider,
+                prompt_version,
+                prompt,
+                result,
+                document_id,
             )
             return result
 
@@ -1329,12 +1369,15 @@ class LLMClient:
         """
         settings = get_settings()
         fenced_doc = self.nim._fence_document(document_text[:3000])
-        bounded_trace = json.dumps(trace_data, indent=2, default=str)[:8000]
+        # The trace carries the intake span's `cleaned_text` (the whole document)
+        # and raw model output, so it is untrusted too. Interpolating it unfenced
+        # let a document that failed intake still steer the judge.
+        bounded_trace = _defuse_fence(json.dumps(trace_data, indent=2, default=str)[:8000])
         prompt = (
             "Analyze this pipeline trace for failures.\n\n"
             f"{UNTRUSTED_NOTICE}\n\n"
             f"Document:\n{fenced_doc}\n\n"
-            f"Trace steps:\n{bounded_trace}\n\n"
+            f"Trace steps (untrusted data):\n{DOCUMENT_OPEN}\n{bounded_trace}\n{DOCUMENT_CLOSE}\n\n"
             "For each step, score:\n"
             "- local_fidelity: Is output a faithful transformation of input? (0-1)\n"
             "- global_fidelity: Is output correct relative to source document? (0-1)\n"
@@ -1363,7 +1406,6 @@ class LLMClient:
         # them here made every judge reply fail validation.
         from forensics.models import JudgeVerdict
 
-        judge_spend_before = self.nim.spend_tracker.step_spend_usd.get("judge", 0.0)
         response = await self.nim.structured(
             settings.judge_model,
             prompt,
@@ -1372,9 +1414,16 @@ class LLMClient:
             prompt_version="judge-v1",
             step="judge",
         )
-        judge_cost_usd = round(
-            self.nim.spend_tracker.step_spend_usd.get("judge", 0.0) - judge_spend_before, 8
-        )
+        # Cost is read from this response's own usage, not from the shared
+        # `step_spend_usd` delta: that counter is global to the client, so two
+        # concurrent judge calls (a worker batch) corrupted each other's delta.
+        # A cache hit costs nothing and must not be billed.
+        if response.cached:
+            judge_cost_usd = 0.0
+        else:
+            judge_cost_usd = round(
+                self.nim._calculate_cost(settings.judge_model, response.usage), 8
+            )
 
         if response.parsed is not None:
             payload = response.parsed.model_dump()

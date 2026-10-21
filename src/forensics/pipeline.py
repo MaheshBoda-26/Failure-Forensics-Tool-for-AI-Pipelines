@@ -28,8 +28,13 @@ class Pipeline:
 
     @classmethod
     async def create(cls, cache_dir: Path | None = None) -> "Pipeline":
-        """Create a new Pipeline with initialized LLM client."""
-        client = await create_llm_client(cache_dir=cache_dir or Path("data/cache"))
+        """Create a new Pipeline with initialized LLM client.
+
+        `cache_dir` is passed straight through: `create_llm_client(None)` already
+        falls back to `settings.cache_dir`, and `cache_dir or Path("data/cache")`
+        overrode that fallback with a CWD-relative literal.
+        """
+        client = await create_llm_client(cache_dir=cache_dir)
         return cls(client=client)
 
     @traced_step("intake")

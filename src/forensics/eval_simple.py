@@ -13,6 +13,7 @@ from typing import Any
 from forensics.analyzer_simple import analyze_trace, text_contains_entity
 from forensics.config import get_settings
 from forensics.documents import resolve_document_text
+from forensics.llm import using_llm_client
 from forensics.models import (
     DEFAULT_TENANT_ID,
     Diagnosis,
@@ -22,6 +23,7 @@ from forensics.models import (
     EvalRun,
     Flag,
     Span,
+    Trace,
 )
 from forensics.pipeline import Pipeline
 from forensics.storage import Storage
@@ -191,6 +193,50 @@ def flag_to_eval_case(flag: Flag, diagnosis: Diagnosis, storage: Storage) -> Eva
     return case
 
 
+def _corrected_output_holds(case: EvalCase, trace: Trace) -> bool:
+    """Whether the re-run complies with the case's deterministic reference.
+
+    `corrected_output` is derived when the case is created (for an extraction
+    failure: the bad entities with the hallucinated ones removed). It used to be
+    computed and then never read, so a case could be reported fixed without
+    anything checking the new output against the reference.
+    """
+    reference = case.corrected_output or {}
+    if not isinstance(reference, dict) or reference.get("_needs_golden"):
+        # No checkable reference was derivable; fall back to the analyzer only.
+        return True
+
+    expected_entities = reference.get("entities")
+    if not isinstance(expected_entities, list):
+        return True
+
+    span = next((s for s in trace.spans if s.step_name == case.failing_step), None)
+    if span is None:
+        return False
+    try:
+        output = json.loads(span.output_json) if span.output_json else {}
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(output, dict):
+        return False
+    actual_entities = output.get("entities")
+    if not isinstance(actual_entities, list):
+        # A non-extraction step: the reference has nothing to compare here.
+        return True
+
+    allowed = {
+        entity.get("value")
+        for entity in expected_entities
+        if isinstance(entity, dict) and isinstance(entity.get("value"), str)
+    }
+    for entity in actual_entities:
+        if not isinstance(entity, dict) or not isinstance(entity.get("value"), str):
+            return False
+        if entity["value"] not in allowed:
+            return False
+    return True
+
+
 async def run_eval_case(
     case: EvalCase,
     pipeline: Pipeline,
@@ -230,9 +276,17 @@ async def run_eval_case(
     # (including the API's own requests when an eval ran in-process).
     diagnosis = await asyncio.to_thread(analyze_trace, trace, doc_text, expected_type)
 
-    # Fixed = the step that originally failed now passes the deterministic checks.
+    # Fixed = the originally failing step now passes *globally* and is no longer
+    # any step's root cause. `local_pass` alone reported "OK FIXED" on runs where
+    # an upstream step failed (so the step's own checks had nothing to check), on
+    # judge/human-overridden verdicts, and without ever reading the case's
+    # deterministic reference output.
     step_score = next((s for s in diagnosis.step_scores if s.step_name == case.failing_step), None)
-    fixed = step_score.local_pass if step_score else False
+    fixed = bool(step_score and step_score.global_pass)
+    if fixed and diagnosis.root_cause_step == case.failing_step:
+        fixed = False
+    if fixed:
+        fixed = _corrected_output_holds(case, trace)
 
     score = 1.0 if fixed else 0.0
 
@@ -246,6 +300,7 @@ async def run_eval_case(
             "root_cause": diagnosis.root_cause_step,
             "category": diagnosis.category.value,
             "confidence": diagnosis.confidence,
+            "global_pass": bool(step_score.global_pass) if step_score else False,
         },
         # The result belongs to whoever owns the case, not to whoever happened to
         # trigger the run.
@@ -260,7 +315,6 @@ async def run_eval(tenant_id: str | None = None) -> EvalRun | None:
     given, both the cases considered and the run record created are scoped to it.
     """
     storage = Storage()
-    pipeline = await Pipeline.create(cache_dir=_cache_dir())
 
     # Get all eval cases
     cases = storage.list_eval_cases(limit=1000, tenant_id=tenant_id)
@@ -276,12 +330,45 @@ async def run_eval(tenant_id: str | None = None) -> EvalRun | None:
     )
     run = storage.create_eval_run(run)
 
-    # Resolve each case's source document. `case.trace_id` is a trace id, not a
-    # document id: the previous lookup used it directly against a doc_id-keyed
-    # map, so every case missed and the run evaluated nothing.
+    # Resolve each case's source document and re-run it. `using_llm_client`
+    # guarantees the httpx pool is released: constructing the client without a
+    # context manager leaked an open connection pool on every CLI eval, API
+    # trigger and nightly scheduled run.
+    async with using_llm_client(cache_dir=_cache_dir()) as client:
+        passed, failed, results = await _evaluate_cases(
+            storage, run, cases, Pipeline(client=client)
+        )
+
+    # Update run summary
+    run.total_cases = len(results)
+    run.passed_count = passed
+    run.failed_count = failed
+    run.completed_at = datetime.now(UTC)
+    storage.update_eval_run(
+        run.run_id,
+        completed_at=run.completed_at,
+        total_cases=run.total_cases,
+        passed_count=passed,
+        failed_count=failed,
+    )
+
+    print(f"\nEval Run Complete: {passed} passed, {failed} failed, {len(results)} total")
+    return run
+
+
+async def _evaluate_cases(
+    storage: Storage, run: EvalRun, cases: list[EvalCase], pipeline: Pipeline
+) -> tuple[int, int, list[EvalResult]]:
+    """Re-run every case against the current pipeline: (passed, failed, results).
+
+    Each case's source document is resolved through its own trace. `case.trace_id`
+    is a trace id, not a document id: the previous lookup used it directly
+    against a doc-id-keyed map, so every case missed and the run evaluated
+    nothing.
+    """
     passed = 0
     failed = 0
-    results = []
+    results: list[EvalResult] = []
 
     for case in cases:
         trace = storage.get_trace(case.trace_id, tenant_id=case.tenant_id)
@@ -317,21 +404,7 @@ async def run_eval(tenant_id: str | None = None) -> EvalRun | None:
 
         print(f"  {status} {case.case_id[:12]} ({case.failing_step}): {case.category.value}")
 
-    # Update run summary
-    run.total_cases = len(results)
-    run.passed_count = passed
-    run.failed_count = failed
-    run.completed_at = datetime.now(UTC)
-    storage.update_eval_run(
-        run.run_id,
-        completed_at=run.completed_at,
-        total_cases=run.total_cases,
-        passed_count=passed,
-        failed_count=failed,
-    )
-
-    print(f"\nEval Run Complete: {passed} passed, {failed} failed, {len(results)} total")
-    return run
+    return passed, failed, results
 
 
 def print_eval_results(run_id: str) -> None:
