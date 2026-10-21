@@ -206,6 +206,27 @@ def _extract_string_field(output_data: dict[str, Any], field: str) -> str:
     return str(value) if value is not None else ""
 
 
+def _entity_str(entity: Any, key: str) -> str:
+    """Read a string field off an entity, tolerating malformed model output.
+
+    The model is asked for objects, but a hallucinated reply can contain `null`
+    or a bare number in the array. Calling `.get()` on those raised
+    `AttributeError` and took the whole check down; a non-string value cannot be
+    a grounded entity, so it is treated as absent.
+    """
+    if not isinstance(entity, dict):
+        return ""
+    value = entity.get(key, "")
+    return value if isinstance(value, str) else ""
+
+
+def _join_strings(value: Any) -> str:
+    """Join a list of strings, coercing and ignoring anything malformed."""
+    if not isinstance(value, list):
+        return ""
+    return " ".join(item if isinstance(item, str) else str(item) for item in value)
+
+
 def check_entity_grounding(span: Span, document_text: str) -> list[CheckResult]:
     """Check that all extracted entities appear in the source document.
 
@@ -229,9 +250,8 @@ def check_entity_grounding(span: Span, document_text: str) -> list[CheckResult]:
         return results
 
     for entity_data in entities_data:
-        # All test data uses dicts; object branch is unreachable but kept for completeness
-        value = entity_data.get("value", "")
-        entity_type = entity_data.get("entity_type", "")
+        value = _entity_str(entity_data, "value")
+        entity_type = _entity_str(entity_data, "entity_type")
 
         if not value:
             continue
@@ -371,9 +391,8 @@ def check_date_regex(span: Span) -> list[CheckResult]:
         return results
 
     for entity_data in entities_data:
-        # All test data uses dicts; object branch is unreachable but kept for completeness
-        value = entity_data.get("value", "")
-        entity_type = entity_data.get("entity_type", "")
+        value = _entity_str(entity_data, "value")
+        entity_type = _entity_str(entity_data, "entity_type")
 
         if entity_type.lower() == "date":
             if DATE_PATTERN.match(value):
@@ -414,9 +433,8 @@ def check_context_preservation(span: Span, trace: Trace, document_text: str) -> 
     # Grounded entities: those whose value appears in source document
     grounded_entities = []
     for entity_data in extraction_entities:
-        # All test data uses dicts; object branch is unreachable
-        value = entity_data.get("value", "")
-        entity_type = entity_data.get("entity_type", "")
+        value = _entity_str(entity_data, "value")
+        entity_type = _entity_str(entity_data, "entity_type")
 
         if value and text_contains_entity(value, document_text):
             grounded_entities.append((value, entity_type))
@@ -428,12 +446,13 @@ def check_context_preservation(span: Span, trace: Trace, document_text: str) -> 
     try:
         output_data = _parse_span_output(span)
         summary = _extract_string_field(output_data, "summary")
-        key_points = output_data.get("key_points", [])
     except (ValueError, TypeError):
         return results
 
-    # Search in both summary and key_points
-    searchable_text = f"{summary} {' '.join(key_points)}"
+    # Search in both summary and key_points. `key_points` is attacker-adjacent
+    # model output: a `null` or a list holding a non-string raised `TypeError`
+    # out of `' '.join(...)` and crashed the whole analysis.
+    searchable_text = f"{summary} {_join_strings(output_data.get('key_points'))}"
 
     for value, entity_type in grounded_entities:
         if text_contains_entity(value, searchable_text):
@@ -484,11 +503,10 @@ def check_propagation(span: Span, trace: Trace) -> list[CheckResult]:
     try:
         output_data = _parse_span_output(span)
         summary = _extract_string_field(output_data, "summary")
-        key_points = output_data.get("key_points", [])
     except (ValueError, TypeError):
         return results
 
-    searchable_text = f"{summary} {' '.join(key_points)}".strip()
+    searchable_text = f"{summary} {_join_strings(output_data.get('key_points'))}".strip()
 
     # Only check propagation if the summarization has some substance
     # (more than a few words). A trivial "ok" summary can't be analyzed.
@@ -674,10 +692,18 @@ def build_step_scores(
 
     for span in trace.spans:
         step_results = check_results.get(span.span_id, [])
-
-        local_checks = aggregate_checks(step_results)
-        local_pass = all(local_checks.values()) if local_checks else True
         evidence = [result.evidence for result in step_results]
+
+        if span.status == "failure":
+            # A step that raised produced no output worth checking, and no
+            # registered check targets a crashed step, so `local_checks` would be
+            # empty and `all(...)` would score the crash as a pass.
+            local_checks: dict[str, bool] = {"span_status": False}
+            local_pass = False
+            evidence.append(f"Step raised an exception: {span.error or 'unknown error'}")
+        else:
+            local_checks = aggregate_checks(step_results)
+            local_pass = all(local_checks.values()) if local_checks else True
 
         # Local fidelity: all checks for this step pass
         local_fidelity = 1.0 if local_pass else 0.0
@@ -889,15 +915,16 @@ def analyze_trace(trace: Trace, document_text: str, expected_type: str | None = 
             # Judge failure: log and fall back to deterministic
             pass
 
-    # Create diagnosis
-    analyzer_ver = "0.1.0-deterministic"
-    if analyzer_fallback:
-        analyzer_ver += "+judge"
+    # Create diagnosis. The judge's provenance is recorded whenever the judge
+    # actually ran, not only when it overrode the deterministic verdict: an
+    # agreement is still the judge's endorsement, and attributing it to
+    # "deterministic-v0" threw that evidence away.
+    analyzer_ver = f"{settings.analyzer_version}-deterministic"
     model_id = "deterministic-v0"
-    if analyzer_fallback:
-        model_id = settings.judge_model.model_id
     provider_name = "local"
-    if analyzer_fallback:
+    if judge_analysis is not None:
+        analyzer_ver += "+judge"
+        model_id = settings.judge_model.model_id
         provider_name = settings.judge_model.provider
 
     diagnosis = Diagnosis(

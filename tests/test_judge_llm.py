@@ -225,8 +225,11 @@ def test_judge_agreement_does_not_mark_a_fallback(
 
     assert diagnosis.judge_analysis is not None
     assert diagnosis.analyzer_fallback is False
-    assert diagnosis.analyzer_version == "0.1.0-deterministic"
-    assert diagnosis.model_id == "deterministic-v0"
+    # Agreeing with the deterministic verdict is still a judge endorsement, so
+    # the judge is credited as the diagnosing model.
+    assert diagnosis.analyzer_version == "0.1.0-deterministic+judge"
+    assert diagnosis.model_id == get_settings().judge_model.model_id
+    assert diagnosis.provider == get_settings().judge_model.provider
 
 
 # --- Criterion 3: JUDGE_FORCE runs on every trace ---------------------------
