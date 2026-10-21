@@ -140,7 +140,9 @@ async def test_reasoning_field_is_not_concatenated_into_content(tmp_path: Path) 
     result = await client.structured(_model(), "Classify.", ClassificationOutput)
 
     assert result.parsed.document_type == DocumentType.INVOICE
-    assert result.usage.reasoning_tokens == 0 or result.usage.reasoning_tokens >= 0
+    # The reasoning prose must not leak into the parsed content. The previous
+    # assertion (`== 0 or >= 0`) was a tautology that held for every value.
+    assert "Let me think" not in result.content
 
 
 # --- Finding #6: non-retryable errors must short-circuit -------------------

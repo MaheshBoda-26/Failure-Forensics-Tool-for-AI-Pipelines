@@ -583,12 +583,20 @@ def _resolved_addresses(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv
     at request time, where a rebinding name would already have to resolve.
     """
     try:
-        addresses = [
-            ipaddress.ip_address(info[4][0].split("%", 1)[0])
-            for info in socket.getaddrinfo(host, None)
-        ]
+        resolved = socket.getaddrinfo(host, None)
     except (socket.gaierror, ValueError, OSError):
         return []
+
+    addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    for info in resolved:
+        sockaddr = info[4]
+        raw = sockaddr[0] if isinstance(sockaddr, tuple) else sockaddr
+        if not isinstance(raw, str):
+            continue
+        try:
+            addresses.append(ipaddress.ip_address(raw.split("%", 1)[0]))
+        except ValueError:
+            continue
     return addresses
 
 

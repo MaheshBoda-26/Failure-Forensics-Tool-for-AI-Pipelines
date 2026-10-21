@@ -825,11 +825,17 @@ def test_classification_empty_string_is_prompt_failure() -> None:
     ],
 )
 def test_all_five_categories_reachable(category: FailureCategory, output: dict) -> None:
-    """All 5 FailureCategory values must be reachable by the analyzer.
+    """Every advanced category must be wired into `find_root_cause`.
 
-    This test is a compile-time guard: if a new category is added to the enum
-    but not wired in find_root_cause, this will catch it.
+    This is a real guard, not a documentation list: it asks the analyzer which
+    (step, category) pairs its registered checks can emit and requires all five
+    categories to appear. If a category is added to the enum but never produced
+    by a check, this fails.
     """
-    # The actual reachability is tested in the specific tests above.
-    # This parametrize just documents the expected mapping.
-    assert category in FailureCategory
+    from forensics.analyzer_simple import reachable_failure_pairs
+
+    emitted = {cat for _step, cat in reachable_failure_pairs()}
+    assert category.value in emitted, f"{category} is not reachable from any check"
+    # `output` documents the shape that triggers the category; see the specific
+    # tests above for the end-to-end assertions.
+    assert isinstance(output, dict)

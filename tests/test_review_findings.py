@@ -666,3 +666,317 @@ def test_an_unknown_key_prefix_still_costs_a_hash_comparison(
     manager = AuthManager(_storage(tmp_path), rounds=4)
     assert manager.validate_api_key("ffk_totally-unknown-prefix") is None
     assert calls, "a miss must still perform a bcrypt comparison"
+
+
+# ─── Second review round: tenant isolation, redaction, config, tracing ──────
+
+
+def test_uploads_are_namespaced_per_tenant(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two tenants with the same doc_id must not overwrite each other."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    reset_settings()
+
+    assert store_document("shared_doc", "tenant-A text", tenant_id="tenantA") is not None
+    assert store_document("shared_doc", "tenant-B text", tenant_id="tenantB") is not None
+
+    assert read_document("shared_doc", "tenantA") == "tenant-A text"
+    assert read_document("shared_doc", "tenantB") == "tenant-B text"
+
+
+def test_resolve_document_text_is_scoped_to_the_trace_tenant(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A trace is never evaluated against another tenant's document text."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    reset_settings()
+
+    store_document("shared_doc", "tenant-A text", tenant_id="tenantA")
+    store_document("shared_doc", "tenant-B text", tenant_id="tenantB")
+
+    trace_b = _trace(document_id="shared_doc", tenant_id="tenantB")
+    trace_b.spans = []  # no intake span, so the on-disk file is the only source
+    assert resolve_document_text(trace_b) == "tenant-B text"
+
+
+def test_flag_notes_are_redacted_at_the_write_boundary(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """`PII_REDACTION_ENABLED=true` must cover human-authored notes too."""
+    monkeypatch.setenv("PII_REDACTION_ENABLED", "true")
+    reset_settings()
+    storage = _storage(tmp_path)
+    trace = _trace()
+    storage.save_trace(trace)
+
+    stored = storage.create_flag(
+        Flag(trace_id=trace.trace_id, note="contact user@company.com", tenant_id=trace.tenant_id)
+    )
+    reloaded = storage.get_flag(stored.flag_id)
+    assert reloaded is not None
+    assert "user@company.com" not in (reloaded.note or "")
+
+
+def test_override_reason_is_redacted_on_update(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("PII_REDACTION_ENABLED", "true")
+    reset_settings()
+    storage = _storage(tmp_path)
+    trace = _trace()
+    storage.save_trace(trace)
+    diagnosis = analyze_trace(trace, DOC)
+    storage.create_diagnosis(diagnosis)
+
+    storage.update_diagnosis_confirmation(
+        diagnosis.diagnosis_id, True, override_reason="escalate to user@company.com"
+    )
+    reloaded = storage.get_diagnosis(diagnosis.diagnosis_id)
+    assert reloaded is not None
+    assert "user@company.com" not in (reloaded.override_reason or "")
+
+
+def test_webhook_hostname_resolving_to_loopback_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A DNS name that resolves to 127.0.0.1 is an SSRF target too."""
+    import socket
+
+    from forensics.config import validate_webhook_url
+
+    def fake_getaddrinfo(host: str, port: object) -> list[tuple]:
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]
+
+    monkeypatch.setattr("forensics.config.socket.getaddrinfo", fake_getaddrinfo)
+    with pytest.raises(ValueError, match="private/loopback"):
+        validate_webhook_url("https://127.0.0.1.nip.io/hook")
+
+
+def test_cors_wildcard_is_rejected_at_startup(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("CORS_ORIGINS", "*")
+    reset_settings()
+    with pytest.raises(ValueError, match="CORS_ORIGINS"):
+        validate_startup()
+
+
+def test_invalid_eval_schedule_is_rejected_at_startup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("EVAL_SCHEDULE", "not a cron")
+    reset_settings()
+    with pytest.raises(ValueError, match="EVAL_SCHEDULE"):
+        validate_startup()
+
+
+def test_zero_sampling_rate_is_respected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`0.0 or 1.0` silently turned "sample nothing" into 100% sampling."""
+    monkeypatch.setenv("OTEL_SAMPLING_RATE", "0.0")
+    reset_settings()
+    assert get_settings().otel.sampling_rate == 0.0
+
+
+def test_doc_text_length_is_bounded() -> None:
+    with pytest.raises(ValidationError):
+        api.PipelineRunRequest(doc_id="d1", doc_text="x" * 1_000_001)
+
+
+def test_negative_limit_is_rejected_by_the_http_layer(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # type: ignore[no-untyped-def]
+    """`?limit=-1` used to reach SQLite's `LIMIT -1` (whole table)."""
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(api, "_storage", _storage(tmp_path))
+    client = TestClient(api.app)
+    assert client.get("/traces?limit=-1").status_code == 422
+
+
+def test_a_partial_frontend_build_does_not_crash_the_api(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # type: ignore[no-untyped-def]
+    """`frontend/dist` without `assets/` must not raise at import time."""
+    import os
+    import subprocess
+    import sys
+
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html></html>")
+
+    env = {**os.environ, "STATIC_DIR": str(dist)}
+    proc = subprocess.run(
+        [sys.executable, "-c", "import forensics.api; print('ok')"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "ok" in proc.stdout
+
+
+def test_span_input_json_records_real_step_inputs() -> None:
+    """Pydantic step inputs must be serialized structurally, not as a class name."""
+
+    @traced_step("extraction")
+    def step(_self: object, intake: object) -> str:
+        return "done"
+
+    with trace_context(document_id="doc-1") as ctx:
+        step(object(), ExtractionOutput(entities=[]))
+
+    assert ctx.trace is not None
+    input_json = ctx.trace.spans[-1].input_json
+    assert "<ExtractionOutput>" not in input_json
+    assert "entities" in input_json
+
+
+def test_load_trace_from_db_hydrates_index_only_spans(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The `spans` table is an index; loading it must not raise."""
+    from forensics.tracing import finalize_trace, init_db, load_trace_from_db
+
+    db_path = tmp_path / "db.sqlite"
+    trace = _trace()
+    finalize_trace(trace, traces_dir=tmp_path / "traces", db_path=db_path)
+
+    conn = init_db(db_path)
+    try:
+        loaded = load_trace_from_db(trace.trace_id, conn)
+    finally:
+        conn.close()
+
+    assert loaded is not None
+    assert len(loaded.spans) == len(trace.spans)
+    assert loaded.spans[0].output_json == ""
+
+
+def test_finalize_trace_writes_sqlite_without_an_explicit_db_path(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The SQLite index is written even when the caller omits `db_path`."""
+    from forensics.tracing import finalize_trace, init_db
+
+    trace = _trace()
+    finalize_trace(trace, traces_dir=tmp_path / "traces")
+
+    db_path = get_settings().db_path
+    conn = init_db(db_path)
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM traces WHERE trace_id = ?", (trace.trace_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None and row[0] == 1
+
+
+def test_cached_spans_are_not_billed(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from forensics.tracing import _span_cost_usd
+
+    monkeypatch.setenv("PIPELINE_MODEL_PRICE_IN", "1000")
+    monkeypatch.setenv("PIPELINE_MODEL_PRICE_OUT", "1000")
+    reset_settings()
+
+    trace = _trace()
+    span = trace.spans[1]
+    span.model_id = get_settings().pipeline_model.model_id
+    span.prompt_tokens = 1_000_000
+    assert _span_cost_usd(span) > 0.0
+
+    span.cached = True
+    assert _span_cost_usd(span) == 0.0
+
+
+def test_cache_key_includes_the_document_id(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Identical prompts from different documents must not share a cache entry."""
+    from forensics.llm import LLMResponse, ResponseCache, TokenUsage
+
+    cache = ResponseCache(tmp_path / "cache")
+    response = LLMResponse(
+        content="{}", model="m", provider="p", usage=TokenUsage(), latency_ms=0, raw_response={}
+    )
+    cache.set("m", "p", "v1", "same prompt", response, "doc-a")
+    assert cache.get("m", "p", "v1", "same prompt", "doc-a") is not None
+    assert cache.get("m", "p", "v1", "same prompt", "doc-b") is None
+
+
+def test_tolerant_parser_handles_braces_in_wrapper_prose() -> None:
+    """`Result for {doc_1}: {...}` must still parse."""
+    parsed = NIMClient._parse_tolerant(
+        'Result for {doc_1}: {"document_type": "invoice", "confidence": 0.9}',
+        ExtractionOutput,
+    )
+    assert isinstance(parsed, ExtractionOutput)
+
+
+def test_crashed_step_scores_as_a_failure() -> None:
+    """A step whose span failed must not be scored as passing."""
+    from forensics.analyzer_simple import build_step_scores
+
+    trace = _trace()
+    trace.spans[0].status = "failure"
+    trace.spans[0].error = "boom"
+
+    scores = build_step_scores(trace, {}, DOC)
+    intake = next(s for s in scores if s.step_name == "intake")
+    assert intake.local_pass is False
+    assert intake.local_fidelity == 0.0
+    assert any("boom" in e for e in intake.evidence)
+
+
+def test_malformed_summary_key_points_do_not_crash_the_check() -> None:
+    """A `null` key_points list must not raise out of the analyzer."""
+    from forensics.analyzer_simple import check_context_preservation
+
+    trace = _trace(summarization={"summary": "Contract between Acme and Beta.", "key_points": None})
+    results = check_context_preservation(trace.spans[-1], trace, DOC)
+    assert isinstance(results, list)
+
+
+def test_override_step_creates_a_case_from_a_false_negative(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """A human naming the missed step must be able to create an eval case."""
+    storage = _storage(tmp_path)
+    trace = _trace()
+    storage.save_trace(trace)
+    diagnosis = analyze_trace(trace, DOC)
+    diagnosis.root_cause_step = "none"
+    diagnosis.override_step = "extraction"
+    diagnosis.override_category = FailureCategory.EXTRACTION_HALLUCINATION
+
+    case = flag_to_eval_case(
+        Flag(trace_id=trace.trace_id, tenant_id=trace.tenant_id), diagnosis, storage
+    )
+    assert case is not None
+    assert case.failing_step == "extraction"
+
+
+def test_phone_pattern_leaves_bare_digit_runs_alone() -> None:
+    """An account number or timestamp is not a phone number."""
+    from forensics.pii import PIIRedactor
+
+    redactor = PIIRedactor(enabled=True, entity_types=frozenset({"phone"}))
+    assert redactor.redact("account 1234567890")[0] == "account 1234567890"
+    assert "555-123-4567" not in redactor.redact("call 555-123-4567")[0]
+
+
+def test_email_pattern_does_not_match_a_pipe_character() -> None:
+    from forensics.pii import PATTERNS
+
+    assert PATTERNS["email"].search("user@company.com") is not None
+    assert "|" not in PATTERNS["email"].pattern
+
+
+def test_eval_case_not_fixed_when_the_reference_disagrees() -> None:
+    """`corrected_output` must actually be compared against the re-run."""
+    from forensics.eval_simple import _corrected_output_holds
+
+    trace = _trace(
+        extraction={
+            "entities": [
+                {"value": "Acme", "entity_type": "organization"},
+                {"value": "ghost", "entity_type": "person"},
+            ]
+        }
+    )
+    case = EvalCase(
+        trace_id=trace.trace_id,
+        failing_step="extraction",
+        bad_output={},
+        corrected_output={"entities": [{"value": "Acme", "entity_type": "organization"}]},
+        category=FailureCategory.EXTRACTION_HALLUCINATION,
+        pipeline_version="0.1.0",
+        prompt_version="v1",
+    )
+    assert _corrected_output_holds(case, trace) is False
