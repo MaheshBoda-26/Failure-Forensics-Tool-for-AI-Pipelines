@@ -16,6 +16,7 @@ import typer
 from forensics.analyzer_simple import analyze_trace
 from forensics.auth import AuthManager
 from forensics.config import get_settings, validate_startup
+from forensics.documents import is_valid_doc_id, resolve_document_text
 from forensics.llm import using_llm_client
 from forensics.models import DEFAULT_TENANT_ID, Document, DocumentType, FailureCategory
 from forensics.pipeline import Pipeline
@@ -99,7 +100,10 @@ def run(doc_path: Path) -> None:
             labels = json.load(f)
         for doc_info in labels.get("documents", []):
             if doc_info.get("doc_id") == doc_path.stem:
-                expected_type = doc_info.get("doc_type", "unknown")
+                # `None` when the label omits the type: the old `"unknown"`
+                # default made `check_label_grounding` fail every classification
+                # against a type that cannot exist.
+                expected_type = doc_info.get("doc_type")
                 break
 
     async def _run() -> None:
@@ -245,7 +249,7 @@ def demo() -> None:
                     # loop and the UI have a real root cause per trace.
                     # Previously the demo saved traces but never analyzed them,
                     # so analytics and eval had nothing to read.
-                    expected_type = doc_info.get("doc_type", "unknown")
+                    expected_type = doc_info.get("doc_type")
                     # The dataset's ground-truth type lets the analyzer detect a
                     # valid-but-wrong label (misclassification).
                     #
@@ -350,7 +354,9 @@ def analytics() -> None:
     rate_color = typer.colors.RED if analytics.failure_rate > 0 else typer.colors.GREEN
     typer.secho(f"  Failure Rate: {analytics.failure_rate:.1%}", fg=rate_color)
 
-    if analytics.avg_time_to_root_cause_seconds:
+    # `0.0` is a real measurement (a DRY_RUN trace with zero-latency spans), not
+    # a missing one; truthiness printed "N/A" for it.
+    if analytics.avg_time_to_root_cause_seconds is not None:
         typer.secho(
             f"  Avg Time to Root Cause: {analytics.avg_time_to_root_cause_seconds:.2f}s",
             fg=typer.colors.CYAN,
@@ -383,6 +389,7 @@ def benchmark_analyzer() -> None:
     """Run fault injection scorecard against a baseline trace."""
     _setup()
 
+    from forensics.eval_simple import document_ground_truth
     from forensics.faults import score_all_faults
     from forensics.storage import Storage
 
@@ -404,21 +411,20 @@ def benchmark_analyzer() -> None:
     if baseline_trace is None:
         baseline_trace = traces[0]
 
-    doc_path = get_settings().dataset_dir / "documents" / f"{baseline_trace.document_id}.txt"
-    if not doc_path.exists():
-        typer.secho(f"Document not found: {doc_path}", fg=typer.colors.RED, err=True)
+    # `resolve_document_text` covers the dataset *and* documents uploaded
+    # through the API; looking only in `dataset/documents` failed with
+    # "Document not found" whenever the first clean trace came from an upload.
+    doc_text = resolve_document_text(baseline_trace)
+    if not doc_text:
+        typer.secho(
+            f"Document not found for baseline trace {baseline_trace.trace_id} "
+            f"({baseline_trace.document_id})",
+            fg=typer.colors.RED,
+            err=True,
+        )
         raise typer.Exit(code=1)
 
-    doc_text = doc_path.read_text()
-    expected_type = None
-    labels_path = get_settings().dataset_dir / "labels.json"
-    if labels_path.exists():
-        with open(labels_path) as f:
-            labels = json.load(f)
-        for entry in labels.get("documents", []):
-            if entry.get("doc_id") == baseline_trace.document_id:
-                expected_type = entry.get("doc_type")
-                break
+    expected_type = document_ground_truth(baseline_trace.document_id)
 
     typer.secho(
         "\n📊 Benchmark Analyzer — Fault Injection Scorecard", fg=typer.colors.BLUE, bold=True
@@ -737,6 +743,19 @@ def queue_enqueue(
         expected_type = expected
 
     resolved_doc_id = doc_id or file.stem
+    # A doc id becomes a filename component (`documents/<id>.txt`) and has to
+    # pass the same allowlist the API applies. An invalid id (a filename with a
+    # space or a dot) used to be queued successfully and only failed later, in
+    # the worker, as an opaque `Document(...)` validation error.
+    if not is_valid_doc_id(resolved_doc_id):
+        typer.secho(
+            f"Invalid document id {resolved_doc_id!r}: use letters, digits, '-' and '_' "
+            f"(max 64 characters), or pass --doc-id.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
     job = get_queue().enqueue(
         DEFAULT_TENANT_ID,
         {

@@ -4,6 +4,18 @@
 
 set -e
 
+# Use the project virtualenv when it exists: a bare `python` picks the system
+# interpreter, which does not have the `forensics` package installed after
+# `make install`.
+PY="python"
+if [ -x ".venv/bin/python" ]; then
+  PY=".venv/bin/python"
+fi
+
+# The demo is explicitly described below as a fake-LLM run, so it must not fall
+# through to live API calls.
+export DRY_RUN="${DRY_RUN:-true}"
+
 echo "=========================================="
 echo "Failure Forensics Tool -- Live Demo"
 echo "=========================================="
@@ -11,24 +23,24 @@ echo ""
 
 # --- Setup ------------------------------------------------------------------─
 echo ">> Step 1: Validate configuration"
-python -m forensics.cli validate-config
+$PY -m forensics.cli validate-config
 echo ""
 
 echo ">> Step 2: Validate dataset"
-python -m forensics.cli validate-dataset
+$PY -m forensics.cli validate-dataset
 echo ""
 
 # --- Run Demo ---------------------------------------------------------------─
 echo ""
 echo ">> Step 3: Run demo on all 15 documents"
 echo "    (This runs the 4-step pipeline on each document with a fake LLM)"
-python -m forensics.cli demo
+$PY -m forensics.cli demo
 echo ""
 
 # --- Analytics ---------------------------------------------------------------
 echo ""
 echo ">> Step 4: View analytics dashboard"
-python -m forensics.cli analytics
+$PY -m forensics.cli analytics
 echo ""
 
 # --- Trace Explorer (Streamlit) ---------------------------------------------─
