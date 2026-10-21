@@ -29,12 +29,17 @@ export const DAGGraphView: React.FC<DAGGraphViewProps> = ({ trace, diagnosis }) 
       .sort((a, b) => stepOrder.indexOf(a.step_name) - stepOrder.indexOf(b.step_name))
       .map((span, idx) => {
         const stepScore = stepScoresMap.get(span.step_name);
-        const isFailed = stepScore && !stepScore.local_pass;
-        const isTainted = stepScore && stepScore.local_pass && !stepScore.global_pass;
+        // A span that raised is a failure even when no step score blames it:
+        // `local_pass` is only about deterministic checks, and a crashed step
+        // may have none.
+        const spanFailed = span.status === "failure";
+        const isFailed = spanFailed || (stepScore ? !stepScore.local_pass : false);
+        const isTainted = !isFailed && !!stepScore && stepScore.local_pass && !stepScore.global_pass;
 
         // Get check count
         const totalChecks = stepScore ? Object.keys(stepScore.deterministic_checks).length : 0;
         const passedChecks = stepScore ? Object.values(stepScore.deterministic_checks).filter(Boolean).length : 0;
+        const failedChecks = totalChecks - passedChecks;
 
         // Get root cause stage marker
         const isRootCause = diagnosis?.root_cause_step === span.step_name;
@@ -47,7 +52,17 @@ export const DAGGraphView: React.FC<DAGGraphViewProps> = ({ trace, diagnosis }) 
           tokens: `${span.prompt_tokens + span.completion_tokens + span.reasoning_tokens} tokens`,
           duration: `${span.latency_ms}ms`,
           status: isFailed ? "FAILED" : isTainted ? "TAINTED" : "PASSED",
-          checks: totalChecks > 0 ? `${passedChecks}/${totalChecks} checks ${isFailed ? "failed" : "passed"}` : "No checks",
+          // Report the number of *failed* checks, not the number that passed.
+          // `2/3 checks failed` was previously printed for a step that had
+          // passed 2 of 3.
+          checks:
+            totalChecks > 0
+              ? isFailed
+                ? `${failedChecks}/${totalChecks} checks failed`
+                : `${passedChecks}/${totalChecks} checks passed`
+              : span.status === "failure"
+                ? "Step raised an exception"
+                : "No checks",
         };
       });
   }, [trace, diagnosis]);

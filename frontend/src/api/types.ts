@@ -1,4 +1,4 @@
-export type TraceStatus = "success" | "failure";
+export type TraceStatus = "success" | "failure" | "degraded";
 
 export type FailureCategory =
   | "extraction_hallucination"
@@ -18,8 +18,9 @@ export interface CheckResult {
 
 export interface Span {
   span_id: string;
+  trace_id: string;
   step_name: "intake" | "extraction" | "classification" | "summarization" | string;
-  step_index: number;
+  parent_span_id: string | null;
   input_json: string;
   output_json: string;
   status: "success" | "failure" | "degraded";
@@ -33,26 +34,32 @@ export interface Span {
   raw_response: string;
   confidence: number;
   error: string | null;
+  cached: boolean;
+  started_at: string;
+  ended_at: string | null;
+  pipeline_version: string;
+  prompt_version: string;
+  schema_version: number;
+  tenant_id: string;
 }
 
 export interface Trace {
   trace_id: string;
   document_id: string;
   status: TraceStatus;
-  start_time: string;
-  end_time: string;
-  total_latency_ms: number;
   spans: Span[];
-  metadata: Record<string, unknown>;
-  pipeline_version: string;
-  prompt_version: string;
-  schema_version: string;
   final_output: Record<string, unknown> | null;
   final_score: number | null;
+  pipeline_version: string;
+  prompt_version: string;
+  /** Backend `Trace.schema_version` is an `int`, not a string. */
+  schema_version: number;
   created_at: string;
   completed_at: string | null;
+  total_latency_ms: number;
   total_tokens: number;
   total_cost_usd: number;
+  tenant_id: string;
   /**
    * Root cause of the latest diagnosis, when one exists. `null` means "not
    * diagnosed"; `"none"` means "diagnosed clean". The run `status` alone cannot
@@ -72,6 +79,26 @@ export interface StepScore {
   deterministic_checks: Record<string, boolean>;
 }
 
+export interface JudgeStepScore {
+  step_name: string;
+  local_fidelity: number;
+  global_fidelity: number;
+  evidence: string[];
+  semantic_issues: string[];
+}
+
+/** The judge LLM's stored verdict plus the provenance of the call. */
+export interface JudgeAnalysis {
+  step_scores: JudgeStepScore[];
+  root_cause_step: string;
+  category: FailureCategory;
+  confidence: number;
+  cost_usd: number;
+  model_id: string;
+  provider: string;
+  created_at: string;
+}
+
 export interface Diagnosis {
   diagnosis_id: string;
   trace_id: string;
@@ -87,7 +114,13 @@ export interface Diagnosis {
   confirmed: boolean;
   overridden: boolean;
   override_category: FailureCategory | null;
+  /** Human-supplied failing step, when the analyzer missed the failure. */
+  override_step: string | null;
   override_reason: string | null;
+  /** Present only when the judge LLM ran. */
+  judge_analysis: JudgeAnalysis | null;
+  /** True when the judge overrode the deterministic verdict. */
+  analyzer_fallback: boolean;
 }
 
 export interface AnalyticsSnapshot {

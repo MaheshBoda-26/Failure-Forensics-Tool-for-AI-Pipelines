@@ -13,7 +13,11 @@ function setApiKey(key: string): void {
   localStorage.setItem(API_KEY_STORAGE, key);
 }
 
-export { setApiKey };
+function clearApiKey(): void {
+  localStorage.removeItem(API_KEY_STORAGE);
+}
+
+export { setApiKey, clearApiKey };
 
 async function apiFetch(url: string, options: RequestInit = {}): Promise<Response> {
   const apiKey = getApiKey();
@@ -62,7 +66,8 @@ export const api = {
     diagnosisId: string,
     confirmed: boolean,
     overrideCategory?: FailureCategory | null,
-    overrideReason?: string | null
+    overrideReason?: string | null,
+    overrideStep?: string | null
   ): Promise<Diagnosis> {
     const res = await apiFetch(`${API_BASE}/diagnoses/${encodeURIComponent(diagnosisId)}/confirm`, {
       method: "POST",
@@ -71,6 +76,7 @@ export const api = {
         confirmed,
         override_category: overrideCategory || null,
         override_reason: overrideReason || null,
+        override_step: overrideStep || null,
       }),
     });
     return handleResponse<Diagnosis>(res);

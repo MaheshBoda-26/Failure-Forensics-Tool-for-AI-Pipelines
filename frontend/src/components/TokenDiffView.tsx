@@ -8,9 +8,21 @@ interface TokenDiffViewProps {
 }
 
 export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }) => {
-  // Find the root cause span
+  // The failure verdict, taken from the diagnosis rather than from the mere
+  // existence of a Diagnosis object (a passing trace has one too).
   const rootCauseStep = diagnosis?.root_cause_step;
-  const rootCauseSpan = rootCauseStep ? trace.spans.find(s => s.step_name === rootCauseStep) : trace.spans[2] || trace.spans[0];
+  const hasRootCause = !!rootCauseStep && rootCauseStep !== "none";
+
+  // Find the root cause span; fall back to the last non-intake step (or the
+  // first span) when the analyzer reported no failure. `rootCauseStep` used to
+  // be checked for truthiness only, and `"none"` is truthy — so on every clean
+  // trace this looked up a step literally named "none" and resolved to
+  // `undefined`.
+  const fallbackSpan = trace.spans[2] || trace.spans[0];
+  const rootCauseSpan = hasRootCause
+    ? trace.spans.find((s) => s.step_name === rootCauseStep) || fallbackSpan
+    : fallbackSpan;
+
   // NOTE: the backend does not expose a ground-truth document type yet; the API
   // is written so this can be wired to a real `expected_type` field later.
   // Reporting "UNKNOWN" is honest; the previous banner claimed a diff count.
@@ -27,9 +39,6 @@ export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }
   const inputJson = rootCauseSpan ? parseJson(rootCauseSpan.input_json) : {};
   const outputJson = rootCauseSpan ? parseJson(rootCauseSpan.output_json) : {};
 
-  // The failure verdict, taken from the diagnosis rather than from the mere
-  // existence of a Diagnosis object (a passing trace has one too).
-  const hasRootCause = !!rootCauseStep && rootCauseStep !== "none";
   const checks = diagnosis?.step_scores?.flatMap((step) =>
     Object.values(step.deterministic_checks)
   ) ?? [];
@@ -122,10 +131,9 @@ export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }
           >
 {JSON.stringify({
   trace_id: `golden_${trace.document_id}`,
-  document_type: groundTruthType || "UNKNOWN",
+  document_type: groundTruthType,
   confidence_threshold: 0.70,
-  expected_entities: inputJson.entities || {},
-  grounded_token_spans: inputJson.grounded_token_spans || [],
+  expected_input_shape: Object.keys(inputJson as Record<string, unknown>),
   validation_status: "VALID"
 }, null, 2)}
           </pre>
@@ -171,14 +179,27 @@ export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }
               overflowX: "auto",
             }}
           >
-{JSON.stringify({
-  trace_id: trace.trace_id,
-  document_type: outputJson.document_type || "UNKNOWN",
-  confidence: outputJson.confidence || 0,
-  expected_entities: outputJson.entities || {},
-  grounded_token_spans: outputJson.grounded_token_spans || [],
-  validation_status: hasRootCause ? "SCHEMA_VIOLATION" : "VALID"
-}, null, 2)}
+{JSON.stringify(
+  hasRootCause
+    ? {
+        trace_id: trace.trace_id,
+        step: rootCauseStep,
+        category: diagnosis?.category,
+        // Render the failing span's own output rather than assuming every
+        // failure is a schema violation on an extraction/classification shape.
+        input: inputJson,
+        output: outputJson,
+        validation_status: "VIOLATED",
+      }
+    : {
+        trace_id: trace.trace_id,
+        step: rootCauseSpan?.step_name ?? null,
+        output: outputJson,
+        validation_status: "VALID",
+      },
+  null,
+  2
+)}
           </pre>
           <div style={{ fontSize: "12px", color: "var(--color-cinnabar)", lineHeight: 1.5, fontWeight: 500 }}>
             {hasRootCause

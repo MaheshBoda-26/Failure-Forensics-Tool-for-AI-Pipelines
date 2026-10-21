@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Activity, Play, CheckCircle2, AlertCircle } from "lucide-react";
-import { setApiKey } from "../api/client";
+import { clearApiKey, setApiKey } from "../api/client";
 
 export type NavTab = "home" | "explorer" | "dag" | "analytics";
 
@@ -10,6 +10,8 @@ interface HeaderProps {
   backendOnline: boolean;
   onRunDemo: () => Promise<void>;
   isRunningDemo: boolean;
+  /** Re-fetch after the key changes, so a 401 state clears without a reload. */
+  onApiKeyChange: () => Promise<void>;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -18,6 +20,7 @@ export const Header: React.FC<HeaderProps> = ({
   backendOnline,
   onRunDemo,
   isRunningDemo,
+  onApiKeyChange,
 }) => {
   const [keyDraft, setKeyDraft] = useState("");
   const [keySaved, setKeySaved] = useState(false);
@@ -138,13 +141,21 @@ export const Header: React.FC<HeaderProps> = ({
           onSubmit={(event) => {
             event.preventDefault();
             const trimmed = keyDraft.trim();
-            if (!trimmed) return;
-            setApiKey(trimmed);
+            // An empty submit clears the stored key. It used to `return` early,
+            // so a wrong key could never be removed without devtools.
+            if (trimmed) {
+              setApiKey(trimmed);
+            } else {
+              clearApiKey();
+            }
             setKeyDraft("");
             setKeySaved(true);
             window.setTimeout(() => setKeySaved(false), 2000);
+            // Re-fetch so a newly valid key (or a cleared one) is reflected in
+            // the UI immediately instead of after a full page reload.
+            void onApiKeyChange();
           }}
-          title="Stored in this browser only; sent as an Authorization header."
+          title="Stored in this browser only; sent as an Authorization header. Submit empty to clear."
           style={{ display: "flex", gap: "6px", alignItems: "center" }}
         >
           <input
@@ -168,19 +179,20 @@ export const Header: React.FC<HeaderProps> = ({
           />
           <button
             type="submit"
-            disabled={!keyDraft.trim()}
+            // Never disabled: submitting with an empty field is how a stored
+            // key is cleared.
             style={{
               fontFamily: "var(--font-mono)",
               fontSize: "11px",
               padding: "4px 10px",
-              color: keyDraft.trim() ? "var(--color-copper)" : "var(--color-ink-3)",
+              color: "var(--color-copper)",
               backgroundColor: "transparent",
-              border: `1px solid ${keyDraft.trim() ? "var(--color-copper)" : "var(--color-rule-strong)"}`,
+              border: "1px solid var(--color-copper)",
               borderRadius: "var(--radius-1)",
-              cursor: keyDraft.trim() ? "pointer" : "not-allowed",
+              cursor: "pointer",
             }}
           >
-            {keySaved ? "SAVED" : "SET KEY"}
+            {keySaved ? "SAVED" : keyDraft.trim() ? "SET KEY" : "CLEAR"}
           </button>
         </form>
 

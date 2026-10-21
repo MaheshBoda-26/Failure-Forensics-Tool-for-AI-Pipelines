@@ -438,7 +438,12 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                         marginTop: "4px",
                       }}
                     >
-                      {(diagnosis.confidence * 100).toFixed(1)}% (Deterministic)
+                      {(diagnosis.confidence * 100).toFixed(1)}%{" "}
+                      {diagnosis.analyzer_fallback
+                        ? `(Judge: ${diagnosis.judge_analysis?.model_id ?? diagnosis.model_id})`
+                        : diagnosis.judge_analysis
+                          ? `(Judge: ${diagnosis.judge_analysis.model_id}, agrees)`
+                          : "(Deterministic)"}
                     </div>
                   </div>
                 </div>

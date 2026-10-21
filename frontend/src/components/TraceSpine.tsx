@@ -54,7 +54,7 @@ export const TraceSpine: React.FC<TraceSpineProps> = ({
           const stepChecks = stepScore
             ? Object.keys(stepScore.deterministic_checks).length
             : 0;
-          const isFailing = rootCauseStep === step.name;
+          const isFailing = rootCauseStep === step.name || span?.status === "failure";
           const isDownstream = failingIndex !== -1 && idx > failingIndex;
           const isPassed = !isFailing && !isDownstream;
           const isSelected = selectedStep === step.name;

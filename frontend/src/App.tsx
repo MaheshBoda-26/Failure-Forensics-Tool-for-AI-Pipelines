@@ -49,11 +49,14 @@ export const App: React.FC = () => {
         api.getEvalRuns(),
       ]);
 
+      let resolvedTraceId = selectedTraceId;
+
       if (fetchedTraces.status === "fulfilled") {
         setTraces(fetchedTraces.value);
         setBackendOnline(true);
         if (fetchedTraces.value.length > 0 && !selectedTraceId) {
-          setSelectedTraceId(fetchedTraces.value[0].trace_id);
+          resolvedTraceId = fetchedTraces.value[0].trace_id;
+          setSelectedTraceId(resolvedTraceId);
         }
       } else {
         setBackendOnline(false);
@@ -65,6 +68,18 @@ export const App: React.FC = () => {
 
       if (fetchedEvalRuns.status === "fulfilled") {
         setEvalRuns(fetchedEvalRuns.value);
+      }
+
+      // Re-fetch the diagnosis for the selected trace. `loadData` used to fetch
+      // only traces/analytics/eval runs, so after confirming or overriding a
+      // diagnosis the panel kept showing the stale verdict (the trace id had
+      // not changed, so the selected-trace effect never re-ran).
+      if (resolvedTraceId) {
+        try {
+          setCurrentDiagnosis(await api.getDiagnosis(resolvedTraceId));
+        } catch {
+          setCurrentDiagnosis(null);
+        }
       }
     } catch {
       setBackendOnline(false);
@@ -142,6 +157,7 @@ export const App: React.FC = () => {
         backendOnline={backendOnline}
         onRunDemo={handleRunDemo}
         isRunningDemo={isRunningDemo}
+        onApiKeyChange={loadData}
       />
 
       {/* Main Tab Content */}
