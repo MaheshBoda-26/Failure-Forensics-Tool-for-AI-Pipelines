@@ -204,6 +204,9 @@ class Span(VersionedModel, TenantScoped):
     confidence: int = Field(default=3, ge=1, le=5, description="Self-reported confidence 1-5")
     error: str | None = Field(default=None, description="Error message if step failed")
     status: Literal["success", "failure", "degraded"] = Field(default="success")
+    #: True when this step's response came from the response cache. Cached work
+    #: costs nothing, so `_span_cost_usd` must not bill the recorded tokens.
+    cached: bool = Field(default=False, description="Response served from cache")
 
     # Timing
     started_at: datetime = Field(default_factory=_utc_now)

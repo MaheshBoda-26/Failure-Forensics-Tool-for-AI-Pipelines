@@ -228,7 +228,7 @@ async def test_failed_step_does_not_record_telemetry_as_success() -> None:
 # --- Totals aggregation + persistence (C12 / C6) -------------------------
 
 
-def test_unknown_model_prices_at_zero_rather_than_guessing() -> None:
+def test_unknown_model_prices_at_zero_rather_than_guessing(tmp_path: Path) -> None:
     """A model absent from config must not produce an invented cost."""
     trace = Trace(document_id="d1")
     span = _span("a")
@@ -237,12 +237,12 @@ def test_unknown_model_prices_at_zero_rather_than_guessing() -> None:
     span.prompt_tokens = 1_000_000
     trace.spans.append(span)
 
-    finalize_trace(trace, traces_dir=Path("/tmp/forensics-test-traces"))
+    finalize_trace(trace, traces_dir=tmp_path / "traces")
 
     assert trace.total_cost_usd == 0.0
 
 
-def test_config_failure_is_loud_not_a_silent_zero_cost() -> None:
+def test_config_failure_is_loud_not_a_silent_zero_cost(tmp_path: Path) -> None:
     """A broken price table must not look like a free run."""
     import forensics.tracing as tracing_mod
     from forensics import config as config_mod
@@ -260,7 +260,7 @@ def test_config_failure_is_loud_not_a_silent_zero_cost() -> None:
         trace.spans.append(span)
 
         with pytest.raises(RuntimeError, match="Cannot price span"):
-            finalize_trace(trace, traces_dir=Path("/tmp/forensics-test-traces"))
+            finalize_trace(trace, traces_dir=tmp_path / "traces")
     finally:
         config_mod.get_settings = original  # type: ignore[assignment]
     assert tracing_mod is not None
@@ -274,6 +274,10 @@ def test_trace_totals_aggregate_span_tokens() -> None:
             _span("b"),
         ],
     )
+    # Spans must point at their parent trace: the SQLite write is unconditional
+    # now, and a dangling `trace_id` fails the spans→traces foreign key.
+    for span in trace.spans:
+        span.trace_id = trace.trace_id
     trace.spans[0].prompt_tokens = 1000
     trace.spans[0].completion_tokens = 100
     trace.spans[1].prompt_tokens = 500
@@ -340,7 +344,10 @@ def test_a_failed_json_write_leaves_no_temp_file(
 
 
 def test_finalize_trace_sets_completion_fields() -> None:
-    trace = Trace(document_id="d1", spans=[_span("a")])
+    trace = Trace(document_id="d1")
+    span = _span("a")
+    span.trace_id = trace.trace_id
+    trace.spans.append(span)
     assert trace.completed_at is None
 
     finalize_trace(trace)

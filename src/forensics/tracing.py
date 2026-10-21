@@ -247,6 +247,27 @@ def _safe_repr(value: Any, _depth: int = 0) -> str:
     return f"<{module}.{qualname}>"
 
 
+def _jsonable(value: Any, _depth: int = 0) -> Any:
+    """Convert a step input to JSON-safe structures without losing its content.
+
+    `json.dumps(..., default=_safe_repr)` cannot serialize a Pydantic model, so
+    every step input — `Document`, `IntakeOutput`, `ExtractionOutput`, ... —
+    was replaced by its class-name placeholder and the recorded `input_json` was
+    `{"args": ["<IntakeOutput>"], ...}`: the actual input to every step was
+    lost. Models are dumped structurally instead; genuinely unserializable
+    objects (a client, a settings object) still fall through to `_safe_repr`.
+    """
+    if _depth > 6:
+        return "<...>"
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item, _depth + 1) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable(item, _depth + 1) for item in value]
+    return value
+
+
 def _span_payload(args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
     """Build the serializable input payload for a span.
 
@@ -256,7 +277,7 @@ def _span_payload(args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, An
     span must pass it explicitly as an argument.
     """
     positional = list(args[1:]) if args else []
-    return {"args": positional, "kwargs": kwargs}
+    return {"args": _jsonable(positional), "kwargs": _jsonable(kwargs)}
 
 
 def traced_step(step_name: str) -> Callable[[F], F]:
@@ -329,6 +350,7 @@ def traced_step(step_name: str) -> Callable[[F], F]:
                     span.prompt_tokens = telemetry.prompt_tokens
                     span.completion_tokens = telemetry.completion_tokens
                     span.reasoning_tokens = telemetry.reasoning_tokens
+                    span.cached = telemetry.cached
                     if telemetry.confidence is not None:
                         span.confidence = telemetry.confidence
 
@@ -391,6 +413,11 @@ def _span_cost_usd(span: Span) -> float:
     unknown model prices at 0.0 rather than guessing upward.
     """
     from forensics.config import get_settings
+
+    # A cache hit performs no model call, so it costs nothing regardless of the
+    # token counts recorded from the cached response.
+    if span.cached:
+        return 0.0
 
     try:
         settings = get_settings()
@@ -484,12 +511,14 @@ def finalize_trace(
     traces_dir = traces_dir or _default_traces_dir()
     write_trace_json(trace, traces_dir)
 
-    if db_path is not None:
-        conn = init_db(db_path)
-        try:
-            write_trace_to_db(trace, conn)
-        finally:
-            conn.close()
+    # `db_path or _default_db_path()`: the SQLite index was previously skipped
+    # whenever a caller omitted `db_path`, so the JSON file and the index
+    # disagreed and analytics silently missed those traces.
+    conn = init_db(db_path or _default_db_path())
+    try:
+        write_trace_to_db(trace, conn)
+    finally:
+        conn.close()
 
     # Mirror to OTel if configured
     try:
@@ -683,7 +712,18 @@ def load_trace_from_db(trace_id: str, conn: sqlite3.Connection) -> Trace | None:
     )
     span_rows = span_cursor.fetchall()
     span_cols = [d[0] for d in span_cursor.description] if span_rows else []
-    spans = [Span.model_validate(dict(zip(span_cols, r, strict=False))) for r in span_rows]
+    # The `spans` table is an index: it carries no `input_json`, `output_json`,
+    # `prompt` or `raw_response`. Validating a dict built from those columns
+    # raised `ValidationError: 4 validation errors for Span` on every trace that
+    # had at least one span. The payloads live in the JSON file, so they are
+    # filled with empty strings here and the caller that needs them reads JSON.
+    payload_defaults = {"input_json": "", "output_json": "", "prompt": "", "raw_response": ""}
+    spans: list[Span] = []
+    for row in span_rows:
+        data = dict(zip(span_cols, row, strict=False))
+        for field, default in payload_defaults.items():
+            data.setdefault(field, default)
+        spans.append(Span.model_validate(data))
 
     trace_data["spans"] = spans
     return Trace.model_validate(trace_data)
