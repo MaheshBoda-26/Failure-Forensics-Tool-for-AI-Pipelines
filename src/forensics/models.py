@@ -269,6 +269,10 @@ class Diagnosis(VersionedModel, TenantScoped):
     confirmed: bool = Field(default=False, description="Human confirmed this diagnosis")
     overridden: bool = Field(default=False, description="Human overrode this diagnosis")
     override_category: FailureCategory | None = None
+    override_step: str | None = Field(
+        default=None,
+        description="Human-supplied root-cause step, overriding the analyzer's",
+    )
     override_reason: str | None = None
     # Judge LLM analysis (optional, populated when judge runs)
     judge_analysis: "JudgeAnalysis | None" = None

@@ -35,6 +35,9 @@ _COLUMN_ADDITIONS: dict[str, dict[str, str]] = {
     "diagnoses": {
         "judge_analysis": "TEXT",
         "analyzer_fallback": "BOOLEAN DEFAULT 0",
+        # A human can know the failing step even when the analyzer reported
+        # "none", so the override has to survive persistence.
+        "override_step": "TEXT",
     },
 }
 

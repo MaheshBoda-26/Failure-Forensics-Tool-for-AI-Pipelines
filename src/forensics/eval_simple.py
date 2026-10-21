@@ -150,7 +150,7 @@ def flag_to_eval_case(flag: Flag, diagnosis: Diagnosis, storage: Storage) -> Eva
     if not trace:
         return None
 
-    failing_step = diagnosis.root_cause_step
+    failing_step = diagnosis.override_step or diagnosis.root_cause_step
     category = diagnosis.override_category or diagnosis.category
 
     # Pull the failing span's output as the "bad" side.
@@ -397,9 +397,11 @@ def create_eval_cases_from_confirmed_flags(tenant_id: str | None = None) -> int:
         if not diagnosis.confirmed:
             continue
 
-        # An override is the authoritative category when a human supplied one.
+        # An override is the authoritative category when a human supplied one,
+        # and likewise for the step: a human can name the failing step the
+        # analyzer missed.
         effective_category = diagnosis.override_category or diagnosis.category
-        effective_step = diagnosis.root_cause_step
+        effective_step = diagnosis.override_step or diagnosis.root_cause_step
         if effective_step in ("", "none"):
             continue
 

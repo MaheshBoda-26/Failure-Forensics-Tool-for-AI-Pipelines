@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -175,7 +175,7 @@ class FlagRequest(BaseModel):
     """
 
     user_id: str = "api_user"
-    note: str | None = None
+    note: str | None = Field(default=None, max_length=2_000)
 
 
 class ConfirmDiagnosisRequest(BaseModel):
@@ -183,11 +183,16 @@ class ConfirmDiagnosisRequest(BaseModel):
 
     `diagnosis_id` comes from the path; requiring it in the body too made every
     correct request fail validation.
+
+    `override_step` exists because a human can see the failing step when the
+    deterministic analyzer reported `"none"`; without it, confirming an override
+    on a missed failure could never create an eval case.
     """
 
     confirmed: bool
     override_category: FailureCategory | None = None
-    override_reason: str | None = None
+    override_step: str | None = Field(default=None, max_length=64)
+    override_reason: str | None = Field(default=None, max_length=2_000)
 
 
 class PipelineRunRequest(BaseModel):
@@ -196,10 +201,13 @@ class PipelineRunRequest(BaseModel):
     `expected_type` is constrained to the known document types because it is
     ground truth for the analyzer's label check: an arbitrary string would be
     silently accepted and then never match.
+
+    `doc_text` is bounded: it is written to SQLite and to disk, so an unbounded
+    field let one request persist an arbitrarily large payload.
     """
 
     doc_id: str = Field(..., min_length=1, pattern=DOC_ID_REGEX)
-    doc_text: str = Field(..., min_length=1)
+    doc_text: str = Field(..., min_length=1, max_length=1_000_000)
     expected_type: DocumentType | None = None
     priority: int = Field(default=0, description="Higher runs first")
 
@@ -243,8 +251,8 @@ def scheduler_status(
 @app.get("/traces", response_model=list[Trace])
 def list_traces(
     status: TraceStatus | None = None,
-    limit: int = 100,
-    offset: int = 0,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
     authorization: Annotated[str | None, Header()] = None,
 ) -> list[Trace]:
     tenant = get_current_tenant(authorization)
@@ -357,9 +365,10 @@ def confirm_diagnosis(
     storage.update_diagnosis_confirmation(
         diagnosis_id,
         request.confirmed,
-        overridden=bool(request.override_category),
+        overridden=bool(request.override_category or request.override_step),
         override_category=override_category,
         override_reason=request.override_reason,
+        override_step=request.override_step,
     )
 
     # Everything below reads the *updated* row. Passing the pre-update object
@@ -372,8 +381,10 @@ def confirm_diagnosis(
     # A rejection is a verdict too: `confirmed=False` means "the analyzer is
     # wrong", which must not create a flag or an eval case that bakes the wrong
     # expectation into the suite. A clean trace ("none") is likewise not a
-    # regression case.
-    if not updated_diagnosis.confirmed or updated_diagnosis.root_cause_step in ("", "none"):
+    # regression case — unless a human supplied `override_step`, which is
+    # precisely the "the analyzer missed this" case.
+    effective_step = updated_diagnosis.override_step or updated_diagnosis.root_cause_step
+    if not updated_diagnosis.confirmed or effective_step in ("", "none"):
         return updated_diagnosis
 
     # Auto-create flag if none exists for this trace
@@ -403,8 +414,8 @@ def confirm_diagnosis(
 
 @app.get("/eval/cases")
 def list_eval_cases(
-    limit: int = 100,
-    offset: int = 0,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
     authorization: Annotated[str | None, Header()] = None,
 ) -> list[EvalCase]:
     tenant = get_current_tenant(authorization)
@@ -413,8 +424,8 @@ def list_eval_cases(
 
 @app.get("/eval/runs")
 def list_eval_runs(
-    limit: int = 100,
-    offset: int = 0,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
     authorization: Annotated[str | None, Header()] = None,
 ) -> list[EvalRun]:
     tenant = get_current_tenant(authorization)
@@ -461,15 +472,22 @@ async def trigger_eval_run(
         traces = storage.list_traces(limit=20, tenant_id=scope)
         for t in traces:
             diag = storage.get_diagnosis_for_trace(t.trace_id, tenant_id=scope)
-            if diag and diag.root_cause_step not in ("", "none"):
+            if not diag or (diag.override_step or diag.root_cause_step) in ("", "none"):
+                continue
+            # Don't stamp a second "Auto eval case" flag on a trace that a human
+            # already flagged, and attribute the flag to the trace's own tenant
+            # rather than to the caller's.
+            if storage.list_flags_for_trace(t.trace_id, tenant_id=scope):
+                pass
+            else:
                 flag = Flag(
                     trace_id=t.trace_id,
                     user_id="system",
                     note="Auto eval case",
-                    tenant_id=tenant.tenant_id,
+                    tenant_id=t.tenant_id,
                 )
                 storage.create_flag(flag)
-                storage.update_diagnosis_confirmation(diag.diagnosis_id, True)
+            storage.update_diagnosis_confirmation(diag.diagnosis_id, True)
         create_eval_cases_from_confirmed_flags(scope)
 
     run = await run_eval(scope)
@@ -601,7 +619,7 @@ async def run_pipeline(
 @app.get("/jobs", response_model=list[Job])
 def list_jobs(
     status: JobStatus | None = None,
-    limit: int = 100,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
     authorization: Annotated[str | None, Header()] = None,
 ) -> list[Job]:
     """List queued jobs, newest first."""
@@ -744,7 +762,11 @@ def _static_dir() -> Path:
 
 
 _dist_path = _static_dir()
-if _dist_path.exists():
+# A `dist` directory without a compiled `assets/` subdirectory (a partial or
+# failed frontend build) must not crash the import: `StaticFiles(directory=...)`
+# raises at construction, which took the whole API down before it could answer
+# `/health`.
+if (_dist_path / "assets").is_dir():
     from fastapi.staticfiles import StaticFiles
 
     app.mount("/assets", StaticFiles(directory=_dist_path / "assets"), name="assets")
