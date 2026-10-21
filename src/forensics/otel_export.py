@@ -15,6 +15,7 @@ Attribute keys follow the OTel GenAI semantic conventions where they exist and
 a contract with whatever collector eventually receives them.
 """
 
+import contextlib
 import random
 from typing import Any, Literal, cast
 
@@ -29,6 +30,7 @@ from opentelemetry.trace import SpanKind, Status, StatusCode
 
 from forensics.config import get_settings
 from forensics.models import Span, Trace
+from forensics.pii import create_redactor_from_settings
 
 # GenAI semantic conventions (stable names) plus our own namespace.
 GENAI_ATTRS: dict[str, str] = {
@@ -69,6 +71,18 @@ def _truncate(value: str, limit: int) -> tuple[str, bool]:
 
 
 def _span_attributes(span: Span, trace: Trace, max_prompt_chars: int) -> dict[str, Any]:
+    """Build the OTel attribute map for one span.
+
+    The prompt is redacted here when PII redaction is enabled: `finalize_trace`
+    scrubs the stored trace, but a direct `export_trace_to_otel` call on an
+    in-memory trace shipped the raw prompt (and whatever key it contained) to an
+    external collector.
+    """
+    prompt = span.prompt
+    redactor = create_redactor_from_settings()
+    if redactor.enabled:
+        prompt, _ = redactor.redact(prompt)
+
     attrs: dict[str, Any] = {
         GENAI_ATTRS["step_name"]: span.step_name,
         GENAI_ATTRS["trace_id"]: trace.trace_id,
@@ -80,7 +94,7 @@ def _span_attributes(span: Span, trace: Trace, max_prompt_chars: int) -> dict[st
         GENAI_ATTRS["confidence"]: int(span.confidence),
     }
 
-    prompt, truncated = _truncate(span.prompt, max_prompt_chars)
+    prompt, truncated = _truncate(prompt, max_prompt_chars)
     attrs[GENAI_ATTRS["prompt"]] = prompt
     if truncated:
         attrs[GENAI_ATTRS["prompt_truncated"]] = True
@@ -104,7 +118,6 @@ def _emit_span(
     tracer: otel_trace.Tracer,
     span: Span,
     trace: Trace,
-    exporter: SpanExporter,
     max_prompt_chars: int,
 ) -> None:
     with tracer.start_as_current_span(
@@ -137,7 +150,7 @@ def export_trace_to_otel(
     provider = tracer_provider or _provider_with(exporter)
     tracer = provider.get_tracer(DEFAULT_TRACER_NAME)
     for span in trace.spans:
-        _emit_span(tracer, span, trace, exporter, max_prompt_chars)
+        _emit_span(tracer, span, trace, max_prompt_chars)
     return len(trace.spans)
 
 
@@ -166,6 +179,7 @@ class ForensicsSpanProcessor:
         exporter: SpanExporter,
         max_prompt_chars: int = DEFAULT_MAX_PROMPT_CHARS,
         sampling_rate: float = 1.0,
+        tracer_provider: TracerProvider | None = None,
     ) -> None:
         self._trace = trace
         self._exporter = exporter
@@ -175,9 +189,17 @@ class ForensicsSpanProcessor:
         # unsampled one is dropped whole. Deciding per span would export a
         # partial trace, which is worse than no trace for correlation.
         self._sampled = random.random() < sampling_rate
-        # One provider for the processor's lifetime: building one per span
-        # would spin up a thread pool per span and never shut it down.
-        self._tracer = _provider_with(exporter).get_tracer(DEFAULT_TRACER_NAME)
+        # Reuse the configured provider when the caller passes one. Building a
+        # fresh `TracerProvider` (with its own `SimpleSpanProcessor` and thread
+        # pool) on every `finalize_trace` leaked one provider per trace, and the
+        # provider this replaced was never shut down.
+        if tracer_provider is not None:
+            self._provider = tracer_provider
+            self._owns_provider = False
+        else:
+            self._provider = _provider_with(exporter)
+            self._owns_provider = True
+        self._tracer = self._provider.get_tracer(DEFAULT_TRACER_NAME)
 
     def on_start(self, span: otel_trace.Span, parent_context: Any = None) -> None:
         return None
@@ -185,10 +207,19 @@ class ForensicsSpanProcessor:
     def on_end(self, span: Span) -> None:
         if not self._sampled:
             return
-        _emit_span(self._tracer, span, self._trace, self._exporter, self._max_prompt_chars)
+        _emit_span(self._tracer, span, self._trace, self._max_prompt_chars)
 
     def shutdown(self) -> None:
-        return None
+        """Shut down a provider this processor created.
+
+        A caller-supplied provider (the configured global one) is shared with
+        the rest of the process and must stay alive; the one created here is
+        owned by this processor and is flushed and torn down so its thread pool
+        does not outlive the trace.
+        """
+        if self._owns_provider:
+            with contextlib.suppress(Exception):
+                self._provider.shutdown()
 
     def force_flush(self, timeout_millis: int = 30_000) -> bool:
         return True
@@ -240,9 +271,21 @@ def configure_otel() -> tuple[TracerProvider, bool, SpanExporter | None]:
     return _configured
 
 
+def reset_otel() -> None:
+    """Drop the cached OTel provider (used by tests).
+
+    Without this the first `configure_otel()` in a process pinned the global
+    provider and exporter for every later test, so a test that changed
+    `OTEL_EXPORTER` saw the previous configuration.
+    """
+    global _configured
+    _configured = None
+
+
 __all__ = [
     "GENAI_ATTRS",
     "ForensicsSpanProcessor",
     "configure_otel",
     "export_trace_to_otel",
+    "reset_otel",
 ]

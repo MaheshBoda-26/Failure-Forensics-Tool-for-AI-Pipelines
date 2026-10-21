@@ -530,6 +530,9 @@ def finalize_trace(
                 exporter,
                 settings.otel.max_prompt_chars,
                 settings.otel.sampling_rate,
+                # Reuse the configured provider instead of building (and
+                # leaking) a new one per trace.
+                tracer_provider=_provider,
             )
             for span in trace.spans:
                 otel_processor.on_end(span)
