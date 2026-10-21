@@ -31,7 +31,7 @@ from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from forensics.config import get_settings
+from forensics.config import get_settings, validate_webhook_url
 from forensics.eval_simple import run_eval
 from forensics.models import DEFAULT_TENANT_ID, EvalRun
 from forensics.storage import Storage
@@ -300,6 +300,15 @@ class EvalScheduler:
         """POST `payload` to the configured webhook. Returns whether it was sent."""
         url = self.settings.alert_webhook_url
         if not url:
+            return False
+
+        # Re-validate at request time. A name that resolved to a public address
+        # at startup can resolve to 169.254.169.254 later (DNS rebinding), and
+        # the stored setting is re-read on every run.
+        try:
+            validate_webhook_url(url, dry_run=self.settings.dry_run)
+        except ValueError:
+            logger.exception("Refusing to send alert to an unsafe webhook URL")
             return False
 
         body = json.dumps(

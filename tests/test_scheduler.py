@@ -529,7 +529,7 @@ def test_cli_scheduler_start_refuses_without_a_schedule(
 def test_cli_scheduler_start_runs_until_interrupted(
     factory: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """`signal.pause()` is what a systemd unit blocks on; interrupt it here."""
+    """Blocking on a shutdown signal is what a systemd unit relies on; interrupt it here."""
     monkeypatch.setenv("SCHEDULER_DB_PATH", str(tmp_path / "cli-scheduler.db"))
     monkeypatch.setenv("EVAL_SCHEDULE", CRON)
     reset_settings()
@@ -538,7 +538,7 @@ def test_cli_scheduler_start_runs_until_interrupted(
     def interrupt() -> None:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("forensics.cli.signal.pause", interrupt)
+    monkeypatch.setattr("forensics.cli._wait_for_shutdown_signal", interrupt)
 
     result = CliRunner().invoke(cli_app, ["scheduler-start"])
 

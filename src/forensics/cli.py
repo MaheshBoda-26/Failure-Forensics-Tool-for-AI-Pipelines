@@ -6,8 +6,8 @@ console script and as `python -m forensics.cli`.
 """
 
 import json
-import signal
 import sys
+import threading
 from pathlib import Path
 from typing import Annotated
 
@@ -596,11 +596,23 @@ def auth_revoke_key(
 # ─── scheduler (spec 06) ────────────────────────────────────────────────────
 
 
+def _wait_for_shutdown_signal() -> None:
+    """Block the main thread until SIGINT/SIGTERM.
+
+    `signal.pause()` is Unix-only; a never-set `Event.wait()` blocks the same way
+    on every platform and still raises `KeyboardInterrupt` on Ctrl-C.
+    """
+    threading.Event().wait()
+
+
 @app.command(name="scheduler-start")
 def scheduler_start() -> None:
     """Start the eval scheduler and block (for systemd / a container's PID 1)."""
     from forensics.scheduler import get_scheduler
 
+    # Same startup gate as `serve`/`worker`: an invalid webhook, cron string or
+    # PII pattern must fail here, not hours later when the first alert fires.
+    _setup()
     scheduler = get_scheduler(Storage())
     scheduler.start()
     if not scheduler.settings.eval_schedule:
@@ -618,7 +630,7 @@ def scheduler_start() -> None:
         err=True,
     )
     try:
-        signal.pause()
+        _wait_for_shutdown_signal()
     except KeyboardInterrupt:
         scheduler.stop()
 

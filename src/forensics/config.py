@@ -6,6 +6,7 @@ that shares a provider family with the pipeline models.
 """
 
 import ipaddress
+import socket
 import warnings
 from pathlib import Path
 from typing import Any, Literal
@@ -387,12 +388,17 @@ class Settings(BaseSettings):
             return data.get(alias, data.get(alias.lower()))
 
         if not isinstance(data.get("otel"), dict):
+            sampling = bound("OTEL_SAMPLING_RATE")
+            max_prompt = bound("OTEL_MAX_PROMPT_CHARS")
             data["otel"] = {
                 "exporter": bound("OTEL_EXPORTER") or "none",
                 "endpoint": bound("OTEL_ENDPOINT") or "http://localhost:4318/v1/traces",
                 "service_name": bound("OTEL_SERVICE_NAME") or "failure-forensics",
-                "sampling_rate": bound("OTEL_SAMPLING_RATE") or 1.0,
-                "max_prompt_chars": bound("OTEL_MAX_PROMPT_CHARS") or 4000,
+                # `0.0 or 1.0` evaluates to 1.0, which silently turned "sample
+                # nothing" into "sample everything". Only an unset value gets
+                # the default.
+                "sampling_rate": 1.0 if sampling is None else sampling,
+                "max_prompt_chars": 4000 if max_prompt is None else max_prompt,
             }
         return data
 
@@ -436,6 +442,36 @@ class Settings(BaseSettings):
             config: ModelConfig = getattr(self, attr)
             config.max_tokens = getattr(self, f"{prefix}_model_max_tokens")
             config.is_reasoning = getattr(self, f"{prefix}_model_is_reasoning")
+        return self
+
+    @model_validator(mode="after")
+    def validate_model_configs_complete(self) -> "Settings":
+        """Ensure all model configs have required fields.
+
+        Defined before the separation/duplication validators so it runs first:
+        when every model env var is unset, the separation validator used to fire
+        on the empty-string family ("Judge model family '' matches pipeline
+        family") instead of naming the missing variable. Validators run in
+        definition order, so this one has to come first.
+        """
+        for name, model in [
+            ("pipeline", self.pipeline_model),
+            ("pipeline_fallback", self.pipeline_fallback_model),
+            ("judge", self.judge_model),
+            ("cheap", self.cheap_model),
+        ]:
+            if not model.model_id:
+                raise ValueError(f"{name}_model.model_id is empty (check {name.upper()}_MODEL_ID)")
+            if not model.provider:
+                raise ValueError(
+                    f"{name}_model.provider is empty (check {name.upper()}_MODEL_PROVIDER)"
+                )
+            if not model.family:
+                raise ValueError(
+                    f"{name}_model.family is empty (check {name.upper()}_MODEL_FAMILY)"
+                )
+            if model.price_in_per_1m < 0 or model.price_out_per_1m < 0:
+                raise ValueError(f"{name}_model prices must be non-negative")
         return self
 
     @model_validator(mode="after")
@@ -488,29 +524,6 @@ class Settings(BaseSettings):
             )
         return self
 
-    @model_validator(mode="after")
-    def validate_model_configs_complete(self) -> "Settings":
-        """Ensure all model configs have required fields."""
-        for name, model in [
-            ("pipeline", self.pipeline_model),
-            ("pipeline_fallback", self.pipeline_fallback_model),
-            ("judge", self.judge_model),
-            ("cheap", self.cheap_model),
-        ]:
-            if not model.model_id:
-                raise ValueError(f"{name}_model.model_id is empty (check {name.upper()}_MODEL_ID)")
-            if not model.provider:
-                raise ValueError(
-                    f"{name}_model.provider is empty (check {name.upper()}_MODEL_PROVIDER)"
-                )
-            if not model.family:
-                raise ValueError(
-                    f"{name}_model.family is empty (check {name.upper()}_MODEL_FAMILY)"
-                )
-            if model.price_in_per_1m < 0 or model.price_out_per_1m < 0:
-                raise ValueError(f"{name}_model prices must be non-negative")
-        return self
-
 
 _settings: Settings | None = None
 
@@ -550,45 +563,72 @@ def _validate_pii_custom_patterns(settings: Settings) -> None:
     parse_custom_patterns(settings.pii_custom_patterns)
 
 
-def _validate_alert_webhook(settings: Settings) -> None:
-    """Reject an alert webhook that could be used for SSRF.
-
-    `ALERT_WEBHOOK_URL` is delivered by the server, not the browser, so pointing
-    it at a link-local address reaches cloud metadata and at a loopback address
-    reaches services bound only to the host. Plain HTTP is only acceptable in
-    dry-run/development mode, where no real credential is sent.
-    """
-    url = settings.alert_webhook_url
-    if not url:
-        return
-
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError("ALERT_WEBHOOK_URL must be an http(s) URL")
-    if parsed.scheme == "http" and not settings.dry_run:
-        raise ValueError("ALERT_WEBHOOK_URL must use https:// (http:// only with DRY_RUN=true)")
-
-    host = (parsed.hostname or "").strip().lower()
-    if not host:
-        raise ValueError("ALERT_WEBHOOK_URL must include a host")
-    if settings.dry_run:
-        return
-    if host in {"localhost", "metadata", "metadata.google.internal"}:
-        raise ValueError(f"ALERT_WEBHOOK_URL host '{host}' is not allowed")
-
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return  # a normal DNS name
-    if (
+def _is_forbidden_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True for an address that must never receive a server-issued webhook."""
+    return (
         address.is_private
         or address.is_loopback
         or address.is_link_local
         or address.is_reserved
         or address.is_multicast
         or address.is_unspecified
-    ):
+    )
+
+
+def _resolved_addresses(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """Every address `host` resolves to, or [] when it does not resolve.
+
+    An unresolvable host cannot be the target of an SSRF request, so it is
+    accepted here (startup validation must work offline); `send_alert` re-checks
+    at request time, where a rebinding name would already have to resolve.
+    """
+    try:
+        addresses = [
+            ipaddress.ip_address(info[4][0].split("%", 1)[0])
+            for info in socket.getaddrinfo(host, None)
+        ]
+    except (socket.gaierror, ValueError, OSError):
+        return []
+    return addresses
+
+
+def validate_webhook_url(url: str, *, dry_run: bool = False) -> None:
+    """Reject an alert webhook that could be used for SSRF.
+
+    `ALERT_WEBHOOK_URL` is delivered by the server, not the browser, so pointing
+    it at a link-local address reaches cloud metadata and at a loopback address
+    reaches services bound only to the host. A hostname is resolved and *every*
+    address it maps to is checked: validating the literal form only let
+    `127.0.0.1.nip.io`, decimal/octal IP encodings, and internal DNS names
+    through. Shared by startup validation and `send_alert` so the two cannot
+    disagree.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("ALERT_WEBHOOK_URL must be an http(s) URL")
+    if parsed.scheme == "http" and not dry_run:
+        raise ValueError("ALERT_WEBHOOK_URL must use https:// (http:// only with DRY_RUN=true)")
+
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        raise ValueError("ALERT_WEBHOOK_URL must include a host")
+    if dry_run:
+        return
+    if host in {"localhost", "metadata", "metadata.google.internal"}:
+        raise ValueError(f"ALERT_WEBHOOK_URL host '{host}' is not allowed")
+
+    addresses = _resolved_addresses(host)
+    if not addresses:
+        return  # a normal DNS name that does not resolve (or is offline)
+    if any(_is_forbidden_address(address) for address in addresses):
         raise ValueError(f"ALERT_WEBHOOK_URL must not target a private/loopback address ({host})")
+
+
+def _validate_alert_webhook(settings: Settings) -> None:
+    """Startup wrapper around `validate_webhook_url`."""
+    if not settings.alert_webhook_url:
+        return
+    validate_webhook_url(settings.alert_webhook_url, dry_run=settings.dry_run)
 
 
 def validate_startup() -> None:
@@ -612,6 +652,27 @@ def validate_startup() -> None:
     _validate_pii_custom_patterns(settings)
     _validate_alert_webhook(settings)
 
+    # A wildcard origin with credentialed CORS lets any page an operator visits
+    # drive the API with their key. `config.py` documented "never '*'" but
+    # nothing enforced it, so a deployment could opt into the hole by accident.
+    origins = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
+    if "*" in origins:
+        raise ValueError("CORS_ORIGINS must list explicit origins; '*' is not allowed")
+
+    # An invalid cron expression used to pass `validate-config` and only crash
+    # the API in `_lifespan`, where the failure surfaces as a dead server.
+    if settings.eval_schedule:
+        from apscheduler.triggers.cron import CronTrigger
+
+        try:
+            CronTrigger.from_crontab(
+                settings.eval_schedule, timezone=settings.eval_schedule_timezone
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"EVAL_SCHEDULE is not a valid cron expression: {settings.eval_schedule!r} ({exc})"
+            ) from exc
+
     # Ensure directories exist
     settings.traces_dir.mkdir(parents=True, exist_ok=True)
     settings.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -632,4 +693,5 @@ __all__ = [
     "get_settings",
     "reset_settings",
     "validate_startup",
+    "validate_webhook_url",
 ]
