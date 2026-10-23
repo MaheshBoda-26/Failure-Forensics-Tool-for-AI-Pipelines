@@ -228,10 +228,11 @@ def test_prompt_failure_maps_to_correct_category() -> None:
 
 
 def test_context_loss_detected() -> None:
-    """An entity extracted but dropped in summarization is context loss.
+    """A summary that drops every grounded entity is context loss.
 
-    The analyzer checks: does the summarization output reference the
-    entities that were successfully extracted?
+    The analyzer asks whether any of the salient extracted entities survived.
+    (Dropping one line item while keeping the parties and total is normal
+    summarization, not context loss.)
     """
     doc = "Invoice 001 for Acme Corp. Total: 500.00 USD. Due: 2024-03-01."
     spans = [
@@ -258,8 +259,8 @@ def test_context_loss_detected() -> None:
         _span("classification", {"document_type": "invoice", "confidence": 0.9}),
         _span(
             "summarization",
-            {"summary": "Invoice for 500.00", "key_points": ["total 500.00"]},
-        ),  # Missing "Acme Corp"
+            {"summary": "Invoice for services rendered", "key_points": []},
+        ),  # Drops both grounded entities
     ]
     trace = _trace_with_spans(spans)
 
@@ -305,6 +306,39 @@ def test_context_loss_ignored_when_entity_was_hallucinated() -> None:
     # The hallucination is the root cause, not context loss
     assert diagnosis.category is FailureCategory.EXTRACTION_HALLUCINATION
     assert diagnosis.root_cause_step == "extraction"
+
+
+def test_context_preservation_ignores_non_salient_entity_loss() -> None:
+    """A summary need not repeat addresses and line-item descriptions.
+
+    A thorough real-model extractor returns every address, quantity and rate;
+    demanding all of them in the summary made every live trace fail with
+    "context loss" before any injected fault was even considered.
+    """
+    doc = "Invoice 001 for Acme Corp, 100 Market Street, total 500.00 USD."
+    spans = [
+        _span("intake", {"cleaned_text": doc}),
+        _span(
+            "extraction",
+            {
+                "entities": [
+                    {"value": "Acme Corp", "entity_type": "organization"},
+                    {"value": "100 Market Street", "entity_type": "address"},
+                    {"value": "500.00", "entity_type": "amount"},
+                ]
+            },
+        ),
+        _span("classification", {"document_type": "invoice", "confidence": 0.9}),
+        _span(
+            "summarization",
+            {"summary": "Invoice 001 for Acme Corp, total 500.00 USD.", "key_points": []},
+        ),
+    ]
+    trace = _trace_with_spans(spans)
+
+    diagnosis = analyze_trace(trace, doc)
+
+    assert diagnosis.root_cause_step == "none"
 
 
 # --- Propagation Error (step N correct, step N+1 misreads) ---------------
@@ -568,6 +602,38 @@ def test_date_regex_common_non_iso_date_passes() -> None:
     assert results[0].passed is True
 
 
+def test_date_regex_month_and_year_passes() -> None:
+    """A period ("February 2024") is a legitimate date value.
+
+    Invoices and contracts state their period this way, and a real extraction
+    copied it verbatim. Treating it as malformed failed the whole extraction
+    step on every live invoice trace.
+    """
+    doc = "Service period: February 2024"
+    spans = [
+        _span("intake", {"cleaned_text": doc}),
+        _span(
+            "extraction",
+            {
+                "entities": [
+                    {
+                        "value": "February 2024",
+                        "entity_type": "DATE",
+                        "start_offset": 16,
+                        "end_offset": 29,
+                    }
+                ]
+            },
+        ),
+    ]
+    _trace_with_spans(spans)
+
+    results = check_date_regex(spans[1])
+
+    assert len(results) == 1
+    assert results[0].passed is True
+
+
 def test_date_regex_invalid_format_fails() -> None:
     """A date value that is not a date in any common format fails."""
     doc = "Due soonish"
@@ -594,6 +660,97 @@ def test_date_regex_invalid_format_fails() -> None:
     assert len(results) == 1
     assert results[0].passed is False
     assert "not a recognisable date format" in results[0].evidence
+
+
+def test_date_regex_weekday_and_weekday_date_pass() -> None:
+    """A weekday, or a weekday plus date, is a legitimate date value.
+
+    A meeting email states deadlines as "Friday" and "Monday, March 4"; a real
+    extraction copied both verbatim and date_regex rejected the whole step.
+    """
+    doc = "Meet Monday, March 4; send data by Friday."
+    for value in ("Monday, March 4", "Friday"):
+        spans = [
+            _span("intake", {"cleaned_text": doc}),
+            _span(
+                "extraction",
+                {
+                    "entities": [
+                        {
+                            "value": value,
+                            "entity_type": "date",
+                            "start_offset": 0,
+                            "end_offset": len(value),
+                        }
+                    ]
+                },
+            ),
+        ]
+        _trace_with_spans(spans)
+
+        results = check_date_regex(spans[1])
+
+        assert len(results) == 1, value
+        assert results[0].passed is True, results[0].evidence
+
+
+def test_context_preservation_treats_typographic_dashes_as_equal() -> None:
+    """A revenue range is the same value with "-" or an en dash.
+
+    A real report extraction copied "$44-46M" from the source and the summary
+    rendered "$44\u201346M" (en dash), which read as context loss on a correct summary.
+    """
+    doc = "Q2 guidance: $44-46M revenue."
+    spans = [
+        _span("intake", {"cleaned_text": doc}),
+        _span(
+            "extraction",
+            {"entities": [{"value": "$44-46M", "entity_type": "amount"}]},
+        ),
+        _span("classification", {"document_type": "report", "confidence": 0.9}),
+        _span(
+            "summarization",
+            {"summary": "This report gives Q2 guidance of $44\u201346M revenue.", "key_points": []},
+        ),
+    ]
+    trace = _trace_with_spans(spans)
+
+    diagnosis = analyze_trace(trace, doc)
+
+    assert diagnosis.root_cause_step == "none"
+
+
+def test_incidental_invoice_mention_does_not_make_a_contract_summary_an_invoice() -> None:
+    """A contract summary may say "invoice" without becoming an invoice summary.
+
+    The service agreement's own payment sentence says "within 30 days of
+    invoice", which used to flag the whole summary as a propagation error even
+    though it speaks contract vocabulary throughout.
+    """
+    doc = "Service Agreement between Alpha and Beta. Pay within 30 days of invoice."
+    spans = [
+        _span("intake", {"cleaned_text": doc}),
+        _span(
+            "extraction",
+            {"entities": [{"value": "Alpha", "entity_type": "organization"}]},
+        ),
+        _span("classification", {"document_type": "contract", "confidence": 0.9}),
+        _span(
+            "summarization",
+            {
+                "summary": (
+                    "This Service Agreement between Alpha and Beta governs the engagement. "
+                    "Payment is due within 30 days of invoice."
+                ),
+                "key_points": ["Alpha"],
+            },
+        ),
+    ]
+    trace = _trace_with_spans(spans)
+
+    diagnosis = analyze_trace(trace, doc)
+
+    assert diagnosis.root_cause_step == "none"
 
 
 # --- Confidence calibration ----------------------------------------------

@@ -105,9 +105,9 @@ print(diagnosis.root_cause_step, diagnosis.category, diagnosis.evidence_chain)
 
 ```bash
 NVIDIA_API_KEY=...                    # Required for live mode
-PIPELINE_MODEL_ID=poolside/laguna-xs-2.1
-PIPELINE_MODEL_PROVIDER=poolside
-PIPELINE_MODEL_FAMILY=poolside
+PIPELINE_MODEL_ID=minimaxai/minimax-m3.1-flash
+PIPELINE_MODEL_PROVIDER=minimaxai
+PIPELINE_MODEL_FAMILY=minimaxai
 PIPELINE_MODEL_PRICE_IN=0.0
 PIPELINE_MODEL_PRICE_OUT=0.0
 # ... similar for fallback, judge, cheap models

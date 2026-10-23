@@ -39,6 +39,35 @@ from forensics.models import (
 
 T = TypeVar("T", bound=BaseModel)
 
+
+def _strip_entity_label(entity: Entity, document_text: str) -> Entity:
+    """Drop a model-added label from an entity value.
+
+    Real models copy the label along with the value ("Due Date: March 3,
+    2024", "Invoice #: INV-2024-001") even when the prompt asks for the value
+    verbatim. The label is not part of the entity: it made `date_regex`
+    reject a real date and made context preservation demand a string the
+    summarizer had no reason to repeat. The tail is accepted only when it
+    literally occurs in the document, so this can never turn an ungrounded
+    value into a grounded one.
+    """
+    value = entity.value.strip()
+    if "://" in value or ":" not in value:
+        if value != entity.value:
+            return entity.model_copy(update={"value": value})
+        return entity
+
+    label, _, tail = value.partition(":")
+    tail = tail.strip()
+    if not tail or len(label.strip()) > 40 or tail not in document_text:
+        return entity
+
+    start = document_text.find(tail)
+    return entity.model_copy(
+        update={"value": tail, "start_offset": start, "end_offset": start + len(tail)}
+    )
+
+
 # Keywords that NIM's structured-output backend (xgrammar) rejects outright.
 # Empirically verified against https://integrate.api.nvidia.com/v1: sending a
 # schema containing `propertyNames` returns
@@ -1243,7 +1272,11 @@ class LLMClient:
         document = self.nim._fence_document(str(input_data.get("text", "")))
         prompts = {
             "extraction": (
-                f"Extract every entity that literally appears in the document.\n\n"
+                f"Extract every entity that literally appears in the document.\n"
+                f"Each entity's value must be copied verbatim from the document: no "
+                f"labels, headings, ellipses or invented punctuation. Dates keep the "
+                f"document's own spelling, and character offsets must point at the "
+                f"copied text.\n\n"
                 f"{UNTRUSTED_NOTICE}\n\n"
                 f"{document}",
                 "You are an entity extraction specialist. Extract names, dates, amounts, "
@@ -1306,7 +1339,14 @@ class LLMClient:
             document_id=document_id,
         )
         _publish_telemetry(response, prompt)
-        return response.parsed  # type: ignore[return-value]
+        parsed = response.parsed
+        if isinstance(parsed, ExtractionOutput):
+            entities = [
+                _strip_entity_label(entity, intake_output.cleaned_text)
+                for entity in parsed.entities
+            ]
+            parsed = parsed.model_copy(update={"entities": entities})
+        return parsed  # type: ignore[return-value]
 
     async def classification(
         self, extraction_output: ExtractionOutput, document_id: str = ""

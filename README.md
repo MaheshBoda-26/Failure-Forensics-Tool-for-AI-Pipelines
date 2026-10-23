@@ -195,7 +195,7 @@ $EDITOR .env                 # set NVIDIA_API_KEY + model slugs; for offline mod
 make check                   # ruff + mypy strict + pytest
 ```
 
-`make check` is green from a clean checkout: **446 tests**, no network, no API
+`make check` is green from a clean checkout: **455 tests**, no network, no API
 key required.
 
 ### Demo — no API key needed
@@ -212,6 +212,33 @@ make run-web                                  # build UI + serve API on :8000
 The demo reproduces all five seeded failures at their declared step and
 category. That is a fixture proving the analyzer and eval loop work — it is not
 a model benchmark. A real accuracy number needs a real key.
+
+### Demo — real model, real numbers
+
+With a key and `DRY_RUN=false`, the same command runs the configured model:
+
+```bash
+python -m forensics.cli demo                 # 15 documents, paced for the rate limit
+python -m forensics.cli benchmark-analyzer   # fault-injection scorecard
+python -m forensics.cli seed                 # load the committed real traces
+pytest -m live                               # one real end-to-end smoke test
+```
+
+Measured on 2026-10-24 with `minimaxai/minimax-m3.1-flash`:
+
+| Measurement | Result |
+|---|---|
+| Classifications matching the dataset labels | 14/15 (the miss calls the mixed incident report a report) |
+| Fault-injection step localization | 100% (7/7) |
+| Fault-injection category accuracy | 100% (7/7) |
+| Traces with a spurious root cause | 0/15 on the clean baseline |
+
+The five traces under `dataset/live/traces/` are that run's actual output.
+`forensics seed` loads them into an instance's database (idempotently), which is
+how a fresh deployment has real traces and diagnoses before anyone spends
+quota. `pytest -m live` skips when no real key is configured, and also skips
+rather than fails when the hosted per-minute quota is exhausted — that is an
+environment condition, not a code result.
 
 ---
 
@@ -263,6 +290,7 @@ When `AUTH_ENABLED=true`, data routes require `Authorization: Bearer ffk_…`.
 forensics ping                    # verify config and model routing
 forensics run <doc.txt>           # one document, end to end
 forensics demo                    # all 15 documents + summary
+forensics seed                    # load the committed real-model traces
 forensics eval                    # replay accumulated eval cases
 forensics eval-cases              # turn confirmed flags into eval cases
 forensics analytics               # print the analytics snapshot
@@ -415,7 +443,7 @@ the disk and env).
 
 ```
 src/forensics/          Python package (see the component table above)
-tests/                  446 hermetic tests
+tests/                  455 hermetic tests
 frontend/               React 19 + Vite + TypeScript explorer
 dataset/
   documents/            15 synthetic documents, 3 per type

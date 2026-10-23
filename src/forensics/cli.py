@@ -17,11 +17,18 @@ from forensics.analyzer_simple import analyze_trace
 from forensics.auth import AuthManager
 from forensics.config import get_settings, validate_startup
 from forensics.documents import is_valid_doc_id, resolve_document_text
-from forensics.llm import using_llm_client
+from forensics.llm import QuotaExhaustedError, RateLimitError, using_llm_client
 from forensics.models import DEFAULT_TENANT_ID, Document, DocumentType, FailureCategory
 from forensics.pipeline import Pipeline
 from forensics.storage import Storage
 from forensics.tracing import trace_context
+
+# The demo runs one pipeline per dataset document. A hosted provider's
+# per-minute request budget is shared and small on the free tier, so the batch
+# is paced and a rate-limited document is retried after the window resets.
+_DEMO_RATE_LIMIT_ATTEMPTS = 3
+_DEMO_RATE_LIMIT_DELAY_S = 30
+_DEMO_INTER_DOCUMENT_DELAY_S = 5.0
 
 app = typer.Typer(
     name="forensics",
@@ -72,11 +79,72 @@ def ping() -> None:
 
 @app.command()
 def seed() -> None:
-    """Generate the labeled dataset (not implemented)."""
+    """Load the committed real-model traces into this instance's storage.
+
+    The public demo runs once against a real model and its traces are committed
+    under `dataset/live/traces`. Loading them here means a fresh deployment (or a
+    fresh local database) shows real traces, latencies and diagnoses instead of
+    only the `DRY_RUN` fixture — and it works without an API key or quota.
+
+    Idempotent: traces already indexed in this database are skipped, so it is
+    safe to run on every boot.
+    """
     _setup()
-    typer.secho("Dataset generation not yet implemented (Phase 1)", fg=typer.colors.YELLOW)
-    typer.echo("Dataset generation is not implemented; the dataset ships with the repo.")
-    raise typer.Exit(code=1)
+
+    from forensics.analyzer_simple import analyze_trace
+    from forensics.eval_simple import document_ground_truth
+    from forensics.models import Trace
+
+    settings = get_settings()
+    fixture_dir = settings.dataset_dir / "live" / "traces"
+    fixture_paths = sorted(fixture_dir.glob("*.json")) if fixture_dir.exists() else []
+    if not fixture_paths:
+        typer.secho(
+            f"No live fixtures found in {fixture_dir}; nothing to seed.",
+            fg=typer.colors.YELLOW,
+        )
+        return
+
+    storage = Storage()
+    seeded = skipped = failed = 0
+
+    for path in fixture_paths:
+        try:
+            trace = Trace.model_validate_json(path.read_text())
+        except (OSError, ValueError) as exc:
+            typer.secho(f"  skipping {path.name}: {exc}", fg=typer.colors.RED, err=True)
+            failed += 1
+            continue
+
+        if storage.get_trace(trace.trace_id, tenant_id=None) is not None:
+            skipped += 1
+            continue
+
+        document_text = resolve_document_text(trace)
+        if not document_text:
+            typer.secho(
+                f"  skipping {path.name}: document {trace.document_id!r} not found",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            failed += 1
+            continue
+
+        storage.save_trace(trace)
+        diagnosis = analyze_trace(trace, document_text, document_ground_truth(trace.document_id))
+        storage.create_diagnosis(diagnosis)
+        seeded += 1
+        typer.secho(
+            f"  seeded {trace.document_id} ({trace.trace_id}): "
+            f"{diagnosis.root_cause_step} / {diagnosis.category.value}",
+            fg=typer.colors.GREEN,
+        )
+
+    typer.echo(
+        f"Live seed: {seeded} loaded, {skipped} already present, {failed} skipped with errors."
+    )
+    if failed and not seeded:
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -242,23 +310,41 @@ def demo() -> None:
                     continue
 
                 doc = Document(content=doc_path.read_text())
-                with trace_context(document_id=doc_id) as ctx:
-                    result = await pipeline.run(doc, document_id=doc_id)
-                    assert ctx.trace is not None
-                    # Analyze and persist the diagnosis so analytics, the eval
-                    # loop and the UI have a real root cause per trace.
-                    # Previously the demo saved traces but never analyzed them,
-                    # so analytics and eval had nothing to read.
-                    expected_type = doc_info.get("doc_type")
-                    # The dataset's ground-truth type lets the analyzer detect a
-                    # valid-but-wrong label (misclassification).
-                    #
-                    # Analyze before `save_trace` redacts the trace in place (PII
-                    # redaction), or every extracted entity grounds against a
-                    # span that no longer contains it.
-                    diagnosis = analyze_trace(ctx.trace, doc.content, expected_type)
-                    storage.save_trace(ctx.trace)
+                # A hosted model is rate limited, and a batch of 15 documents is
+                # enough requests to hit it. Aborting the whole demo on the first
+                # 429 threw away every document already finished; retrying the
+                # document after the limit resets costs nothing extra because the
+                # steps that already succeeded are cached.
+                for attempt in range(1, _DEMO_RATE_LIMIT_ATTEMPTS + 1):
+                    try:
+                        with trace_context(document_id=doc_id) as ctx:
+                            result = await pipeline.run(doc, document_id=doc_id)
+                        break
+                    except (QuotaExhaustedError, RateLimitError):
+                        if attempt == _DEMO_RATE_LIMIT_ATTEMPTS:
+                            raise
+                        wait = _DEMO_RATE_LIMIT_DELAY_S * attempt
+                        typer.secho(
+                            f"  rate limited on {doc_id}; retrying in {wait}s "
+                            f"(attempt {attempt}/{_DEMO_RATE_LIMIT_ATTEMPTS})",
+                            fg=typer.colors.YELLOW,
+                        )
+                        await asyncio.sleep(wait)
 
+                assert ctx.trace is not None
+                # Analyze and persist the diagnosis so analytics, the eval
+                # loop and the UI have a real root cause per trace.
+                # Previously the demo saved traces but never analyzed them,
+                # so analytics and eval had nothing to read.
+                expected_type = doc_info.get("doc_type")
+                # The dataset's ground-truth type lets the analyzer detect a
+                # valid-but-wrong label (misclassification).
+                #
+                # Analyze before `save_trace` redacts the trace in place (PII
+                # redaction), or every extracted entity grounds against a
+                # span that no longer contains it.
+                diagnosis = analyze_trace(ctx.trace, doc.content, expected_type)
+                storage.save_trace(ctx.trace)
                 storage.create_diagnosis(diagnosis)
 
                 actual_type = result.classification.document_type.value
@@ -283,6 +369,10 @@ def demo() -> None:
                 msg = f"  {status} {doc_id}: expected={expected_type}, actual={actual_type}"
                 typer.secho(msg, fg=color)
 
+                # Pace the batch: the provider's per-minute budget is shared,
+                # and a 15-document run at full speed reliably trips it.
+                await asyncio.sleep(_DEMO_INTER_DOCUMENT_DELAY_S)
+
         # Summary
         total = len(results)
         correct = sum(1 for r in results if r["match"])
@@ -298,13 +388,24 @@ def demo() -> None:
         diagnosed = [r for r in results if r["root_cause_step"] not in ("", "none")]
         typer.echo(f"Traces with a diagnosed root cause: {len(diagnosed)}")
 
-        seeded = [r for r in results if r["should_fail"]]
-        step_hits = sum(1 for r in seeded if r["root_cause_step"] == r["failure_step"])
-        cat_hits = sum(1 for r in seeded if r["root_cause_category"] == r["failure_category"])
-        if seeded:
+        # The five `should_fail` labels describe the DRY_RUN fixture, which
+        # replays them by construction. A real model is not given those faults,
+        # so scoring it against them reports its *behaviour*, not the analyzer's
+        # accuracy; `benchmark-analyzer` is the tool that measures the analyzer.
+        if get_settings().dry_run:
+            seeded = [r for r in results if r["should_fail"]]
+            step_hits = sum(1 for r in seeded if r["root_cause_step"] == r["failure_step"])
+            cat_hits = sum(1 for r in seeded if r["root_cause_category"] == r["failure_category"])
+            if seeded:
+                typer.echo(
+                    f"Seeded-failure root-cause step accuracy: {step_hits}/{len(seeded)}, "
+                    f"category accuracy: {cat_hits}/{len(seeded)}"
+                )
+        else:
             typer.echo(
-                f"Seeded-failure root-cause step accuracy: {step_hits}/{len(seeded)}, "
-                f"category accuracy: {cat_hits}/{len(seeded)}"
+                "Live run: the `should_fail` labels describe the DRY_RUN fixture, "
+                "not faults injected into the model. Run `benchmark-analyzer` for "
+                "analyzer step/category accuracy."
             )
 
     asyncio.run(_run_demo())
@@ -400,13 +501,32 @@ def benchmark_analyzer() -> None:
         typer.secho("No traces found. Run `demo` first.", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
-    # Use the first trace that has no diagnosis (clean baseline)
-    baseline_trace = None
-    for trace in traces:
-        diag = storage.get_diagnosis_for_trace(trace.trace_id)
-        if diag is None or diag.root_cause_step in ("", "none"):
-            baseline_trace = trace
-            break
+    # Prefer a clean baseline whose classification is a single document type:
+    # `check_propagation` exempts `mixed` (a mixed document legitimately uses
+    # several shapes), so a mixed baseline makes the propagation fault
+    # unreachable and scores the analyzer down for a verdict it cannot produce.
+    def _classified_type(trace: object) -> str | None:
+        for span in getattr(trace, "spans", []):
+            if span.step_name != "classification":
+                continue
+            try:
+                data = json.loads(span.output_json) if span.output_json else {}
+            except json.JSONDecodeError:
+                return None
+            value = data.get("document_type")
+            return str(value) if value is not None else None
+        return None
+
+    clean = [
+        trace
+        for trace in traces
+        if (diag := storage.get_diagnosis_for_trace(trace.trace_id)) is None
+        or diag.root_cause_step in ("", "none")
+    ]
+    baseline_trace = next(
+        (t for t in clean if _classified_type(t) not in (None, "", "mixed")),
+        clean[0] if clean else None,
+    )
 
     if baseline_trace is None:
         baseline_trace = traces[0]

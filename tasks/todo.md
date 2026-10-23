@@ -237,3 +237,62 @@ Skills applied: `systematic-debugging` (root cause first), `verification-before-
 - [x] `npm run build` (tsc + vite) exit 0
 - [x] `bash -n scripts/smoke.sh` + field-path smoke check
 - [x] `DRY_RUN=true forensics demo` — 15 traces, 5/5 seeded failures reproduced
+
+---
+
+# Next-step 2 — real numbers instead of fixture numbers (2026-10-24)  ✅
+
+Goal: the live demo must run against a real model, produce real traces, and the
+scorecard must be honest rather than "85.7% on a DRY_RUN baseline".
+
+- [x] `tests/test_live.py` — one `@pytest.mark.live` end-to-end pipeline test (real NIM call,
+      grounded entities, non-zero latency, clean diagnosis). Skips without a real key and
+      skips (not fails) when the shared quota is exhausted; `make test` still deselects it.
+- [x] Live `forensics demo` (DRY_RUN=false): 14/15 classifications match the labels
+      (miss: `mixed_003`, an incident report the model calls `report`), 0 spurious root
+      causes on the clean baseline.
+- [x] Live `forensics benchmark-analyzer` against a real trace with 29 entities:
+      step localization 7/7, category accuracy 7/7.
+- [x] `dataset/live/traces/` — five traces from that run (invoice, report, contract,
+      mixed) committed; `forensics seed` loads them idempotently, and the Render start
+      command seeds before serving so a fresh URL is not purely DRY_RUN.
+
+## Model reality check (the expensive part)
+
+`poolside/laguna-xs-2.1` — the model `.env.example` called "the only one that works" —
+actually returns **zero entities** and classifies the invoice as `mixed` at 0.10.
+Most slugs in `/v1/models` answer `404 Function not found for account`; the account
+reaches `minimaxai/minimax-m3.1-flash`, which extracts 29 grounded entities and
+classifies the invoice at 0.99 in ~20s. `.env`, `.env.example`, `render.yaml` and
+`CLAUDE.md` now name the verified model.
+
+## Analyzer defects the live data exposed (all fixed, all regression-tested)
+
+These are the reason the earlier fixture-based 85.7% was meaningless: on real output
+the analyzer blamed extraction or summarization on 10/15 clean documents.
+
+- **Dates**: real models copy "February 2024", "Monday, March 4", "Friday", "July"
+  verbatim. `DATE_FORMATS` rejected all of them, so `date_regex` failed the whole
+  extraction step and hid the real root cause.
+- **Labelled values**: models return "Due Date: March 3, 2024" and
+  "Invoice #: INV-2024-001". `_strip_entity_label` removes the label only when the
+  tail literally occurs in the document (so it cannot launder an invented value).
+- **Context preservation** demanded every grounded entity in the summary; a thorough
+  extractor therefore guaranteed its own failure. It is now (a) restricted to salient
+  types and (b) fails only when *none* survive. Typographic dashes (`$44–46M` vs
+  `$44-46M`) compare equal.
+- **Propagation** fired on any later mention of another type ("pay within 30 days of
+  invoice" in a contract) and had a weak-signal rule that flagged every mixed summary.
+  It now judges the first definitional marker in the opening sentence.
+- **Fault injection** preserved only a fixed token list, so the injected
+  `propagation_error` also triggered context loss, which outranked it. It now preserves
+  the trace's own salient entities (in `key_points`) and imitates a type different from
+  the actual classification.
+- **Benchmark baseline** could be a `mixed` trace, where propagation is exempt by
+  design; it now prefers a clean single-type baseline.
+- **Demo** aborted the whole 15-document run on the first 429; it retries the document
+  (cached steps are free) and paces the batch. The live summary no longer prints the
+  fixture's "seeded-failure accuracy", which measured the fixture, not the analyzer.
+
+Verification: `make check` → ruff + mypy clean, **455 passed, 1 deselected (live)**;
+`pytest -m live` → 1 passed against the hosted model; live benchmark 7/7 (100%/100%).

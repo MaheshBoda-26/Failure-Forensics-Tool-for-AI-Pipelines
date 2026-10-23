@@ -38,11 +38,13 @@ class Fault:
     name: str
     step: str
     expected_category: str
-    apply: Callable[[dict[str, Any], str], dict[str, Any]]
+    apply: Callable[[dict[str, Any], str, "Trace | None"], dict[str, Any]]
     description: str
 
 
-def _inject_hallucinated_entity(output: dict[str, Any], document_text: str) -> dict[str, Any]:
+def _inject_hallucinated_entity(
+    output: dict[str, Any], document_text: str, trace: Trace | None = None
+) -> dict[str, Any]:
     """Add an entity whose value is absent from the source document.
 
     Expected: extraction_hallucination.
@@ -61,7 +63,9 @@ def _inject_hallucinated_entity(output: dict[str, Any], document_text: str) -> d
     return {**output, "entities": entities}
 
 
-def _inject_bad_date(output: dict[str, Any], document_text: str) -> dict[str, Any]:
+def _inject_bad_date(
+    output: dict[str, Any], document_text: str, trace: Trace | None = None
+) -> dict[str, Any]:
     """Emit a date entity that does not match YYYY-MM-DD.
 
     Expected: prompt_failure (date format violation).
@@ -79,7 +83,9 @@ def _inject_bad_date(output: dict[str, Any], document_text: str) -> dict[str, An
     return {**output, "entities": entities}
 
 
-def _inject_invalid_label(output: dict[str, Any], document_text: str) -> dict[str, Any]:
+def _inject_invalid_label(
+    output: dict[str, Any], document_text: str, trace: Trace | None = None
+) -> dict[str, Any]:
     """Classify as a type outside the DocumentType enum.
 
     Expected: prompt_failure when the enum rejects it (schema), which is the
@@ -89,7 +95,9 @@ def _inject_invalid_label(output: dict[str, Any], document_text: str) -> dict[st
     return {**output, "document_type": "purchase_order"}
 
 
-def _inject_wrong_label(output: dict[str, Any], document_text: str) -> dict[str, Any]:
+def _inject_wrong_label(
+    output: dict[str, Any], document_text: str, trace: Trace | None = None
+) -> dict[str, Any]:
     """Classify as a valid but wrong DocumentType.
 
     A valid enum member, so `label_enum` and `prompt_schema` both pass; only
@@ -121,7 +129,9 @@ def _inject_wrong_label(output: dict[str, Any], document_text: str) -> dict[str,
     return {**output, "document_type": DocumentType.REPORT.value}
 
 
-def _inject_context_loss(output: dict[str, Any], document_text: str) -> dict[str, Any]:
+def _inject_context_loss(
+    output: dict[str, Any], document_text: str, trace: Trace | None = None
+) -> dict[str, Any]:
     """Summarize without any of the grounded entities.
 
     Expected: context_loss.
@@ -133,32 +143,106 @@ def _inject_context_loss(output: dict[str, Any], document_text: str) -> dict[str
     }
 
 
-def _inject_propagation_error(output: dict[str, Any], document_text: str) -> dict[str, Any]:
+# One summary per document type, written in that type's own vocabulary. The
+# propagation fault needs a summary that uses a DIFFERENT type's terminology
+# than the classifier chose, and it must keep every salient grounded entity so
+# that context preservation still passes: with both checks failing, context
+# loss (checked first) masked the propagation error the fault isolated.
+_PROPAGATION_SUMMARIES: dict[str, str] = {
+    "invoice": ("This invoice bills the subtotal and the amount due under its payment terms."),
+    "contract": (
+        "This contract records the agreement between the parties, the clauses hereto, "
+        "and the indemnification terms."
+    ),
+    "report": "This report presents the findings and methodology of the analysis.",
+    "correspondence": (
+        "This letter is correspondence addressed to the recipient, with regards and sincerely."
+    ),
+}
+
+
+def _span_output(trace: Trace, step: str) -> dict[str, Any]:
+    """Parse one step's stored output, tolerating a missing or malformed span."""
+    span = next((s for s in trace.spans if s.step_name == step), None)
+    if span is None or not span.output_json:
+        return {}
+    try:
+        data = json.loads(span.output_json)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _salient_grounded_values(trace: Trace, document_text: str) -> list[str]:
+    """Values a summary is expected to preserve (the ones context loss checks)."""
+    from forensics.analyzer_simple import is_salient_entity_type, text_contains_entity
+
+    entities = _span_output(trace, "extraction").get("entities")
+    if not isinstance(entities, list):
+        return []
+
+    values: list[str] = []
+    for entity in entities:
+        if not isinstance(entity, dict):
+            continue
+        value = entity.get("value")
+        entity_type = entity.get("entity_type")
+        if (
+            isinstance(value, str)
+            and isinstance(entity_type, str)
+            and value
+            and is_salient_entity_type(entity_type)
+            and text_contains_entity(value, document_text)
+        ):
+            values.append(value)
+    return values
+
+
+def _inject_propagation_error(
+    output: dict[str, Any], document_text: str, trace: Trace | None = None
+) -> dict[str, Any]:
     """Summarize using another document type's terminology.
 
-    Every grounded entity from the extraction span is preserved, so the
+    Every salient grounded entity from the extraction span is preserved, so the
     context-preservation check still passes and the only failure is that the
     summary describes a different document type than the classifier chose.
+    The type to imitate is chosen from the actual classification, so the fault
+    is not a no-op when the baseline document is itself an invoice.
 
     Expected: propagation_error.
     """
-    grounded = [
-        token
-        for token in ("Acme", "2024-01-15", "10,000", "$10,000", "Beta", "LLC")
-        if token in document_text
-    ]
-    preserved = " ".join(grounded)
+    preserved_values = _salient_grounded_values(trace, document_text) if trace else []
+    if not preserved_values:
+        preserved_values = [
+            token
+            for token in ("Acme", "2024-01-15", "10,000", "$10,000", "Beta", "LLC")
+            if token in document_text
+        ]
+
+    classified = _span_output(trace, "classification").get("document_type") if trace else None
+    target_type = next(
+        (
+            candidate
+            for candidate in ("report", "invoice", "contract", "correspondence")
+            if candidate != classified
+        ),
+        "invoice",
+    )
+
+    # The values go in `key_points`, not the summary: context preservation reads
+    # both, and keeping the opening sentence purely in the imitated type's
+    # vocabulary is what makes the framing unambiguous.
+    preserved = " ".join(preserved_values)
     return {
         **output,
-        "summary": (
-            f"This invoice bills the total amount due. Terms referenced: {preserved}. "
-            "Payment is due within thirty days of the invoice date."
-        ),
-        "key_points": [f"References {preserved}", "Total due"],
+        "summary": _PROPAGATION_SUMMARIES[target_type],
+        "key_points": [f"References {preserved}"],
     }
 
 
-def _inject_schema_violation(output: dict[str, Any], document_text: str) -> dict[str, Any]:
+def _inject_schema_violation(
+    output: dict[str, Any], document_text: str, trace: Trace | None = None
+) -> dict[str, Any]:
     """Replace a required field with a wrong type.
 
     Expected: prompt_failure.
@@ -244,7 +328,7 @@ def inject(trace: Trace, fault: Fault, document_text: str) -> Trace:
     if not isinstance(output, dict):
         output = {}
 
-    corrupted = fault.apply(output, document_text)
+    corrupted = fault.apply(output, document_text, trace)
     new_json = json.dumps(corrupted)
 
     # Copy the trace and the target span; leave every other span untouched.

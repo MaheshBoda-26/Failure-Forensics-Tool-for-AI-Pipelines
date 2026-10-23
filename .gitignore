@@ -34,3 +34,4 @@ frontend/dist/
 .DS_Store
 .idea/
 .vscode/
+data/*.lock

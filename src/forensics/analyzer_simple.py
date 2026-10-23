@@ -53,11 +53,75 @@ DATE_FORMATS = (
         r"^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+(?:19|20)\d{2}$"
     ),
     re.compile(r"^(?:19|20)\d{2}-\d{2}$"),
+    # Month-and-year only ("February 2024") is what an invoice period, a
+    # contract term or a report heading legitimately states. It appeared in
+    # every real invoice trace and made date_regex fail the whole extraction
+    # step, so the analyzer blamed extraction before reaching the real fault.
+    re.compile(r"^[A-Za-z]{3,9}\.?\s+(?:19|20)\d{2}$"),
+    # A bare month ("July") is what an email states when the year and day are
+    # understood from context.
+    re.compile(r"^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*$", re.IGNORECASE),
+    # A weekday with no date ("Friday") or with a calendar date ("Monday,
+    # March 4"): emails and meeting requests state deadlines this way, and a
+    # real extraction copied them verbatim.
+    re.compile(r"^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:day)?$", re.IGNORECASE),
+    re.compile(
+        r"^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*,?\s+"
+        r"[A-Za-z]{3,9}\.?\s+\d{1,2}(?:,?\s+(?:19|20)\d{2})?$",
+        re.IGNORECASE,
+    ),
     # Month-day without a year ("January 1") is what documents state when the
     # year is implied by context.
     re.compile(r"^[A-Za-z]{3,9}\.?\s+\d{1,2}$"),
     re.compile(r"^\d{1,2}\s+[A-Za-z]{3,9}\.?$"),
 )
+
+# Entity types whose loss from a summary is a real context loss. A summary is
+# expected to carry the document's identity — who/what it is about, when, and
+# how much — not to repeat every address, line-item description, quantity and
+# rate. Requiring preservation of *every* grounded entity meant a thorough
+# real-model extractor guaranteed a context-loss verdict on its own summary,
+# which then outranked the fault the benchmark had actually injected.
+SALIENT_ENTITY_TYPES = frozenset(
+    {
+        "person",
+        "person_name",
+        "contact_name",
+        "organization",
+        "org",
+        "company",
+        "name",
+        "date",
+        "date_range",
+        "time",
+        "amount",
+        "money",
+        "total",
+        "price",
+        "currency",
+        "invoice_number",
+        "contract_id",
+        "policy_number",
+        "account_number",
+        "document_id",
+        "identifier",
+        "id",
+    }
+)
+
+
+def _normalize_entity_type(entity_type: str) -> str:
+    """Normalize a model-supplied entity type for comparison."""
+    normalized = "_".join(entity_type.strip().lower().replace("-", " ").split())
+    if normalized.endswith("s") and normalized[:-1] in SALIENT_ENTITY_TYPES:
+        return normalized[:-1]
+    return normalized
+
+
+def is_salient_entity_type(entity_type: str) -> bool:
+    """True when losing this entity type from a summary is real context loss."""
+    return _normalize_entity_type(entity_type) in SALIENT_ENTITY_TYPES
+
 
 # Definitional vocabulary per document type, used by `check_propagation`.
 # Each entry is `(pattern, conclusive)`: a conclusive marker stands on its own,
@@ -127,9 +191,26 @@ def is_recognisable_date(value: str) -> bool:
     return any(pattern.match(value) for pattern in DATE_FORMATS)
 
 
+# Typographic dash variants a model or a summary may substitute for "-":
+# an en dash in a revenue range ("$44-46M") or in a date range is the same
+# value as the hyphen the extractor copied from the source.
+_DASH_TRANSLATION = str.maketrans(
+    {
+        "\u2010": "-",
+        "\u2011": "-",
+        "\u2012": "-",
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2015": "-",
+        "\u2212": "-",
+    }
+)
+
+
 def normalize_for_match(value: str) -> str:
-    """Collapse whitespace and case so two spellings of a value compare equal."""
-    return " ".join(value.split()).casefold()
+    """Collapse whitespace, case and typographic dashes for value comparison."""
+    normalized = " ".join(value.split()).casefold().translate(_DASH_TRANSLATION)
+    return re.sub(r"\s*[\-]\s*", "-", normalized)
 
 
 def text_contains_entity(value: str, text: str) -> bool:
@@ -409,10 +490,16 @@ def check_date_regex(span: Span) -> list[CheckResult]:
 
 
 def check_context_preservation(span: Span, trace: Trace, document_text: str) -> list[CheckResult]:
-    """Check that entities from extraction appear in summarization.
+    """Check that the entities a summary must carry survive summarization.
 
-    Context loss: an entity was correctly extracted and grounded in the source,
-    but does not appear in the summarization output.
+    Context loss: the summary preserves *none* of the salient entities (the
+    document's parties, dates, amounts, identifiers) that were correctly
+    extracted and grounded in the source. A summary is an abstraction, not a
+    transcription: dropping one line item's amount while keeping the parties,
+    date and total is normal summarization. Failing per entity made every real
+    summary a context-loss verdict, which then masked the fault under test.
+    Non-salient entities (addresses, descriptions, quantities, rates) are never
+    required.
     """
     results: list[CheckResult] = []
 
@@ -430,17 +517,22 @@ def check_context_preservation(span: Span, trace: Trace, document_text: str) -> 
     except (ValueError, TypeError):
         return results
 
-    # Grounded entities: those whose value appears in source document
+    # Grounded, salient entities: value appears in source document and the
+    # type is one a summary is expected to preserve.
     grounded_entities = []
     for entity_data in extraction_entities:
         value = _entity_str(entity_data, "value")
         entity_type = _entity_str(entity_data, "entity_type")
 
-        if value and text_contains_entity(value, document_text):
+        if (
+            value
+            and is_salient_entity_type(entity_type)
+            and text_contains_entity(value, document_text)
+        ):
             grounded_entities.append((value, entity_type))
 
     if not grounded_entities:
-        return results  # No grounded entities to preserve
+        return results  # No salient grounded entities to preserve
 
     # Check summarization output for these entities
     try:
@@ -454,14 +546,32 @@ def check_context_preservation(span: Span, trace: Trace, document_text: str) -> 
     # out of `' '.join(...)` and crashed the whole analysis.
     searchable_text = f"{summary} {_join_strings(output_data.get('key_points'))}"
 
-    for value, entity_type in grounded_entities:
-        if text_contains_entity(value, searchable_text):
-            msg = f"Grounded entity '{value}' ({entity_type}) preserved in summarization"
-            results.append(CheckResult("context_preservation", True, msg, span.step_name))
-        else:
-            msg = f"Grounded entity '{value}' ({entity_type}) LOST in summarization (context loss)"
-            results.append(CheckResult("context_preservation", False, msg, span.step_name))
+    preserved = [
+        value for value, _type in grounded_entities if text_contains_entity(value, searchable_text)
+    ]
 
+    if preserved:
+        results.append(
+            CheckResult(
+                "context_preservation",
+                True,
+                f"Summary preserves {len(preserved)}/{len(grounded_entities)} salient "
+                f"grounded entities",
+                span.step_name,
+            )
+        )
+        return results
+
+    lost = ", ".join(value for value, _type in grounded_entities[:8])
+    results.append(
+        CheckResult(
+            "context_preservation",
+            False,
+            f"Context loss: summary preserves none of the {len(grounded_entities)} salient "
+            f"grounded entities; lost: {lost}",
+            span.step_name,
+        )
+    )
     return results
 
 
@@ -518,41 +628,34 @@ def check_propagation(span: Span, trace: Trace) -> list[CheckResult]:
     if classified_lower not in TYPE_MARKERS:
         return results
 
-    # Strong signal: summary uses a DIFFERENT document type's terminology.
-    # A "mixed" document legitimately mentions several shapes, so it is exempt
-    # from single-type exclusivity.
-    if classified_lower != "mixed":
-        for other_type, markers in TYPE_MARKERS.items():
-            if other_type in (classified_lower, "mixed"):
-                continue
-            conclusive = False
-            weak_matches: set[str] = set()
-            for pattern, is_conclusive in markers:
-                if not pattern.search(searchable_text):
-                    continue
-                if is_conclusive:
-                    conclusive = True
-                    break
-                weak_matches.add(pattern.pattern)
-            if conclusive or len(weak_matches) >= 2:
-                msg = (
-                    f"Propagation error: classification='{classified_type}' but summarization "
-                    f"uses '{other_type}' terminology (context: {searchable_text[:120]})"
-                )
-                results.append(CheckResult("propagation", False, msg, span.step_name))
-                return results
+    # Propagation is judged by how the summary *frames* the document: the first
+    # definitional marker in its opening sentence. Keyword presence anywhere was
+    # too noisy — a report about contracts, an email discussing an agreement, and
+    # an incident report that never literally says "report" all looked like
+    # misreads. The opening marker is what a reader takes as the summary's claim
+    # about the document's type.
+    opening = re.split(r"(?<=[.!?])\s+", searchable_text, maxsplit=1)[0]
 
-    # Weak signal: a substantial summary with none of the expected terminology.
-    # The word floor is deliberately high: a short summary is legitimately terse
-    # and proves nothing about propagation.
-    if word_count >= 15 and not any(
-        pattern.search(searchable_text) for pattern, _ in TYPE_MARKERS[classified_lower]
-    ):
+    leading_type: str | None = None
+    leading_position = len(opening) + 1
+    for candidate, markers in TYPE_MARKERS.items():
+        if candidate == "mixed":
+            continue
+        for pattern, is_conclusive in markers:
+            if not is_conclusive:
+                continue
+            match = pattern.search(opening)
+            if match and match.start() < leading_position:
+                leading_position = match.start()
+                leading_type = candidate
+
+    # A "mixed" document legitimately mentions several shapes, so it is exempt.
+    if classified_lower != "mixed" and leading_type and leading_type != classified_lower:
         msg = (
-            f"Propagation error: classification='{classified_type}' but summarization lacks "
-            f"expected terminology (context: {searchable_text[:120]})"
+            f"Propagation error: classification='{classified_type}' but summarization "
+            f"uses '{leading_type}' terminology (context: {searchable_text[:120]})"
         )
-        results.append(CheckResult("propagation", False, msg, span.step_name))
+        return [CheckResult("propagation", False, msg, span.step_name)]
 
     return results
 

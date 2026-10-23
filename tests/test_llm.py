@@ -547,3 +547,39 @@ def test_custom_error_is_distinct_from_pydantic() -> None:
 
     assert issubclass(StructuredOutputError, Exception)
     assert not issubclass(StructuredOutputError, pydantic.ValidationError)
+
+
+def test_labelled_entity_value_is_stripped_to_the_source_substring() -> None:
+    """A model-supplied label must not become part of the entity value.
+
+    A real extraction returned `Due Date: March 3, 2024`, which `date_regex`
+    then rejected as malformed and which context preservation required the
+    summary to quote verbatim. The tail is only accepted when it occurs in the
+    document, so this cannot launder an invented value into a grounded one.
+    """
+    from forensics.llm import _strip_entity_label
+    from forensics.models import Entity
+
+    text = "Invoice #: INV-2024-001\nDue Date: March 3, 2024"
+    entity = Entity(
+        value="Due Date: March 3, 2024", entity_type="date", start_offset=0, end_offset=25
+    )
+
+    cleaned = _strip_entity_label(entity, text)
+
+    assert cleaned.value == "March 3, 2024"
+    assert text[cleaned.start_offset : cleaned.end_offset] == "March 3, 2024"
+
+
+def test_labelled_entity_is_not_stripped_without_a_grounded_tail() -> None:
+    """The label is kept when the tail is not in the document (no laundering)."""
+    from forensics.llm import _strip_entity_label
+    from forensics.models import Entity
+
+    entity = Entity(
+        value="Due Date: March 3, 2025", entity_type="date", start_offset=0, end_offset=5
+    )
+
+    cleaned = _strip_entity_label(entity, "Due Date: March 3, 2024")
+
+    assert cleaned.value == "Due Date: March 3, 2025"

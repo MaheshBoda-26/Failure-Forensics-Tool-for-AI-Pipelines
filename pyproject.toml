@@ -51,7 +51,7 @@ packages = ["src/forensics"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-q --strict-markers"
-markers = ["live: hits the real OpenRouter API; deselect with -m 'not live'"]
+markers = ["live: makes real NVIDIA NIM API calls; deselect with -m 'not live'"]
 
 [tool.ruff]
 line-length = 100

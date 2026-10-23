@@ -30,7 +30,10 @@ services:
       pip install --upgrade pip &&
       pip install ".[otel]" &&
       cd frontend && npm ci && npm run build
-    startCommand: uvicorn forensics.api:app --host 0.0.0.0 --port $PORT
+    # `seed` loads the committed real-model traces into the disk before serving,
+    # so a fresh instance's UI shows real traces and diagnoses rather than an
+    # empty database. It is idempotent, so restarts do not duplicate rows.
+    startCommand: python -m forensics.cli seed && uvicorn forensics.api:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.7"
@@ -59,17 +62,17 @@ services:
       # gitignored, so it never reaches Render — only `NVIDIA_API_KEY` is not
       # enough, and a deploy that sets only that fails to boot.
       - key: PIPELINE_MODEL_ID
-        value: poolside/laguna-xs-2.1
+        value: minimaxai/minimax-m3.1-flash
       - key: PIPELINE_MODEL_PROVIDER
-        value: poolside
+        value: minimaxai
       - key: PIPELINE_MODEL_FAMILY
-        value: poolside
+        value: minimaxai
       - key: PIPELINE_FALLBACK_MODEL_ID
-        value: poolside/laguna-xs-2.1
+        value: minimaxai/minimax-m3.1-flash
       - key: PIPELINE_FALLBACK_MODEL_PROVIDER
-        value: poolside
+        value: minimaxai
       - key: PIPELINE_FALLBACK_MODEL_FAMILY
-        value: poolside
+        value: minimaxai
       - key: JUDGE_MODEL_ID
         value: meta/llama-3.1-8b-instruct
       - key: JUDGE_MODEL_PROVIDER
