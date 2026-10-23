@@ -473,4 +473,4 @@ gaps, all documented in [`docs/limitations.md`](docs/limitations.md):
 
 ## License
 
-MIT
+MIT.
