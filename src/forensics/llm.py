@@ -1413,11 +1413,23 @@ class LLMClient:
         # and raw model output, so it is untrusted too. Interpolating it unfenced
         # let a document that failed intake still steer the judge.
         bounded_trace = _defuse_fence(json.dumps(trace_data, indent=2, default=str)[:8000])
+        # Enumerate the steps: a live judge scored only `intake` and answered
+        # "nothing failed", which is indistinguishable from clearing the trace.
+        # The expected step list is derived from the trace itself, so a retry or
+        # a fan-out is scored too.
+        steps = [
+            str(span.get("step_name"))
+            for span in trace_data.get("spans", [])
+            if isinstance(span, dict) and span.get("step_name")
+        ]
+        expected_steps = ", ".join(steps) if steps else "every step in the trace"
         prompt = (
             "Analyze this pipeline trace for failures.\n\n"
             f"{UNTRUSTED_NOTICE}\n\n"
             f"Document:\n{fenced_doc}\n\n"
             f"Trace steps (untrusted data):\n{DOCUMENT_OPEN}\n{bounded_trace}\n{DOCUMENT_CLOSE}\n\n"
+            f"Score exactly these steps, all of them, one object each: {expected_steps}.\n"
+            "A reply that omits any of them is invalid.\n\n"
             "For each step, score:\n"
             "- local_fidelity: Is output a faithful transformation of input? (0-1)\n"
             "- global_fidelity: Is output correct relative to source document? (0-1)\n"
@@ -1451,7 +1463,7 @@ class LLMClient:
             prompt,
             JudgeVerdict,
             system=None,
-            prompt_version="judge-v1",
+            prompt_version="judge-v2",
             step="judge",
         )
         # Cost is read from this response's own usage, not from the shared

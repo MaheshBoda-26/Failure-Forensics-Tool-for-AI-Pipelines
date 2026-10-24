@@ -74,7 +74,7 @@ def test_judge_family_separation_fails(monkeypatch):
         monkeypatch.setenv(k, v)
 
     reset_settings()
-    with pytest.raises(ValueError, match=r"Judge model family.*matches pipeline family"):
+    with pytest.raises(ValueError, match=r"is not independent of the pipeline"):
         Settings(_env_file=None)  # type: ignore[call-arg]
 
 
@@ -91,7 +91,10 @@ def test_duplicate_model_ids_fails(monkeypatch):
         monkeypatch.setenv(k, v)
 
     reset_settings()
-    with pytest.raises(ValueError, match=r"Duplicate model IDs detected"):
+    # The family check runs first and catches this by id even though the family
+    # label says otherwise: a mislabelled family must not smuggle the pipeline
+    # model past the judge-independence guard.
+    with pytest.raises(ValueError, match=r"is not independent of the pipeline"):
         Settings(_env_file=None)  # type: ignore[call-arg]
 
 
@@ -390,3 +393,67 @@ def test_model_knob_defaults_are_unchanged(monkeypatch: pytest.MonkeyPatch) -> N
     assert settings.pipeline_model.is_reasoning is False
     assert settings.judge_model.max_tokens == 4096
     assert settings.judge_model.is_reasoning is False
+
+
+def test_one_model_as_its_own_fallback_is_allowed_with_a_strict_judge(monkeypatch):
+    """A single reachable slug may serve pipeline and fallback.
+
+    The duplicate-id guard used to be gated on JUDGE_FAMILY_SEPARATION_REQUIRED,
+    so turning on an independent judge rejected a pipeline that legitimately
+    uses one model as its own fallback — which is the normal case when an
+    account can only reach one NIM slug.
+    """
+    env = _make_env(
+        {
+            "PIPELINE_FALLBACK_MODEL_ID": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+            "PIPELINE_FALLBACK_MODEL_PROVIDER": "nvidia",
+            "PIPELINE_FALLBACK_MODEL_FAMILY": "nvidia",
+            "JUDGE_FAMILY_SEPARATION_REQUIRED": "true",
+        }
+    )
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    reset_settings()
+    with pytest.warns(RuntimeWarning, match=r"Duplicate model IDs detected"):
+        settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.judge_model.model_id == "google/gemma-3-27b-it"
+
+
+def test_judge_sharing_the_pipeline_weights_fails_even_with_a_different_family(monkeypatch):
+    """Family labels are not enough: the judge must not be the pipeline model."""
+    env = _make_env(
+        {
+            "JUDGE_MODEL_ID": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+            "JUDGE_MODEL_PROVIDER": "google",
+            "JUDGE_MODEL_FAMILY": "google",
+            "JUDGE_FAMILY_SEPARATION_REQUIRED": "true",
+        }
+    )
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    reset_settings()
+    with pytest.raises(ValueError, match=r"is not independent of the pipeline"):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_judge_may_share_a_slug_when_separation_is_disabled(monkeypatch):
+    """The opt-out is explicit and still warns, not silent."""
+    env = _make_env(
+        {
+            "JUDGE_MODEL_ID": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+            "JUDGE_MODEL_PROVIDER": "nvidia",
+            "JUDGE_MODEL_FAMILY": "nvidia",
+            "JUDGE_FAMILY_SEPARATION_REQUIRED": "false",
+        }
+    )
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    reset_settings()
+    with pytest.warns(RuntimeWarning, match=r"not independent of the pipeline"):
+        settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.judge_model.model_id == settings.pipeline_model.model_id

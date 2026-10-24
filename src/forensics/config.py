@@ -485,12 +485,17 @@ class Settings(BaseSettings):
         weaker evidence than a cross-family judge's.
         """
         pipeline_families = {self.pipeline_model.family, self.pipeline_fallback_model.family}
-        if self.judge_model.family not in pipeline_families:
+        pipeline_ids = {self.pipeline_model.model_id, self.pipeline_fallback_model.model_id}
+        if self.judge_model.family not in pipeline_families and (
+            self.judge_model.model_id not in pipeline_ids
+        ):
             return self
         message = (
-            f"Judge model family '{self.judge_model.family}' matches pipeline family. "
+            f"Judge model '{self.judge_model.model_id}' (family "
+            f"'{self.judge_model.family}') is not independent of the pipeline. "
             f"Pipeline families: {pipeline_families}. "
-            f"Use a different provider family for the judge to avoid self-preference bias."
+            f"Use a different model and provider family for the judge to avoid "
+            f"self-preference bias."
         )
         if self.judge_family_separation_required:
             raise ValueError(message)
@@ -503,25 +508,40 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_model_ids_unique(self) -> "Settings":
-        """Ensure we're not accidentally using the same model for everything."""
+        """Warn on duplicated slugs; fail only when the judge shares pipeline weights.
+
+        This used to be gated on JUDGE_FAMILY_SEPARATION_REQUIRED, which made
+        the flag do two unrelated jobs: turning it on to get an independent
+        judge also rejected a pipeline that legitimately uses one model as its
+        own fallback (only one NIM slug may be reachable on an account). The
+        flag now governs exactly one thing — judge independence — which is
+        checked here by model id as well as by family, because a mislabelled
+        family must not smuggle the same weights past the guard.
+        """
         ids = {
             "pipeline": self.pipeline_model.model_id,
             "pipeline_fallback": self.pipeline_fallback_model.model_id,
             "judge": self.judge_model.model_id,
             "cheap": self.cheap_model.model_id,
         }
-        if len(set(ids.values())) < len(ids):
-            duplicates = {k: v for k, v in ids.items() if list(ids.values()).count(v) > 1}
-            message = f"Duplicate model IDs detected: {duplicates}"
-            if self.judge_family_separation_required:
-                raise ValueError(message)
-            warnings.warn(
-                f"{message} One model is serving every role, so the fallback path "
-                f"retries the same weights. Proceeding because "
-                f"JUDGE_FAMILY_SEPARATION_REQUIRED=false.",
-                RuntimeWarning,
-                stacklevel=2,
+        if len(set(ids.values())) == len(ids):
+            return self
+
+        duplicates = {k: v for k, v in ids.items() if list(ids.values()).count(v) > 1}
+        judge_shares_pipeline = ids["judge"] in (ids["pipeline"], ids["pipeline_fallback"])
+        message = f"Duplicate model IDs detected: {duplicates}"
+        if self.judge_family_separation_required and judge_shares_pipeline:
+            raise ValueError(
+                f"{message}. The judge is one of the pipeline models, so it would "
+                f"grade its own output. Use a different JUDGE_MODEL_ID or set "
+                f"JUDGE_FAMILY_SEPARATION_REQUIRED=false."
             )
+        warnings.warn(
+            f"{message} The fallback retries the same weights when it shares an id "
+            f"with the pipeline; this is allowed but weakens the fallback path.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         return self
 
 

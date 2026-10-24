@@ -990,9 +990,27 @@ def analyze_trace(trace: Trace, document_text: str, expected_type: str | None = 
                     judge_result = JudgeAnalysis.model_validate(payload)
 
             if judge_result:
-                judge_analysis = judge_result
+                # A verdict that scores only part of the trace cannot override a
+                # complete deterministic analysis. A real judge returned scores
+                # for `intake` alone and a root cause of "none", which silently
+                # erased a detected misclassification. Coverage is a
+                # precondition for the verdict to count at all.
+                trace_steps = {span.step_name for span in trace.spans}
+                scored_steps = {score.step_name for score in judge_result.step_scores}
+                if judge_result.root_cause_step == "none":
+                    # "Nothing failed" is only credible if the judge scored the
+                    # whole trace; a one-step verdict cannot clear the rest.
+                    verdict_covers_trace = trace_steps.issubset(scored_steps)
+                else:
+                    verdict_covers_trace = (
+                        judge_result.root_cause_step in trace_steps
+                        and judge_result.root_cause_step in scored_steps
+                    )
+                if verdict_covers_trace:
+                    judge_analysis = judge_result
+
                 # Judge overrides deterministic if it disagrees on root cause or category
-                if (
+                if verdict_covers_trace and (
                     judge_result.root_cause_step != root_cause_step
                     or judge_result.category != category
                 ):

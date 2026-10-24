@@ -132,6 +132,12 @@ def _failing_trace() -> Trace:
     trace.spans.append(
         _span(trace, "extraction", {"entities": [{"value": "ghost", "entity_type": "PERSON"}]})
     )
+    trace.spans.append(
+        _span(trace, "classification", {"document_type": "invoice", "confidence": 0.9})
+    )
+    trace.spans.append(
+        _span(trace, "summarization", {"summary": "Invoice for 500.00 USD", "key_points": []})
+    )
     return trace
 
 
@@ -140,6 +146,14 @@ def _passing_trace() -> Trace:
     trace = Trace(document_id="d1", spans=[])
     trace.spans.append(_span(trace, "intake", {"cleaned_text": CONTRACT_DOC}))
     trace.spans.append(_span(trace, "extraction", {"entities": []}))
+    trace.spans.append(
+        _span(trace, "classification", {"document_type": "contract", "confidence": 0.9})
+    )
+    trace.spans.append(
+        _span(
+            trace, "summarization", {"summary": "Contract between Acme and Beta.", "key_points": []}
+        )
+    )
     return trace
 
 
@@ -244,12 +258,13 @@ def test_judge_force_runs_even_when_deterministic_passes(
         {
             "step_scores": [
                 {
-                    "step_name": "intake",
+                    "step_name": step,
                     "local_fidelity": 1.0,
                     "global_fidelity": 1.0,
                     "evidence": ["nothing to flag"],
                     "semantic_issues": [],
                 }
+                for step in ("intake", "extraction", "classification", "summarization")
             ],
             "root_cause_step": "none",
             "category": "unknown",
@@ -461,3 +476,39 @@ def test_an_out_of_enum_judge_category_is_refused(
     assert diagnosis.analyzer_fallback is False
     assert diagnosis.root_cause_step == "extraction"
     assert diagnosis.category is FailureCategory.EXTRACTION_HALLUCINATION
+
+
+def test_partial_none_verdict_cannot_clear_a_trace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """ "Nothing failed" is only credible when the judge scored every step.
+
+    A live cross-family judge returned scores for `intake` alone with root cause
+    "none", which silently erased a deterministic misclassification. Partial
+    verdicts are now discarded rather than trusted.
+    """
+    _enable_judge(monkeypatch, force=True)
+    partial = json.dumps(
+        {
+            "step_scores": [
+                {
+                    "step_name": "intake",
+                    "local_fidelity": 1.0,
+                    "global_fidelity": 1.0,
+                    "evidence": ["nothing to flag"],
+                    "semantic_issues": [],
+                }
+            ],
+            "root_cause_step": "none",
+            "category": "unknown",
+            "confidence": 1.0,
+        }
+    )
+    client = _judge_client(_recording_handler(partial), tmp_path)
+    _install_client(monkeypatch, client)
+
+    diagnosis = analyze_trace(_passing_trace(), CONTRACT_DOC)
+
+    assert diagnosis.judge_analysis is None
+    assert diagnosis.analyzer_version == "0.1.0-deterministic"
+    assert diagnosis.model_id == "deterministic-v0"
