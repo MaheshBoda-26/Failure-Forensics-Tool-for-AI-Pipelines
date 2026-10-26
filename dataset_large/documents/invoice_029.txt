@@ -1,0 +1,32 @@
+TAX INVOICE
+
+ABN: 23 127 859 156
+Invoice #: INV-2025-2198
+Date: 2024-10-28
+
+FROM:
+Horizon Enterprises
+2351 Oak Ave, Suite 410
+
+TO:
+Nexus Digital Services
+9408 Main St, Suite 462
+
+DESCRIPTION                                         QTY    UNIT PRICE    GST    TOTAL
+Item 1: 41 x $2573 = $105493
+Item 2: 13 x $4659 = $60567
+Item 3: 3 x $564 = $1692
+Item 4: 44 x $1281 = $56364
+Item 5: 31 x $366 = $11346
+Item 6: 1 x $1165 = $1165
+Item 7: 24 x $4960 = $119040
+Item 8: 22 x $4964 = $109208
+
+GST-FREE AMOUNT: $139,462.50
+GST AMOUNT: $92,975.00
+TOTAL INC GST: $557,850.00
+
+PAYMENT DUE: 2024-12-12
+BANK: NAB
+BSB: 907-776
+ACCOUNT: 48792037

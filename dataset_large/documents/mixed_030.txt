@@ -1,0 +1,34 @@
+SERVICE ORDER WITH INVOICE DETAILS
+
+Service Order #: SO-15863
+Date: 2025-12-19
+Customer: Acme Corporation
+Provider: GlobalTech Solutions
+
+SERVICE DESCRIPTION
+Professional services engagement with deliverables.
+
+SCHEDULE
+Start: 2025-12-19
+End: 2026-03-19
+Milestones: M1: Design (Week 2), M2: Development (Week 6), M3: Testing (Week 10), M4: Deploy (Week 12)
+
+PRICING
+  Service 1: 6 hours @ $256/hr = $1536
+  Service 2: 2 hours @ $747/hr = $1494
+  Service 3: 1 hours @ $703/hr = $703
+  Service 4: 14 hours @ $250/hr = $3500
+  Service 5: 19 hours @ $395/hr = $7505
+  Service 6: 7 hours @ $1653/hr = $11571
+Subtotal: $26,309.00
+Tax: $2,630.90
+Total: $28,939.90
+
+BILLING
+Frequency: Monthly
+Method: Wire Transfer
+Terms: 50% upfront, 25% at milestone, 25% on completion
+
+AUTHORIZATION
+Customer: _________________ Date: ________
+Provider: _________________ Date: ________

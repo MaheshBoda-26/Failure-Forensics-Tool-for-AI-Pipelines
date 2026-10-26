@@ -1,0 +1,33 @@
+SERVICE ORDER WITH INVOICE DETAILS
+
+Service Order #: SO-24715
+Date: 2023-10-18
+Customer: Catalyst Ventures
+Provider: Pinnacle Systems
+
+SERVICE DESCRIPTION
+Professional services engagement with deliverables.
+
+SCHEDULE
+Start: 2023-10-18
+End: 2024-01-16
+Milestones: M1: Design (Week 2), M2: Development (Week 6), M3: Testing (Week 10), M4: Deploy (Week 12)
+
+PRICING
+  Service 1: 6 hours @ $803/hr = $4818
+  Service 2: 9 hours @ $959/hr = $8631
+  Service 3: 7 hours @ $411/hr = $2877
+  Service 4: 18 hours @ $1295/hr = $23310
+  Service 5: 10 hours @ $894/hr = $8940
+Subtotal: $48,576.00
+Tax: $4,857.60
+Total: $53,433.60
+
+BILLING
+Frequency: Monthly
+Method: Wire Transfer
+Terms: 50% upfront, 25% at milestone, 25% on completion
+
+AUTHORIZATION
+Customer: _________________ Date: ________
+Provider: _________________ Date: ________

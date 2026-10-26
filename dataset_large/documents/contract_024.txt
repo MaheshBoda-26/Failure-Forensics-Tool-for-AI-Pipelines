@@ -1,0 +1,28 @@
+CONSULTING AGREEMENT
+
+Consulting Agreement dated March 16, 2024 between Quantum Leap Labs ("Company")
+and Stellar Communications ("Consultant").
+
+ENGAGEMENT
+Company engages Consultant to provide professional consulting services.
+
+COMPENSATION
+Consultant shall be paid $18275 Quarterly. Expenses reimbursed per policy.
+
+CONFIDENTIALITY
+Consultant agrees to protect Company's confidential information for 3 year(s).
+
+NON-COMPETE
+Consultant agrees not to compete for 24 months after termination.
+
+GOVERNING LAW
+State of Florida.
+
+EXECUTED:
+Quantum Leap Labs                              Stellar Communications
+By: David Chen                      By: Lisa Wang
+Title: CTO                       Title: Director of Operations
+Date: March 16, 2024                           Date: March 16, 2024
+
+
+[HALLUCINATED ENTITY] Fake Vendor Inc - $50,000 - Contract ID: FAKE-2024-001

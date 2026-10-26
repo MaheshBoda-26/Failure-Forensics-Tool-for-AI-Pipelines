@@ -1,0 +1,25 @@
+CONSULTING AGREEMENT
+
+Consulting Agreement dated March 09, 2025 between Quantum Leap Labs ("Company")
+and Stellar Communications ("Consultant").
+
+ENGAGEMENT
+Company engages Consultant to provide professional consulting services.
+
+COMPENSATION
+Consultant shall be paid $12700 Monthly. Expenses reimbursed per policy.
+
+CONFIDENTIALITY
+Consultant agrees to protect Company's confidential information for 1 year(s).
+
+NON-COMPETE
+Consultant agrees not to compete for 11 months after termination.
+
+GOVERNING LAW
+State of Delaware.
+
+EXECUTED:
+Quantum Leap Labs                              Stellar Communications
+By: Michelle Martin                      By: Robert Taylor
+Title: Managing Partner                       Title: CTO
+Date: March 09, 2025                           Date: March 09, 2025

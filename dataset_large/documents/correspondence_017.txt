@@ -1,0 +1,17 @@
+EMAIL
+
+From: Sarah Johnson <sarah.johnson@company.com>
+To: Maria Rodriguez <maria.rodriguez@company.com>
+CC: David Chen <sarah.johnson@company.com>
+Date: 2025-09-01
+Subject: Project Update
+
+Dear Maria Rodriguez,
+
+This is a sample correspondence body with relevant business content.
+
+Best regards,
+Sarah Johnson
+VP Engineering
+Quantum Leap Labs
+sarah.johnson@company.com | +1-555-938-3064

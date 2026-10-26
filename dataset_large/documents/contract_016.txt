@@ -1,0 +1,25 @@
+CONSULTING AGREEMENT
+
+Consulting Agreement dated September 08, 2023 between Acme Corporation ("Company")
+and GlobalTech Solutions ("Consultant").
+
+ENGAGEMENT
+Company engages Consultant to provide professional consulting services.
+
+COMPENSATION
+Consultant shall be paid $30050 Per Milestone. Expenses reimbursed per policy.
+
+CONFIDENTIALITY
+Consultant agrees to protect Company's confidential information for 2 year(s).
+
+NON-COMPETE
+Consultant agrees not to compete for 20 months after termination.
+
+GOVERNING LAW
+State of Massachusetts.
+
+EXECUTED:
+Acme Corporation                              GlobalTech Solutions
+By: Christopher Moore                      By: Sarah Johnson
+Title: CTO                       Title: Senior Vice President
+Date: September 08, 2023                           Date: September 08, 2023

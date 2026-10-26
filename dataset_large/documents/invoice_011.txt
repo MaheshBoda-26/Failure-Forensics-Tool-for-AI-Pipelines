@@ -1,0 +1,35 @@
+TAX INVOICE
+
+ABN: 66 699 418 575
+Invoice #: INV-2025-4032
+Date: 2025-12-04
+
+FROM:
+Summit Partners
+5331 Main St, Suite 343
+
+TO:
+Vanguard Analytics
+439 Maple Dr, Suite 491
+
+DESCRIPTION                                         QTY    UNIT PRICE    GST    TOTAL
+Item 1: 26 x $139 = $3614
+Item 2: 25 x $4162 = $104050
+Item 3: 49 x $3222 = $157878
+Item 4: 19 x $654 = $12426
+Item 5: 4 x $822 = $3288
+Item 6: 8 x $740 = $5920
+Item 7: 15 x $1287 = $19305
+Item 8: 1 x $2076 = $2076
+
+GST-FREE AMOUNT: $92,567.10
+GST AMOUNT: $15,427.85
+TOTAL INC GST: $323,984.85
+
+PAYMENT DUE: 2026-01-05
+BANK: ANZ
+BSB: 514-982
+ACCOUNT: 59161939
+
+
+[HALLUCINATED ENTITY] Fake Vendor Inc - $50,000 - Contract ID: FAKE-2024-001

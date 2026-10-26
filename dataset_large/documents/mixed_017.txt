@@ -1,0 +1,32 @@
+SERVICE ORDER WITH INVOICE DETAILS
+
+Service Order #: SO-73178
+Date: 2023-01-04
+Customer: Quantum Leap Labs
+Provider: Stellar Communications
+
+SERVICE DESCRIPTION
+Professional services engagement with deliverables.
+
+SCHEDULE
+Start: 2023-01-04
+End: 2023-04-04
+Milestones: M1: Design (Week 2), M2: Development (Week 6), M3: Testing (Week 10), M4: Deploy (Week 12)
+
+PRICING
+  Service 1: 7 hours @ $845/hr = $5915
+  Service 2: 9 hours @ $734/hr = $6606
+  Service 3: 14 hours @ $1577/hr = $22078
+  Service 4: 19 hours @ $1947/hr = $36993
+Subtotal: $71,592.00
+Tax: $7,159.20
+Total: $78,751.20
+
+BILLING
+Frequency: Monthly
+Method: Wire Transfer
+Terms: 50% upfront, 25% at milestone, 25% on completion
+
+AUTHORIZATION
+Customer: _________________ Date: ________
+Provider: _________________ Date: ________

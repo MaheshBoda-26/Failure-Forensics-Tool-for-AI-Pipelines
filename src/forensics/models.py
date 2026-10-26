@@ -346,6 +346,23 @@ class AnalyticsSnapshot(BaseModel):
     avg_time_to_root_cause_seconds: float | None = None
     generated_at: datetime = Field(default_factory=_utc_now)
 
+    # Enhanced metrics
+    total_cost_usd: float = 0.0
+    cost_by_model: dict[str, float] = Field(default_factory=dict)
+    cost_by_step: dict[str, float] = Field(default_factory=dict)
+    tokens_by_model: dict[str, int] = Field(default_factory=dict)
+    tokens_by_step: dict[str, int] = Field(default_factory=dict)
+    avg_latency_ms: float = 0.0
+    latency_by_model: dict[str, float] = Field(default_factory=dict)
+    latency_by_step: dict[str, float] = Field(default_factory=dict)
+    model_performance: dict[str, dict[str, float]] = Field(
+        default_factory=dict
+    )  # model -> {pass_rate, avg_latency, avg_cost}
+    failure_correlation: list[dict[str, Any]] = Field(
+        default_factory=dict
+    )  # step x category heatmap
+    cost_trend: list[dict[str, Any]] = Field(default_factory=list)  # daily cost trend
+
 
 class StepJudgeScore(BaseModel):
     """Judge model score for a single step."""

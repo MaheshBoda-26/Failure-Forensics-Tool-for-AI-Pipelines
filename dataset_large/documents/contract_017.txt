@@ -1,0 +1,28 @@
+SERVICE AGREEMENT
+
+This Service Agreement ("Agreement") is entered into as of May 04, 2024 by and between
+Meridian Industries ("Client") and Apex Consulting Group ("Provider").
+
+1. SERVICES
+Provider shall perform the services described in Exhibit A ("Services").
+
+2. COMPENSATION
+Client shall pay Provider $36000 for the Services. Payment terms: Net 60 days.
+
+3. TERM AND TERMINATION
+This Agreement commences on March 29, 2025 and continues for 2 year(s).
+Either party may terminate with 37 days written notice.
+
+4. CONFIDENTIALITY
+Both parties agree to maintain confidentiality of proprietary information.
+
+5. GOVERNING LAW
+This Agreement shall be governed by the laws of Illinois.
+
+IN WITNESS WHEREOF, the parties have executed this Agreement.
+
+Meridian Industries                          Apex Consulting Group
+By: _________________________    By: _________________________
+Name: William Davis              Name: James Anderson
+Title: Senior Vice President                 Title: VP Sales
+Date: May 04, 2024                     Date: May 04, 2024

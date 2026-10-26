@@ -1,0 +1,29 @@
+INVOICE
+
+Invoice #: INV-2024-1038
+Date: 2024-02-04
+Due Date: 2024-02-20
+
+BILL TO:
+
+3847 Second Ave, Suite 961
+
+SHIP TO:
+
+3897 Maple Dr, Suite 971
+
+ITEMS:
+Item 1: 44 x $3296 = $145024
+Item 2: 33 x $1526 = $50358
+Item 3: 13 x $2764 = $35932
+Item 4: 21 x $2846 = $59766
+Item 5: 28 x $2055 = $57540
+
+SUBTOTAL: $348,620.00
+TAX (5%): $17,431.00
+TOTAL: $366,051.00
+
+Payment Terms: Net 15 days
+Bank Details: Bank: Citi | Account: 28614532
+
+Thank you for your business!

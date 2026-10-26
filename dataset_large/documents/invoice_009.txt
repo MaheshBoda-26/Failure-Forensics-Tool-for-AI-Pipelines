@@ -1,0 +1,36 @@
+COMMERCIAL INVOICE
+
+Invoice Number: INV-2025-7054
+Invoice Date: 2025-05-11
+Purchase Order: PO-59695
+
+SELLER:
+Meridian Industries
+4746 Elm St, Suite 907
+Tax ID: TAX-441045649
+
+BUYER:
+Apex Consulting Group
+1285 Main St, Suite 435
+Tax ID: TAX-589208203
+
+LINE ITEMS:
+Item 1: 7 x $4618 = $32326
+Item 2: 11 x $343 = $3773
+Item 3: 44 x $1389 = $61116
+Item 4: 21 x $516 = $10836
+Item 5: 13 x $2086 = $27118
+Item 6: 33 x $1780 = $58740
+Item 7: 42 x $4973 = $208866
+Item 8: 8 x $3327 = $26616
+
+CURRENCY: USD
+SUBTOTAL: $429,391.00
+VAT: $21,469.55
+TOTAL DUE: $450,860.55
+
+PAYMENT TERMS: Net 45 days
+DUE DATE: 2025-05-30
+
+IBAN: US45 7138 1488 5378 6932
+SWIFT: CHASUS33

@@ -1,0 +1,30 @@
+INVOICE
+
+Invoice #: INV-2025-4418
+Date: 2025-07-12
+Due Date: 2025-08-22
+
+BILL TO:
+Quantum Leap Labs
+2262 Oak Ave, Suite 757
+
+SHIP TO:
+Stellar Communications
+176 Maple Dr, Suite 204
+
+ITEMS:
+Item 1: 7 x $3936 = $27552
+Item 2: 31 x $1853 = $57443
+Item 3: 38 x $427 = $16226
+Item 4: 23 x $1480 = $34040
+Item 5: 33 x $1603 = $52899
+Item 6: 15 x $680 = $10200
+
+SUBTOTAL: $198,360.00
+TAX (15%): $29,754.00
+TOTAL: $228,114.00
+
+Payment Terms: Net 45 days
+Bank Details: Bank: Chase | Account: 81553857
+
+Thank you for your business!

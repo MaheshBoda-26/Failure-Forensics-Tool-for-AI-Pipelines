@@ -1,0 +1,28 @@
+TAX INVOICE
+
+ABN: 48 657 382 998
+Invoice #: INV-2024-1203
+Date: 2023-04-15
+
+FROM:
+Apex Dynamics
+4866 First St, Suite 824
+
+TO:
+Vertex Solutions
+5531 Elm St, Suite 296
+
+DESCRIPTION                                         QTY    UNIT PRICE    GST    TOTAL
+Item 1: 32 x $3857 = $123424
+Item 2: 42 x $2963 = $124446
+Item 3: 18 x $393 = $7074
+Item 4: 32 x $686 = $21952
+
+GST-FREE AMOUNT: $83,068.80
+GST AMOUNT: $41,534.40
+TOTAL INC GST: $318,430.40
+
+PAYMENT DUE: 2023-05-04
+BANK: Westpac
+BSB: 403-668
+ACCOUNT: 52259301

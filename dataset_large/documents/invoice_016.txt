@@ -1,0 +1,29 @@
+INVOICE
+
+Invoice #: INV-2023-4182
+Date: 2024-04-17
+Due Date: 2024-05-13
+
+BILL TO:
+Summit Partners
+9798 Maple Dr, Suite 726
+
+SHIP TO:
+Vanguard Analytics
+8664 Second Ave, Suite 391
+
+ITEMS:
+Item 1: 3 x $4305 = $12915
+Item 2: 46 x $1275 = $58650
+Item 3: 21 x $3666 = $76986
+Item 4: 41 x $3540 = $145140
+Item 5: 35 x $446 = $15610
+
+SUBTOTAL: $309,301.00
+TAX (20%): $61,860.20
+TOTAL: $371,161.20
+
+Payment Terms: Net 30 days
+Bank Details: Bank: Citi | Account: 16403366
+
+Thank you for your business!

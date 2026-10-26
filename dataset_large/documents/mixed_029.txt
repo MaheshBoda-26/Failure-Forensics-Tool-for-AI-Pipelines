@@ -1,0 +1,33 @@
+PROPOSAL WITH CONTRACT TERMS
+
+PROPOSAL #PROP-2024-951
+Date: 2023-11-03
+Valid Until: 2023-12-03
+
+PREPARED FOR:
+Acme Corporation
+
+PREPARED BY:
+GlobalTech Solutions
+
+EXECUTIVE SUMMARY
+Incident involving invoiceual service levels.
+
+SCOPE OF WORK
+Full lifecycle services including design, implementation, and support.
+
+PRICING
+Total estimated investment: $85,424.90
+
+TERMS AND CONDITIONS
+1. This proposal constitutes an offer valid for 30 days.
+2. Acceptance creates a binding agreement.
+3. Payment terms: 50% upfront, 25% at milestone, 25% on completion.
+4. Intellectual property transfers upon full payment.
+5. Confidentiality survives termination.
+
+ACCEPTANCE
+Acme Corporation                              GlobalTech Solutions
+_________________________              _________________________
+Lisa Wang                          Michelle Martin
+Date: 2023-11-03                           Date: 2023-11-03

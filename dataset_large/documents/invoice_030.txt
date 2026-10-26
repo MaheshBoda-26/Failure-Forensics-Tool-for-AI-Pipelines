@@ -1,0 +1,35 @@
+COMMERCIAL INVOICE
+
+Invoice Number: INV-2024-7567
+Invoice Date: 2024-04-10
+Purchase Order: PO-17001
+
+SELLER:
+Horizon Enterprises
+6479 Elm St, Suite 604
+Tax ID: TAX-749704425
+
+BUYER:
+Nexus Digital Services
+5247 Park Blvd, Suite 236
+Tax ID: TAX-477172406
+
+LINE ITEMS:
+Item 1: 38 x $3754 = $142652
+Item 2: 18 x $1590 = $28620
+Item 3: 4 x $2760 = $11040
+Item 4: 20 x $1668 = $33360
+Item 5: 37 x $607 = $22459
+Item 6: 40 x $3866 = $154640
+Item 7: 6 x $4273 = $25638
+
+CURRENCY: GBP
+SUBTOTAL: $418,409.00
+VAT: $62,761.35
+TOTAL DUE: $481,170.35
+
+PAYMENT TERMS: Net 45 days
+DUE DATE: 2024-05-13
+
+IBAN: US67 3470 9681 9852 2702
+SWIFT: CITIUS33

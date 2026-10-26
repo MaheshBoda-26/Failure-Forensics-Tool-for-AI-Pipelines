@@ -1,0 +1,27 @@
+INVOICE
+
+Invoice #: INV-2023-7975
+Date: 2025-07-07
+Due Date: 2025-08-20
+
+BILL TO:
+Catalyst Ventures
+8575 Maple Dr, Suite 116
+
+SHIP TO:
+Pinnacle Systems
+9737 Main St, Suite 668
+
+ITEMS:
+Item 1: 3 x $4293 = $12879
+Item 2: 5 x $4659 = $23295
+Item 3: 37 x $805 = $29785
+
+SUBTOTAL: $65,959.00
+TAX (8%): $5,276.72
+TOTAL: $71,235.72
+
+Payment Terms: Net 30 days
+Bank Details: Bank: Wells Fargo | Account: 66431525
+
+Thank you for your business!

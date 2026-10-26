@@ -1,0 +1,26 @@
+MASTER SERVICES AGREEMENT
+
+This Master Services Agreement ("MSA") is made effective October 13, 2023 between
+Acme Corporation ("Customer") and GlobalTech Solutions ("Vendor").
+
+SCOPE OF WORK
+Vendor shall provide professional services as specified in Statements of Work.
+
+FEES AND PAYMENT
+Customer shall pay Vendor $8325 per month. Invoices due within Net 60 days.
+
+INTELLECTUAL PROPERTY
+All work product shall be owned by Customer upon full payment.
+
+LIMITATION OF LIABILITY
+Neither party liable for indirect damages. Total liability capped at $8325.
+
+TERM
+Initial term: 3 year(s). Auto-renews for successive 1 year(s) periods.
+
+SIGNATURES
+Acme Corporation                              GlobalTech Solutions
+_________________________              _________________________
+Maria Rodriguez                          David Chen
+Director of Operations                              CEO
+October 13, 2023                                 October 13, 2023

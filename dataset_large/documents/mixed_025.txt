@@ -1,0 +1,31 @@
+SERVICE ORDER WITH INVOICE DETAILS
+
+Service Order #: SO-71210
+Date: 2023-02-28
+Customer: Apex Dynamics
+Provider: Vertex Solutions
+
+SERVICE DESCRIPTION
+Professional services engagement with deliverables.
+
+SCHEDULE
+Start: 2023-02-28
+End: 2023-05-29
+Milestones: M1: Design (Week 2), M2: Development (Week 6), M3: Testing (Week 10), M4: Deploy (Week 12)
+
+PRICING
+  Service 1: 1 hours @ $944/hr = $944
+  Service 2: 8 hours @ $1835/hr = $14680
+  Service 3: 13 hours @ $169/hr = $2197
+Subtotal: $17,821.00
+Tax: $1,782.10
+Total: $19,603.10
+
+BILLING
+Frequency: Monthly
+Method: Wire Transfer
+Terms: 50% upfront, 25% at milestone, 25% on completion
+
+AUTHORIZATION
+Customer: _________________ Date: ________
+Provider: _________________ Date: ________

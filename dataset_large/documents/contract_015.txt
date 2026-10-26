@@ -1,0 +1,28 @@
+SERVICE AGREEMENT
+
+This Service Agreement ("Agreement") is entered into as of November 05, 2024 by and between
+Apex Dynamics ("Client") and Vertex Solutions ("Provider").
+
+1. SERVICES
+Provider shall perform the services described in Exhibit A ("Services").
+
+2. COMPENSATION
+Client shall pay Provider $31150 for the Services. Payment terms: Net 60 days.
+
+3. TERM AND TERMINATION
+This Agreement commences on November 29, 2023 and continues for 1 year(s).
+Either party may terminate with 87 days written notice.
+
+4. CONFIDENTIALITY
+Both parties agree to maintain confidentiality of proprietary information.
+
+5. GOVERNING LAW
+This Agreement shall be governed by the laws of Texas.
+
+IN WITNESS WHEREOF, the parties have executed this Agreement.
+
+Apex Dynamics                          Vertex Solutions
+By: _________________________    By: _________________________
+Name: James Anderson              Name: Robert Taylor
+Title: Director of Operations                 Title: Senior Vice President
+Date: November 05, 2024                     Date: November 05, 2024

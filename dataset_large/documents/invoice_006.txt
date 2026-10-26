@@ -1,0 +1,28 @@
+TAX INVOICE
+
+ABN: 56 723 826 886
+Invoice #: INV-2023-7095
+Date: 2025-11-06
+
+FROM:
+BlueSky Innovations
+2136 Elm St, Suite 381
+
+TO:
+IronClad Security
+2436 Park Blvd, Suite 899
+
+DESCRIPTION                                         QTY    UNIT PRICE    GST    TOTAL
+Item 1: 25 x $754 = $18850
+Item 2: 28 x $1669 = $46732
+Item 3: 29 x $1747 = $50663
+Item 4: 8 x $1357 = $10856
+
+GST-FREE AMOUNT: $38,130.30
+GST AMOUNT: $25,420.20
+TOTAL INC GST: $152,521.20
+
+PAYMENT DUE: 2025-12-13
+BANK: ANZ
+BSB: 122-164
+ACCOUNT: 89722177

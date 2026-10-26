@@ -13,7 +13,7 @@ to 352.
 
 ## Resolved in this revision
 
-The previous revision of this file listed shipped work as missing. These six are
+The previous revision of this file listed shipped work as missing. These ten are
 implemented, tested, and reachable by configuration:
 
 | Previously listed as missing | Now |
@@ -27,6 +27,8 @@ implemented, tested, and reachable by configuration:
 | "No Job Reaper" | `QUEUE_STALL_TIMEOUT` + `claim_expires_at` column + heartbeat loop + periodic reaper; `forensics queue reaper` CLI command for manual recovery. |
 | "No Rate Limiting" | Per-tenant token bucket in SQLite with `RATE_LIMIT_ENABLED`, `RATE_LIMIT_REQUESTS_PER_MINUTE`, `RATE_LIMIT_BURST`; FastAPI middleware with 429 + `Retry-After` headers. |
 | "No API Key Expiry" | `AUTH_KEY_TTL_DAYS` + `--ttl` CLI option + expiration check in `validate_api_key`. |
+| "No Advanced Analytics" | Cost/token tracking, model performance comparison, failure correlation heatmap, cost trend charts, latency analysis (see `AnalyticsView.tsx`). |
+| "No Custom Domain Checks" | 9 built-in custom checks: PII detection, financial validation, contract/legal, report structure, correspondence metadata, mixed document consistency (see `src/forensics/custom_checks.py`). |
 
 Two further configuration gaps were closed at the same time, because a setting
 that silently does nothing is worse than a missing one:

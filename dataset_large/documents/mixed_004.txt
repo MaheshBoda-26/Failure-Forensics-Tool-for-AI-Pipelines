@@ -1,0 +1,32 @@
+SERVICE ORDER WITH INVOICE DETAILS
+
+Service Order #: SO-71293
+Date: 2025-12-21
+Customer: Meridian Industries
+Provider: Apex Consulting Group
+
+SERVICE DESCRIPTION
+Professional services engagement with deliverables.
+
+SCHEDULE
+Start: 2025-12-21
+End: 2026-03-21
+Milestones: M1: Design (Week 2), M2: Development (Week 6), M3: Testing (Week 10), M4: Deploy (Week 12)
+
+PRICING
+  Service 1: 13 hours @ $145/hr = $1885
+  Service 2: 17 hours @ $396/hr = $6732
+  Service 3: 3 hours @ $1215/hr = $3645
+  Service 4: 18 hours @ $1531/hr = $27558
+Subtotal: $39,820.00
+Tax: $3,982.00
+Total: $43,802.00
+
+BILLING
+Frequency: Monthly
+Method: Wire Transfer
+Terms: 50% upfront, 25% at milestone, 25% on completion
+
+AUTHORIZATION
+Customer: _________________ Date: ________
+Provider: _________________ Date: ________

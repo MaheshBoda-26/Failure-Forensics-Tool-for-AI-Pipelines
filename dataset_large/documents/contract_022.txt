@@ -1,0 +1,29 @@
+MASTER SERVICES AGREEMENT
+
+This Master Services Agreement ("MSA") is made effective July 26, 2025 between
+BlueSky Innovations ("Customer") and IronClad Security ("Vendor").
+
+SCOPE OF WORK
+Vendor shall provide professional services as specified in Statements of Work.
+
+FEES AND PAYMENT
+Customer shall pay Vendor $35325 per milestone. Invoices due within Net 60 days.
+
+INTELLECTUAL PROPERTY
+All work product shall be owned by Customer upon full payment.
+
+LIMITATION OF LIABILITY
+Neither party liable for indirect damages. Total liability capped at $35325.
+
+TERM
+Initial term: 1 year(s). Auto-renews for successive 2 year(s) periods.
+
+SIGNATURES
+BlueSky Innovations                              IronClad Security
+_________________________              _________________________
+Robert Taylor                          James Anderson
+VP Sales                              Director of Operations
+July 26, 2025                                 July 26, 2025
+
+
+[PROMPT FAILURE] Summary output is completely malformed and missing required fields.

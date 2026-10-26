@@ -1,0 +1,33 @@
+INVOICE
+
+Invoice #: INV-2024-3602
+Date: 2025-02-28
+Due Date: 2025-04-05
+
+BILL TO:
+Quantum Leap Labs
+804 Maple Dr, Suite 755
+
+SHIP TO:
+Stellar Communications
+5220 Second Ave, Suite 534
+
+ITEMS:
+Item 1: 46 x $3221 = $148166
+Item 2: 4 x $60 = $240
+Item 3: 45 x $2107 = $94815
+Item 4: 40 x $2347 = $93880
+Item 5: 17 x $114 = $1938
+Item 6: 12 x $3432 = $41184
+
+SUBTOTAL: $380,223.00
+TAX (10%): $38,022.30
+TOTAL: $418,245.30
+
+Payment Terms: Net 30 days
+Bank Details: Bank: Wells Fargo | Account: 78652370
+
+Thank you for your business!
+
+
+[HALLUCINATED ENTITY] Fake Vendor Inc - $50,000 - Contract ID: FAKE-2024-001

@@ -1,0 +1,29 @@
+INVOICE
+
+Invoice #: INV-2023-9710
+Date: 2025-12-26
+Due Date: 2026-01-15
+
+BILL TO:
+Catalyst Ventures
+1759 First St, Suite 533
+
+SHIP TO:
+Pinnacle Systems
+5561 Elm St, Suite 334
+
+ITEMS:
+Item 1: 17 x $4000 = $68000
+Item 2: 21 x $173 = $3633
+Item 3: 46 x $3895 = $179170
+Item 4: 33 x $738 = $24354
+Item 5: 1 x $2300 = $2300
+
+SUBTOTAL: $277,457.00
+TAX (10%): $27,745.70
+TOTAL: $305,202.70
+
+Payment Terms: Net 45 days
+Bank Details: Bank: Wells Fargo | Account: 74372416
+
+Thank you for your business!

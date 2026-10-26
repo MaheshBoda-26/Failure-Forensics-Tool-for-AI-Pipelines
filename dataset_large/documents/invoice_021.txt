@@ -1,0 +1,38 @@
+COMMERCIAL INVOICE
+
+Invoice Number: INV-2023-7031
+Invoice Date: 2023-09-06
+Purchase Order: PO-80763
+
+SELLER:
+BlueSky Innovations
+3706 Elm St, Suite 543
+Tax ID: TAX-652987411
+
+BUYER:
+IronClad Security
+4736 First St, Suite 290
+Tax ID: TAX-901538431
+
+LINE ITEMS:
+Item 1: 9 x $56 = $504
+Item 2: 46 x $1042 = $47932
+Item 3: 12 x $1512 = $18144
+Item 4: 30 x $4508 = $135240
+Item 5: 46 x $1564 = $71944
+Item 6: 10 x $2352 = $23520
+Item 7: 21 x $1190 = $24990
+
+CURRENCY: EUR
+SUBTOTAL: $322,274.00
+VAT: $0.00
+TOTAL DUE: $322,274.00
+
+PAYMENT TERMS: Net 15 days
+DUE DATE: 2023-10-15
+
+IBAN: US86 3052 8405 7364 5824
+SWIFT: WFBIUS6S
+
+
+[HALLUCINATED ENTITY] Fake Vendor Inc - $50,000 - Contract ID: FAKE-2024-001

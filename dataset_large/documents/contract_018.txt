@@ -1,0 +1,25 @@
+CONSULTING AGREEMENT
+
+Consulting Agreement dated November 23, 2025 between Quantum Leap Labs ("Company")
+and Stellar Communications ("Consultant").
+
+ENGAGEMENT
+Company engages Consultant to provide professional consulting services.
+
+COMPENSATION
+Consultant shall be paid $42225 Per Milestone. Expenses reimbursed per policy.
+
+CONFIDENTIALITY
+Consultant agrees to protect Company's confidential information for 3 year(s).
+
+NON-COMPETE
+Consultant agrees not to compete for 15 months after termination.
+
+GOVERNING LAW
+State of Texas.
+
+EXECUTED:
+Quantum Leap Labs                              Stellar Communications
+By: Michael Brown                      By: Amanda Wilson
+Title: VP Engineering                       Title: CEO
+Date: November 23, 2025                           Date: November 23, 2025

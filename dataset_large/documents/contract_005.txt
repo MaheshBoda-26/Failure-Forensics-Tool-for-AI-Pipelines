@@ -1,0 +1,28 @@
+SERVICE AGREEMENT
+
+This Service Agreement ("Agreement") is entered into as of March 17, 2024 by and between
+Meridian Industries ("Client") and Apex Consulting Group ("Provider").
+
+1. SERVICES
+Provider shall perform the services described in Exhibit A ("Services").
+
+2. COMPENSATION
+Client shall pay Provider $25600 for the Services. Payment terms: Net 15 days.
+
+3. TERM AND TERMINATION
+This Agreement commences on November 15, 2025 and continues for 3 year(s).
+Either party may terminate with 61 days written notice.
+
+4. CONFIDENTIALITY
+Both parties agree to maintain confidentiality of proprietary information.
+
+5. GOVERNING LAW
+This Agreement shall be governed by the laws of Illinois.
+
+IN WITNESS WHEREOF, the parties have executed this Agreement.
+
+Meridian Industries                          Apex Consulting Group
+By: _________________________    By: _________________________
+Name: Robert Taylor              Name: David Chen
+Title: CEO                 Title: VP Sales
+Date: March 17, 2024                     Date: March 17, 2024

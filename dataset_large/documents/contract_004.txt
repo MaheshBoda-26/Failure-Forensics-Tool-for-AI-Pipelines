@@ -1,0 +1,28 @@
+SERVICE AGREEMENT
+
+This Service Agreement ("Agreement") is entered into as of March 27, 2023 by and between
+Horizon Enterprises ("Client") and Nexus Digital Services ("Provider").
+
+1. SERVICES
+Provider shall perform the services described in Exhibit A ("Services").
+
+2. COMPENSATION
+Client shall pay Provider $45200 for the Services. Payment terms: Net 30 days.
+
+3. TERM AND TERMINATION
+This Agreement commences on December 03, 2023 and continues for 1 year(s).
+Either party may terminate with 52 days written notice.
+
+4. CONFIDENTIALITY
+Both parties agree to maintain confidentiality of proprietary information.
+
+5. GOVERNING LAW
+This Agreement shall be governed by the laws of Illinois.
+
+IN WITNESS WHEREOF, the parties have executed this Agreement.
+
+Horizon Enterprises                          Nexus Digital Services
+By: _________________________    By: _________________________
+Name: Michael Brown              Name: Amanda Wilson
+Title: Chief Financial Officer                 Title: VP Engineering
+Date: March 27, 2023                     Date: March 27, 2023

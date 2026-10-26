@@ -1,0 +1,33 @@
+PROPOSAL WITH CONTRACT TERMS
+
+PROPOSAL #PROP-2023-542
+Date: 2025-12-18
+Valid Until: 2026-01-17
+
+PREPARED FOR:
+Quantum Leap Labs
+
+PREPARED BY:
+Stellar Communications
+
+EXECUTIVE SUMMARY
+Incident involving contractual service levels.
+
+SCOPE OF WORK
+Full lifecycle services including design, implementation, and support.
+
+PRICING
+Total estimated investment: $29,819.90
+
+TERMS AND CONDITIONS
+1. This proposal constitutes an offer valid for 30 days.
+2. Acceptance creates a binding agreement.
+3. Payment terms: 50% upfront, 25% at milestone, 25% on completion.
+4. Intellectual property transfers upon full payment.
+5. Confidentiality survives termination.
+
+ACCEPTANCE
+Quantum Leap Labs                              Stellar Communications
+_________________________              _________________________
+Michelle Martin                          Maria Rodriguez
+Date: 2025-12-18                           Date: 2025-12-18

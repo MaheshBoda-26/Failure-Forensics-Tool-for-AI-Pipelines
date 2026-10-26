@@ -1,0 +1,26 @@
+MASTER SERVICES AGREEMENT
+
+This Master Services Agreement ("MSA") is made effective October 25, 2025 between
+Quantum Leap Labs ("Customer") and Stellar Communications ("Vendor").
+
+SCOPE OF WORK
+Vendor shall provide professional services as specified in Statements of Work.
+
+FEES AND PAYMENT
+Customer shall pay Vendor $34725 per month. Invoices due within Net 60 days.
+
+INTELLECTUAL PROPERTY
+All work product shall be owned by Customer upon full payment.
+
+LIMITATION OF LIABILITY
+Neither party liable for indirect damages. Total liability capped at $34725.
+
+TERM
+Initial term: 3 year(s). Auto-renews for successive 1 year(s) periods.
+
+SIGNATURES
+Quantum Leap Labs                              Stellar Communications
+_________________________              _________________________
+Christopher Moore                          Michelle Martin
+Managing Partner                              General Counsel
+October 25, 2025                                 October 25, 2025

@@ -1,0 +1,31 @@
+INVOICE
+
+Invoice #: INV-2024-8105
+Date: 2025-09-14
+Due Date: 2025-11-04
+
+BILL TO:
+Apex Dynamics
+7487 Elm St, Suite 829
+
+SHIP TO:
+Vertex Solutions
+9510 Oak Ave, Suite 537
+
+ITEMS:
+Item 1: 6 x $2822 = $16932
+Item 2: 18 x $4505 = $81090
+Item 3: 21 x $4003 = $84063
+Item 4: 23 x $4566 = $105018
+Item 5: 20 x $4404 = $88080
+Item 6: 23 x $1540 = $35420
+Item 7: 22 x $661 = $14542
+
+SUBTOTAL: $425,145.00
+TAX (0%): $0.00
+TOTAL: $425,145.00
+
+Payment Terms: Net 45 days
+Bank Details: Bank: Citi | Account: 52901188
+
+Thank you for your business!

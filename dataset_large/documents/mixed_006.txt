@@ -1,0 +1,23 @@
+INCIDENT REPORT WITH CONTRACT REFERENCES
+
+Incident Report: INC-2025-8467
+Related Contract: CTR-2023-201
+Date: 2023-11-06
+
+INCIDENT SUMMARY
+Incident involving contractual service levels.
+
+CONTRACTUAL IMPACT
+Affected Clauses: Section 4.2 (Availability), Section 7.1 (Response Time)
+SLA Breach: Yes - 99.9% availability not met
+Penalties: Service credits per Section 8.3
+
+TECHNICAL DETAILS
+Root Cause: Database connection pool exhaustion
+Systems Affected: Primary API cluster, Cache layer
+Resolution Time: 2 hours 15 minutes
+
+NEXT STEPS
+1. Post-incident review
+2. Capacity planning
+3. Update runbooks

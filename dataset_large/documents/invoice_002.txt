@@ -1,0 +1,36 @@
+COMMERCIAL INVOICE
+
+Invoice Number: INV-2025-8831
+Invoice Date: 2024-11-02
+Purchase Order: PO-58228
+
+SELLER:
+Apex Dynamics
+2062 Second Ave, Suite 379
+Tax ID: TAX-128257561
+
+BUYER:
+Vertex Solutions
+1343 Second Ave, Suite 307
+Tax ID: TAX-211705058
+
+LINE ITEMS:
+Item 1: 43 x $1227 = $52761
+Item 2: 41 x $4338 = $177858
+Item 3: 25 x $2085 = $52125
+Item 4: 27 x $1230 = $33210
+Item 5: 28 x $2975 = $83300
+Item 6: 46 x $1895 = $87170
+Item 7: 25 x $163 = $4075
+Item 8: 30 x $2866 = $85980
+
+CURRENCY: AUD
+SUBTOTAL: $576,479.00
+VAT: $0.00
+TOTAL DUE: $576,479.00
+
+PAYMENT TERMS: Net 45 days
+DUE DATE: 2024-12-17
+
+IBAN: US33 4931 5393 8005 1402
+SWIFT: WFBIUS6S

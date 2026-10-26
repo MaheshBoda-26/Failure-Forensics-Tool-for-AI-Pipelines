@@ -1,0 +1,28 @@
+SERVICE AGREEMENT
+
+This Service Agreement ("Agreement") is entered into as of December 24, 2025 by and between
+Quantum Leap Labs ("Client") and Stellar Communications ("Provider").
+
+1. SERVICES
+Provider shall perform the services described in Exhibit A ("Services").
+
+2. COMPENSATION
+Client shall pay Provider $24425 for the Services. Payment terms: Net 60 days.
+
+3. TERM AND TERMINATION
+This Agreement commences on October 28, 2024 and continues for 1 year(s).
+Either party may terminate with 53 days written notice.
+
+4. CONFIDENTIALITY
+Both parties agree to maintain confidentiality of proprietary information.
+
+5. GOVERNING LAW
+This Agreement shall be governed by the laws of Delaware.
+
+IN WITNESS WHEREOF, the parties have executed this Agreement.
+
+Quantum Leap Labs                          Stellar Communications
+By: _________________________    By: _________________________
+Name: William Davis              Name: James Anderson
+Title: Senior Vice President                 Title: VP Engineering
+Date: December 24, 2025                     Date: December 24, 2025

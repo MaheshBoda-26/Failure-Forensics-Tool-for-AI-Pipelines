@@ -1,0 +1,27 @@
+TAX INVOICE
+
+ABN: 33 150 495 991
+Invoice #: INV-2024-2128
+Date: 2025-03-22
+
+FROM:
+Meridian Industries
+8920 Elm St, Suite 871
+
+TO:
+Apex Consulting Group
+158 Second Ave, Suite 634
+
+DESCRIPTION                                         QTY    UNIT PRICE    GST    TOTAL
+Item 1: 42 x $3119 = $130998
+Item 2: 48 x $3617 = $173616
+Item 3: 6 x $4787 = $28722
+
+GST-FREE AMOUNT: $100,000.80
+GST AMOUNT: $26,666.88
+TOTAL INC GST: $360,002.88
+
+PAYMENT DUE: 2025-04-24
+BANK: Westpac
+BSB: 834-286
+ACCOUNT: 91380227

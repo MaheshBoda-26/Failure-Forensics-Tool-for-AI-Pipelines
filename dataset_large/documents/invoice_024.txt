@@ -1,0 +1,30 @@
+TAX INVOICE
+
+ABN: 38 692 979 679
+Invoice #: INV-2025-6080
+Date: 2023-08-27
+
+FROM:
+Horizon Enterprises
+8639 Main St, Suite 339
+
+TO:
+Nexus Digital Services
+6031 First St, Suite 553
+
+DESCRIPTION                                         QTY    UNIT PRICE    GST    TOTAL
+Item 1: 5 x $4517 = $22585
+Item 2: 32 x $3308 = $105856
+Item 3: 42 x $3836 = $161112
+Item 4: 31 x $4664 = $144584
+Item 5: 34 x $366 = $12444
+Item 6: 26 x $1265 = $32890
+
+GST-FREE AMOUNT: $143,841.30
+GST AMOUNT: $0.00
+TOTAL INC GST: $479,471.00
+
+PAYMENT DUE: 2023-09-29
+BANK: ANZ
+BSB: 876-589
+ACCOUNT: 24630496

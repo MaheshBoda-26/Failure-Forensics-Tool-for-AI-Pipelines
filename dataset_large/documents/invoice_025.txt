@@ -1,0 +1,38 @@
+COMMERCIAL INVOICE
+
+Invoice Number: INV-2025-9037
+Invoice Date: 2024-10-06
+Purchase Order: PO-18537
+
+SELLER:
+Quantum Leap Labs
+5236 Oak Ave, Suite 423
+Tax ID: TAX-386447734
+
+BUYER:
+Stellar Communications
+8599 First St, Suite 345
+Tax ID: TAX-235741432
+
+LINE ITEMS:
+Item 1: 40 x $408 = $16320
+Item 2: 20 x $1093 = $21860
+Item 3: 21 x $2525 = $53025
+Item 4: 39 x $2392 = $93288
+Item 5: 10 x $1317 = $13170
+Item 6: 3 x $4685 = $14055
+Item 7: 43 x $2268 = $97524
+
+CURRENCY: USD
+SUBTOTAL: $309,242.00
+VAT: $30,924.20
+TOTAL DUE: $340,166.20
+
+PAYMENT TERMS: Net 45 days
+DUE DATE: 2024-11-09
+
+IBAN: US73 1480 9524 6192 4655
+SWIFT: CHASUS33
+
+
+[HALLUCINATED ENTITY] Fake Vendor Inc - $50,000 - Contract ID: FAKE-2024-001

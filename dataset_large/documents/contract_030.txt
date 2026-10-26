@@ -1,0 +1,26 @@
+MASTER SERVICES AGREEMENT
+
+This Master Services Agreement ("MSA") is made effective October 29, 2023 between
+Summit Partners ("Customer") and Vanguard Analytics ("Vendor").
+
+SCOPE OF WORK
+Vendor shall provide professional services as specified in Statements of Work.
+
+FEES AND PAYMENT
+Customer shall pay Vendor $42100 per month. Invoices due within Net 45 days.
+
+INTELLECTUAL PROPERTY
+All work product shall be owned by Customer upon full payment.
+
+LIMITATION OF LIABILITY
+Neither party liable for indirect damages. Total liability capped at $42100.
+
+TERM
+Initial term: 3 year(s). Auto-renews for successive 2 year(s) periods.
+
+SIGNATURES
+Summit Partners                              Vanguard Analytics
+_________________________              _________________________
+Michelle Martin                          David Chen
+CTO                              Chief Financial Officer
+October 29, 2023                                 October 29, 2023

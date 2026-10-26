@@ -1,0 +1,28 @@
+INVOICE
+
+Invoice #: INV-2024-6127
+Date: 2025-05-04
+Due Date: 2025-06-30
+
+BILL TO:
+Quantum Leap Labs
+3142 Maple Dr, Suite 830
+
+SHIP TO:
+Stellar Communications
+868 First St, Suite 990
+
+ITEMS:
+Item 1: 2 x $4678 = $9356
+Item 2: 4 x $4883 = $19532
+Item 3: 36 x $4110 = $147960
+Item 4: 42 x $188 = $7896
+
+SUBTOTAL: $184,744.00
+TAX (10%): $18,474.40
+TOTAL: $203,218.40
+
+Payment Terms: Net 15 days
+Bank Details: Bank: Citi | Account: 23603380
+
+Thank you for your business!
