@@ -193,6 +193,7 @@ class EvalScheduler:
 
         all_alerts: list[dict[str, Any]] = []
         evaluated = 0
+        failed = 0
 
         for tenant in tenants:
             if not self.storage.list_eval_cases(limit=1, tenant_id=tenant.tenant_id):
@@ -201,29 +202,44 @@ class EvalScheduler:
             previous = self._latest_completed_run(tenant.tenant_id)
             previous_accuracy = _accuracy(previous) if previous is not None else None
 
-            run = await run_eval(tenant_id=tenant.tenant_id)
-            if run is None:
-                # The cases disappeared between the check and the run, or the
-                # run failed to produce anything; the next tick can retry.
-                continue
+            # One tenant's failure must not abort the others. Before the eval was
+            # split per tenant this could not happen — a single run either worked
+            # or the whole tick failed — so an exception (a provider 500, a
+            # malformed case) would now silently stop every later tenant from
+            # being evaluated. The tick as a whole still succeeds, because the
+            # next tenant is independent work.
+            try:
+                run = await run_eval(tenant_id=tenant.tenant_id)
+                if run is None:
+                    # The cases disappeared between the check and the run, or the
+                    # run produced nothing; the next tick can retry.
+                    continue
 
-            evaluated += 1
-            alerts = self.evaluate_run(
-                previous=previous,
-                previous_accuracy=previous_accuracy,
-                run=run,
-                current_accuracy=_accuracy(run),
-            )
-            # `tenant_id` is what makes a multi-tenant webhook actionable: the
-            # receiver has to know whose accuracy moved.
-            for alert in alerts:
-                alert["tenant_id"] = tenant.tenant_id
-            await self._deliver_alerts(alerts)
-            all_alerts.extend(alerts)
+                evaluated += 1
+                alerts = self.evaluate_run(
+                    previous=previous,
+                    previous_accuracy=previous_accuracy,
+                    run=run,
+                    current_accuracy=_accuracy(run),
+                )
+                # `tenant_id` is what makes a multi-tenant webhook actionable: the
+                # receiver has to know whose accuracy moved.
+                for alert in alerts:
+                    alert["tenant_id"] = tenant.tenant_id
+                await self._deliver_alerts(alerts)
+                all_alerts.extend(alerts)
+            except Exception:
+                failed += 1
+                logger.exception(
+                    "Scheduled eval failed for tenant %s; continuing with the rest",
+                    tenant.tenant_id,
+                )
 
-        if evaluated == 0:
+        if evaluated == 0 and failed == 0:
             logger.info("Scheduled eval skipped: no eval cases for any active tenant")
             return None
+        if failed:
+            logger.warning("Scheduled eval: %d tenant(s) failed, %d succeeded", failed, evaluated)
 
         return all_alerts
 

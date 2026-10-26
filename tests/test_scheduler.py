@@ -743,3 +743,59 @@ def test_scheduled_eval_runs_once_per_tenant_and_compares_per_tenant(
     assert alerts[0]["tenant_id"] == "acme"
     assert alerts[0]["previous_accuracy"] == pytest.approx(0.9)
     assert alerts[0]["current_accuracy"] == pytest.approx(0.7)
+
+
+def test_one_tenants_failed_run_does_not_stop_the_others(
+    factory: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Per-tenant runs are isolated: a crash in one must not silence the rest.
+
+    Splitting the nightly eval per tenant introduced a failure mode the
+    instance-wide run did not have — a tenant whose run raises used to abort the
+    loop, so every alphabetically later tenant silently stopped being evaluated.
+    """
+    scheduler = factory(CRON)
+    storage = scheduler.storage
+    for tenant_id in ("acme", "globex"):
+        storage.create_tenant(Tenant(tenant_id=tenant_id, name=tenant_id))
+        _trace_row(storage, f"trace_{tenant_id}")
+        storage.create_eval_case(
+            EvalCase(
+                case_id=f"case_{tenant_id}",
+                trace_id=f"trace_{tenant_id}",
+                failing_step="extraction",
+                bad_output={},
+                corrected_output={},
+                category=FailureCategory.EXTRACTION_HALLUCINATION,
+                pipeline_version="0.1.0",
+                prompt_version="test",
+                tenant_id=tenant_id,
+            )
+        )
+
+    calls: list[str | None] = []
+
+    async def fake_run_eval(tenant_id: str | None = None) -> EvalRun:
+        calls.append(tenant_id)
+        if tenant_id == "acme":
+            raise RuntimeError("the judge model exploded")
+        run = EvalRun(
+            run_id="globex_run",
+            pipeline_version="0.1.0",
+            prompt_versions={},
+            total_cases=1,
+            passed_count=1,
+            failed_count=0,
+            tenant_id="globex",
+            completed_at=datetime.now(UTC),
+        )
+        storage.create_eval_run(run)
+        return run
+
+    monkeypatch.setattr(scheduler_module, "run_eval", fake_run_eval)
+
+    alerts = asyncio.run(scheduler.run_scheduled_eval())
+
+    assert calls == ["acme", "globex"]
+    assert alerts == [], "globex has no baseline, so it raises no regression alert"
+    assert [r.run_id for r in storage.list_eval_runs(tenant_id="globex")] == ["globex_run"]
