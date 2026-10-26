@@ -46,6 +46,21 @@ def _default_db_path() -> Path:
         return Path("data/forensics.db")
 
 
+def _row_to_api_key(row: dict[str, Any]) -> APIKey:
+    """Decode an `api_keys` row into a model, expanding `scopes`.
+
+    `scopes` is a comma-separated string on disk (SQLite has no array type) and
+    a list on the model. A row written before scopes existed has `'*'`, which is
+    exactly the "full access" it had in practice.
+    """
+    raw = row.get("scopes")
+    if isinstance(raw, str):
+        row = {**row, "scopes": [part for part in raw.split(",") if part]}
+    elif raw is None:
+        row = {**row, "scopes": ["*"]}
+    return APIKey.model_validate(row)
+
+
 class Storage(StorageBase):
     """SQLite storage for traces (JSON + SQLite) and relational data (SQLite)."""
 
@@ -891,15 +906,16 @@ class Storage(StorageBase):
             conn.execute(
                 """
                 INSERT INTO api_keys (
-                    key_id, tenant_id, key_hash, prefix, name, created_at, expires_at
+                    key_id, tenant_id, key_hash, prefix, scopes, name, created_at, expires_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     key.key_id,
                     key.tenant_id,
                     key.key_hash,
                     key.prefix,
+                    ",".join(key.scopes),
                     key.name,
                     key.created_at.isoformat(),
                     key.expires_at.isoformat() if key.expires_at else None,
@@ -915,7 +931,7 @@ class Storage(StorageBase):
             )
             rows = cursor.fetchall()
             cols = [d[0] for d in cursor.description]
-            return [APIKey.model_validate(dict(zip(cols, r, strict=False))) for r in rows]
+            return [_row_to_api_key(dict(zip(cols, r, strict=False))) for r in rows]
 
     def touch_api_key(self, key_id: str, used_at: datetime) -> None:
         """Record a successful authentication."""
@@ -934,7 +950,7 @@ class Storage(StorageBase):
             )
             rows = cursor.fetchall()
             cols = [d[0] for d in cursor.description]
-            return [APIKey.model_validate(dict(zip(cols, r, strict=False))) for r in rows]
+            return [_row_to_api_key(dict(zip(cols, r, strict=False))) for r in rows]
 
     def get_api_key(self, key_id: str) -> APIKey | None:
         """Fetch one key record by ID."""
@@ -944,7 +960,7 @@ class Storage(StorageBase):
             if not row:
                 return None
             cols = [d[0] for d in cursor.description]
-            return APIKey.model_validate(dict(zip(cols, row, strict=False)))
+            return _row_to_api_key(dict(zip(cols, row, strict=False)))
 
     def revoke_api_key(self, key_id: str, revoked_at: datetime) -> bool:
         """Revoke a key. False when it does not exist or was already revoked."""

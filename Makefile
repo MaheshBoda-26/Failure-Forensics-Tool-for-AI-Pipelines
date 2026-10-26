@@ -30,6 +30,15 @@ test: ## run tests, excluding live API tests
 test-live: ## run tests including live NVIDIA NIM calls (uses hosted quota)
 	.venv/bin/pytest -m "live"
 
+test-postgres: ## run the PostgreSQL backend tests (needs FORENSICS_TEST_POSTGRES_URL)
+	@test -n "$$FORENSICS_TEST_POSTGRES_URL" || \
+		{ echo "Set FORENSICS_TEST_POSTGRES_URL, e.g."; \
+		  echo "  docker run -d --name forensics-pg -e POSTGRES_PASSWORD=forensics \\"; \
+		  echo "    -e POSTGRES_USER=forensics -e POSTGRES_DB=forensics -p 55432:5432 postgres:16-alpine"; \
+		  echo "  export FORENSICS_TEST_POSTGRES_URL=postgresql://<user>:<password>@127.0.0.1:55432/forensics"; \
+		  exit 1; }
+	.venv/bin/pytest -m postgres
+
 cov: ## tests with coverage
 	.venv/bin/pytest -m "not live" --cov=forensics --cov-report=term-missing
 

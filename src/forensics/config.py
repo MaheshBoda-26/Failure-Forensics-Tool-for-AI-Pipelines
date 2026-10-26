@@ -165,6 +165,13 @@ class Settings(BaseSettings):
     )
     cache_enabled: bool = Field(default=True, description="Enable response cache")
     dry_run: bool = Field(default=False, description="Dry-run mode (no network calls)")
+    spend_preflight_enabled: bool = Field(
+        default=True,
+        description=(
+            "Reject a model call *before* sending it when its worst-case cost would "
+            "exceed a spend cap (estimated from prompt length and max_tokens)"
+        ),
+    )
 
     # --- Database ---
     # DATABASE_URL enables PostgreSQL backend. If unset, SQLite is used.

@@ -11,6 +11,7 @@ import contextlib
 import contextvars
 import hashlib
 import json
+import math
 import os
 import re
 import threading
@@ -483,6 +484,36 @@ class SpendTracker:
         with self._lock:
             return dict(self._step_spend_usd)
 
+    def check_preflight(self, estimated_cost_usd: float) -> None:
+        """Refuse a call whose *worst case* would breach a cap, before sending it.
+
+        `check_and_add` can only report an overage after the provider has
+        already billed it. This is the other half: it does not record anything,
+        it answers "would this call fit?". The estimate is deliberately an upper
+        bound (input at the measured prompt length, output at `max_tokens`), so
+        it can refuse a call that would in fact have fit — the trade is one
+        false refusal against a request that can never be refunded.
+        """
+        if estimated_cost_usd <= 0:
+            return
+
+        run_total = self._run_spend.get() + estimated_cost_usd
+        with self._lock:
+            global_total = self._load_global_spend() + estimated_cost_usd
+
+        if run_total > self.cap_per_run_usd:
+            msg = (
+                f"Pre-flight refused: estimated ${estimated_cost_usd:.4f} would put this run at "
+                f"${run_total:.4f}, over the ${self.cap_per_run_usd:.2f} per-run cap"
+            )
+            raise SpendCapExceededError(msg, "preflight_per_run")
+        if global_total > self.cap_global_usd:
+            msg = (
+                f"Pre-flight refused: estimated ${estimated_cost_usd:.4f} would put global "
+                f"spend at ${global_total:.4f}, over the ${self.cap_global_usd:.2f} global cap"
+            )
+            raise SpendCapExceededError(msg, "preflight_global")
+
     def check_and_add(self, cost_usd: float, step: str = "") -> None:
         """Check caps and add cost. Raises SpendCapExceededError if exceeded.
 
@@ -720,6 +751,8 @@ class NIMClient:
         if response_format:
             payload["response_format"] = response_format
 
+        self._preflight_spend(model_config, messages, int(payload["max_tokens"]))
+
         last_error: LLMError | None = None
 
         for attempt in range(self.max_retries + 1):
@@ -783,6 +816,37 @@ class NIMClient:
 
         assert last_error is not None  # loop only exits via continue/raise/return
         raise last_error
+
+    #: Characters per token used by the pre-flight estimate. English prose runs
+    #: ~4 chars/token for these models; the estimate rounds *up* on tokens, and
+    #: assumes the response uses the full `max_tokens` budget, so it errs high.
+    _CHARS_PER_TOKEN = 4
+
+    def estimate_call_cost(
+        self,
+        model_config: ModelConfig,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+    ) -> float:
+        """Worst-case USD for one call: measured prompt + full output budget."""
+        chars = sum(len(str(message.get("content") or "")) for message in messages)
+        prompt_tokens = math.ceil(chars / self._CHARS_PER_TOKEN)
+        cost_in = (prompt_tokens / 1_000_000) * model_config.price_in_per_1m
+        cost_out = (max_tokens / 1_000_000) * model_config.price_out_per_1m
+        return cost_in + cost_out
+
+    def _preflight_spend(
+        self,
+        model_config: ModelConfig,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+    ) -> None:
+        """Ask the spend ledger whether this call fits, before paying for it."""
+        if not get_settings().spend_preflight_enabled:
+            return
+        self.spend_tracker.check_preflight(
+            self.estimate_call_cost(model_config, messages, max_tokens)
+        )
 
     def _record_spend(
         self, model_config: ModelConfig, data: dict[str, Any], step: str = ""

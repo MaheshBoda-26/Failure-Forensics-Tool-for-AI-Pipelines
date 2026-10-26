@@ -310,6 +310,7 @@ Operational subcommands:
 ```bash
 forensics auth create-tenant --name "My Team"
 forensics auth create-key --tenant <id> --name ci    # key is printed once
+forensics auth create-key --tenant <id> --scope read  # read-only key
 forensics auth list-keys --tenant <id>
 forensics auth revoke-key --key-id <id>
 
@@ -339,6 +340,7 @@ Everything is environment-driven; `.env.example` documents every setting.
 | Scheduling | `EVAL_SCHEDULE`, `EVAL_SCHEDULE_TIMEZONE`, `ALERT_WEBHOOK_URL`, `ALERT_WEBHOOK_SECRET`, `ALERT_REGRESSION_THRESHOLD` |
 | Queue | `QUEUE_ENABLED`, `QUEUE_WORKER_CONCURRENCY`, `QUEUE_POLL_INTERVAL`, `QUEUE_JOB_TTL`, `QUEUE_STALL_TIMEOUT` |
 | Rate Limiting | `RATE_LIMIT_ENABLED`, `RATE_LIMIT_REQUESTS_PER_MINUTE`, `RATE_LIMIT_BURST` |
+| Cost guard | `SPEND_CAP_PER_RUN_USD`, `SPEND_CAP_GLOBAL_USD`, `SPEND_PREFLIGHT_ENABLED` |
 | Database | `DATABASE_URL` (PostgreSQL) |
 | Observability | `OTEL_EXPORTER`, `OTEL_ENDPOINT`, `OTEL_SERVICE_NAME`, `OTEL_SAMPLING_RATE` |
 | Paths / server | `DATA_DIR`, `TRACES_DIR`, `DB_PATH`, `CACHE_DIR`, `SPEND_FILE`, `STATIC_DIR`, `CORS_ORIGINS` |
@@ -362,6 +364,7 @@ fails immediately instead of at the first request.
 | Job Reaper | `QUEUE_STALL_TIMEOUT=300` | Auto-reclaim stalled jobs from crashed workers |
 | Rate Limiting | `RATE_LIMIT_ENABLED=true` | Per-tenant token bucket with 429 + `Retry-After` |
 | API Key Expiry | `AUTH_KEY_TTL_DAYS=90` | Keys auto-expire after configured days |
+| Key scopes | `auth create-key --scope read` | A key can be limited to reads; `write` implies read, `*` is everything |
 | PostgreSQL Backend | `DATABASE_URL=postgresql://...` (+ `pip install -e ".[postgres]"`) | Horizontal scaling with asyncpg |
 
 All are off by default, so the base system needs no broker, collector, or
@@ -398,7 +401,22 @@ make check                  # lint + typecheck + test
 make test                   # pytest only
 pytest tests/test_auth.py -v
 pytest -m live              # real NIM calls; uses hosted quota
+make test-postgres          # the PostgreSQL backend, against a live server
 ```
+
+The PostgreSQL backend is exercised against a real database, not mocked:
+
+```bash
+docker run -d --name forensics-pg \
+  -e POSTGRES_PASSWORD=forensics -e POSTGRES_USER=forensics \
+  -e POSTGRES_DB=forensics -p 55432:5432 postgres:16-alpine
+export FORENSICS_TEST_POSTGRES_URL=postgresql://forensics:forensics@127.0.0.1:55432/forensics  # pragma: allowlist secret
+make test-postgres
+```
+
+Without that variable the PostgreSQL tests skip, and
+`tests/test_schema_parity.py` still compares the two schemas table by table in
+every run, so drift cannot ship silently.
 
 Each feature spec ships with the test file that proves it:
 
@@ -411,6 +429,10 @@ Each feature spec ships with the test file that proves it:
 | 05 Custom check plugins | `tests/test_check_plugins.py` |
 | 06 Scheduled eval | `tests/test_scheduler.py` |
 | 07 Worker queue | `tests/test_queue.py` |
+
+Storage backends: `test_storage_postgres.py` (live PostgreSQL),
+`test_schema_parity.py` (SQLite vs PostgreSQL DDL), `test_benchmark_scorecard.py`
+(scorecard aggregation).
 
 Core behaviour: `test_tracing_phase2.py`, `test_analyzer_phase3.py`,
 `test_storage_eval_api.py`, `test_llm.py`, `test_dry_run_dataset.py`

@@ -26,7 +26,7 @@ from datetime import UTC, datetime, timedelta
 
 import bcrypt
 
-from forensics.models import DEFAULT_TENANT_ID, APIKey, Tenant
+from forensics.models import API_KEY_SCOPES, DEFAULT_TENANT_ID, APIKey, Tenant
 from forensics.storage_base import StorageBase
 
 #: Bcrypt truncates at 72 bytes and raises on longer input in bcrypt >= 4.1.
@@ -130,14 +130,28 @@ class AuthManager:
     # --- API keys ---
 
     def create_api_key(
-        self, tenant_id: str, name: str | None = None, ttl_days: int | None = None
+        self,
+        tenant_id: str,
+        name: str | None = None,
+        ttl_days: int | None = None,
+        scopes: list[str] | None = None,
     ) -> tuple[APIKey, str]:
         """Mint a key. Returns `(APIKey, plaintext)`; the plaintext is not stored.
 
         If `ttl_days` is provided, the key will expire after that many days.
+        `scopes` defaults to `["*"]` (full access); an unknown scope name is
+        rejected here rather than producing a key that silently cannot act.
         """
         if self.get_tenant(tenant_id, active_only=False) is None:
             raise ValueError(f"Unknown tenant: {tenant_id}")
+
+        requested = list(scopes) if scopes else ["*"]
+        unknown = sorted(set(requested) - API_KEY_SCOPES)
+        if unknown:
+            raise ValueError(
+                f"Unknown scope(s): {', '.join(unknown)} "
+                f"(valid: {', '.join(sorted(API_KEY_SCOPES))})"
+            )
 
         raw_key = self.prefix + secrets.token_urlsafe(24)
         key_hash = bcrypt.hashpw(raw_key.encode(), bcrypt.gensalt(self.rounds)).decode()
@@ -149,6 +163,7 @@ class AuthManager:
             tenant_id=tenant_id,
             key_hash=key_hash,
             prefix=_key_prefix(raw_key, self.prefix),
+            scopes=requested,
             name=name,
             expires_at=expires_at,
         )

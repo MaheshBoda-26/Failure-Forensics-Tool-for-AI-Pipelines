@@ -40,6 +40,13 @@ class Fault:
     expected_category: str
     apply: Callable[[dict[str, Any], str, "Trace | None"], dict[str, Any]]
     description: str
+    #: Whether this corruption means anything on a given baseline. A fault whose
+    #: precondition is unmet is *unscoreable*, not failed: the analyzer is right
+    #: to report no failure, and counting that as a miss measures the baseline
+    #: rather than the detector. `None` means "always scoreable".
+    scoreable: Callable[["Trace", str], bool] | None = None
+    #: Human-readable reason shown next to an unscoreable fault.
+    precondition: str = ""
 
 
 def _inject_hallucinated_entity(
@@ -141,6 +148,45 @@ def _inject_context_loss(
         "summary": "This document concerns a business matter requiring attention.",
         "key_points": [],
     }
+
+
+#: Salient entity types a summary is expected to carry. Mirrors
+#: `analyzer_simple.is_salient_entity_type`, which is what the check actually
+#: applies; keeping the list here would let the two drift, so it is imported.
+def _has_salient_grounded_entity(trace: Trace, document_text: str) -> bool:
+    """Whether the baseline has an entity that context loss could drop.
+
+    The `context_loss` fault replaces the summary with an abstraction that keeps
+    no entity. With no *salient, grounded* entity in the baseline's extraction,
+    there is nothing to lose: the injected summary is indistinguishable from a
+    legitimate one and the analyzer correctly reports no failure. Such a
+    baseline cannot score the fault at all.
+    """
+    from forensics.analyzer_simple import (
+        _extract_entities,
+        _parse_span_output,
+        is_salient_entity_type,
+        text_contains_entity,
+    )
+
+    extraction_span = next((s for s in trace.spans if s.step_name == "extraction"), None)
+    if extraction_span is None:
+        return False
+    try:
+        entities = _extract_entities(_parse_span_output(extraction_span))
+    except (ValueError, TypeError):
+        return False
+
+    for entity in entities:
+        value = str(entity.get("value") or "")
+        entity_type = str(entity.get("entity_type") or "")
+        if (
+            value
+            and is_salient_entity_type(entity_type)
+            and text_contains_entity(value, document_text)
+        ):
+            return True
+    return False
 
 
 # One summary per document type, written in that type's own vocabulary. The
@@ -293,6 +339,8 @@ FAULTS: tuple[Fault, ...] = (
         expected_category="context_loss",
         apply=_inject_context_loss,
         description="Summary drops every grounded entity.",
+        scoreable=_has_salient_grounded_entity,
+        precondition="the baseline extracted no salient, grounded entity to lose",
     ),
     Fault(
         name="propagation_error",
@@ -350,6 +398,24 @@ def score_fault(
     """
     from forensics.analyzer_simple import analyze_trace
 
+    if fault.scoreable is not None and not fault.scoreable(trace, document_text):
+        # Not a miss: the corruption is a no-op on this baseline, so there is
+        # nothing for the analyzer to detect and no verdict to score.
+        return {
+            "fault": fault.name,
+            "expected_step": fault.step,
+            "actual_step": "unscored",
+            "expected_category": fault.expected_category,
+            "actual_category": "unscored",
+            "scoreable": False,
+            "step_correct": False,
+            "category_correct": False,
+            "confidence": 0.0,
+            "evidence": [
+                f"Not scoreable on this baseline: {fault.precondition or 'precondition unmet'}"
+            ],
+        }
+
     corrupted = inject(trace, fault, document_text)
     diagnosis = analyze_trace(corrupted, document_text, expected_type)
 
@@ -359,6 +425,7 @@ def score_fault(
     return {
         "fault": fault.name,
         "expected_step": fault.step,
+        "scoreable": True,
         "actual_step": diagnosis.root_cause_step,
         "expected_category": fault.expected_category,
         "actual_category": diagnosis.category.value,
@@ -372,14 +439,23 @@ def score_fault(
 def score_all_faults(
     trace: Trace, document_text: str, expected_type: str | None = None
 ) -> dict[str, Any]:
-    """Score every fault against a clean baseline trace."""
+    """Score every fault against a clean baseline trace.
+
+    `total` counts only the faults this baseline can actually score; a fault
+    whose precondition is unmet is reported in `results` with
+    `scoreable: False` and excluded from the accuracy denominators. Folding it
+    in as a miss made an offline fixture with no extracted entities look like an
+    analyzer defect.
+    """
     results = [score_fault(trace, f, document_text, expected_type) for f in FAULTS]
-    total = len(results)
+    scored = [r for r in results if r["scoreable"]]
+    total = len(scored)
     return {
         "total": total,
-        "step_accuracy": sum(r["step_correct"] for r in results) / total if total else 0.0,
+        "unscoreable": len(results) - total,
+        "step_accuracy": sum(r["step_correct"] for r in scored) / total if total else 0.0,
         "category_accuracy": (
-            sum(r["step_correct"] and r["category_correct"] for r in results) / total
+            sum(r["step_correct"] and r["category_correct"] for r in scored) / total
             if total
             else 0.0
         ),

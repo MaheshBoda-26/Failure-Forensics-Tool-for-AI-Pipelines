@@ -4,13 +4,16 @@ This is an async-first implementation suitable for high-concurrency scenarios.
 Uses the same schema as SQLite but with PostgreSQL-specific types and features.
 """
 
+import asyncio
 import json
+import logging
 import os
-from collections.abc import AsyncIterator
+import threading
+from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import asyncpg
 
@@ -56,6 +59,39 @@ def _get_database_url() -> str:
     return "postgresql://postgres:postgres@localhost:5432/forensics"  # pragma: allowlist secret
 
 
+def _json_value(value: Any, default: Any) -> Any:
+    """Decode a JSONB column that asyncpg hands back as text.
+
+    `asyncpg` returns `json`/`jsonb` values as `str` unless a codec is
+    registered on the pool, so every read path has to decode. The SQLite backend
+    does the same with `json.loads`; skipping it here produced
+    `Input should be a valid dictionary [input_value='{}']` on every eval case.
+    """
+    if value is None:
+        return default
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return default
+    return value
+
+
+def _row_to_api_key(row: dict[str, Any]) -> APIKey:
+    """Decode an `api_keys` row into a model, expanding the comma-separated scopes."""
+    raw = row.get("scopes")
+    if isinstance(raw, str):
+        row = {**row, "scopes": [part for part in raw.split(",") if part]}
+    elif raw is None:
+        row = {**row, "scopes": ["*"]}
+    return APIKey.model_validate(row)
+
+
+logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
 class PostgresStorage(StorageBase):
     """PostgreSQL storage for traces (JSON files + PostgreSQL index)."""
 
@@ -69,9 +105,51 @@ class PostgresStorage(StorageBase):
         self.traces_dir.mkdir(parents=True, exist_ok=True)
         self._pool: asyncpg.Pool | None = None
         self._database_url = _get_database_url()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._loop_lock = threading.Lock()
+        self._timeout = 60.0
+
+    def _ensure_loop(self) -> asyncio.AbstractEventLoop:
+        """The private event loop every operation on this backend runs on.
+
+        A `StorageBase` method is synchronous, but `asyncpg` pools are bound to
+        the loop that created them. Running each call through `asyncio.run()`
+        created a *new* loop per call, so the second call reused a pool whose
+        connections belonged to a closed loop — the backend could not survive
+        two sequential operations. One long-lived loop in a daemon thread makes
+        the pool usable for the lifetime of the process.
+        """
+        with self._loop_lock:
+            if self._loop is not None and not self._loop.is_closed():
+                return self._loop
+            loop = asyncio.new_event_loop()
+            thread = threading.Thread(
+                target=loop.run_forever, name="forensics-postgres", daemon=True
+            )
+            thread.start()
+            self._loop = loop
+            self._thread = thread
+            return loop
+
+    def _run_coro(self, coro: Coroutine[Any, Any, T]) -> T:
+        """Block the calling thread until `coro` finishes on the storage loop."""
+        loop = self._ensure_loop()
+        try:
+            return asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=self._timeout)
+        except Exception:
+            # Never leak an un-awaited coroutine: a refused call would otherwise
+            # print "coroutine was never awaited" instead of the real error.
+            coro.close()
+            raise
 
     async def _get_pool(self) -> asyncpg.Pool:
-        """Get or create the connection pool."""
+        """Get or create the connection pool, creating the schema on first use.
+
+        `__init__` used to leave the schema to the caller, so a fresh PostgreSQL
+        database failed on its first query with "relation does not exist". The
+        pool is the thing that knows when the schema must exist, so it ensures it.
+        """
         if self._pool is None:
             self._pool = await asyncpg.create_pool(
                 self._database_url,
@@ -79,6 +157,7 @@ class PostgresStorage(StorageBase):
                 max_size=10,
                 command_timeout=30,
             )
+            await self._init_schema()
         return self._pool
 
     async def _aclose(self) -> None:
@@ -88,10 +167,29 @@ class PostgresStorage(StorageBase):
             self._pool = None
 
     def close(self) -> None:
-        """Close the connection pool (sync wrapper, matching StorageBase)."""
-        import asyncio
+        """Close the pool and stop this backend's event-loop thread.
 
-        asyncio.run(self._aclose())
+        `StorageBase.close` is synchronous, so shutting the backend down means
+        stopping the thread the pool's loop lives on as well. Leaving it running
+        leaked one daemon thread per closed backend — invisible in a short test
+        run, visible as an ever-growing thread count in a setup that rebuilds
+        the backend (the PostgreSQL test suite does).
+        """
+        if self._loop is None:
+            return
+        if self._pool is not None:
+            try:
+                self._run_coro(self._aclose())
+            except Exception:  # pragma: no cover - shutdown must not raise
+                logger.exception("Closing the PostgreSQL pool failed")
+        loop, thread = self._loop, self._thread
+        self._loop, self._thread = None, None
+        with self._loop_lock:
+            loop.call_soon_threadsafe(loop.stop)
+        if thread is not None:
+            thread.join(timeout=5)
+        if not loop.is_closed():
+            loop.close()
 
     @asynccontextmanager
     async def _conn(self) -> AsyncIterator[asyncpg.Connection]:
@@ -101,8 +199,10 @@ class PostgresStorage(StorageBase):
             yield conn
 
     async def _init_schema(self) -> None:
-        """Initialize all database tables in PostgreSQL."""
-        pool = await self._get_pool()
+        """Initialize all database tables in PostgreSQL (idempotent)."""
+        pool = self._pool
+        if pool is None:  # pragma: no cover - only reachable via a direct call
+            pool = await self._get_pool()
         async with pool.acquire() as conn:
             # Traces and spans
             await conn.execute(
@@ -286,6 +386,7 @@ class PostgresStorage(StorageBase):
                     revoked_at TIMESTAMPTZ,
                     last_used_at TIMESTAMPTZ,
                     expires_at TIMESTAMPTZ,
+                    scopes TEXT NOT NULL DEFAULT '*',
                     FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id)
                 )
                 """
@@ -354,6 +455,13 @@ class PostgresStorage(StorageBase):
                 """
             )
 
+            # Widening migrations for databases created before the column existed.
+            # `CREATE TABLE IF NOT EXISTS` is a no-op on an existing table, so a
+            # deployed instance would otherwise never gain `scopes`.
+            await conn.execute(
+                "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scopes TEXT NOT NULL DEFAULT '*'"
+            )
+
             # Default tenant
             await conn.execute(
                 """
@@ -366,10 +474,86 @@ class PostgresStorage(StorageBase):
     # --- Trace operations ---
 
     async def _async_save_trace(self, trace: Trace) -> Path:
-        """Save trace: finalize status/totals, then write JSON + PostgreSQL."""
+        """Save trace: finalize status/totals, then write JSON + PostgreSQL.
+
+        The PostgreSQL index was never written here: `save_trace` only called
+        `finalize_trace`, which writes the JSON payload and a *SQLite* index. A
+        fresh PostgreSQL deployment therefore listed no traces at all. The index
+        rows are now written on the same connection, and the SQLite side file is
+        skipped.
+        """
         from forensics.tracing import finalize_trace
 
-        finalize_trace(trace, traces_dir=self.traces_dir, db_path=self.db_path)
+        finalize_trace(
+            trace,
+            traces_dir=self.traces_dir,
+            write_sqlite_index=False,
+        )
+
+        async with self._conn() as conn:
+            await conn.execute(
+                """
+                INSERT INTO traces (
+                    trace_id, document_id, status, created_at, completed_at,
+                    total_latency_ms, total_tokens, total_cost_usd, pipeline_version,
+                    schema_version, tenant_id
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                ON CONFLICT (trace_id) DO UPDATE SET
+                    document_id = EXCLUDED.document_id,
+                    status = EXCLUDED.status,
+                    created_at = EXCLUDED.created_at,
+                    completed_at = EXCLUDED.completed_at,
+                    total_latency_ms = EXCLUDED.total_latency_ms,
+                    total_tokens = EXCLUDED.total_tokens,
+                    total_cost_usd = EXCLUDED.total_cost_usd,
+                    pipeline_version = EXCLUDED.pipeline_version,
+                    schema_version = EXCLUDED.schema_version,
+                    tenant_id = EXCLUDED.tenant_id
+                """,
+                trace.trace_id,
+                trace.document_id,
+                trace.status.value,
+                trace.created_at,
+                trace.completed_at,
+                trace.total_latency_ms,
+                trace.total_tokens,
+                trace.total_cost_usd,
+                trace.pipeline_version,
+                trace.schema_version,
+                trace.tenant_id,
+            )
+
+            # A re-saved trace (retried step, re-analysis) generates fresh span
+            # ids, so replace rather than accumulate orphans.
+            await conn.execute("DELETE FROM spans WHERE trace_id = $1", trace.trace_id)
+            await conn.executemany(
+                """
+                INSERT INTO spans (
+                    span_id, trace_id, step_name, parent_span_id, model_id, provider,
+                    latency_ms, status, error, started_at, ended_at, tenant_id
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                """,
+                [
+                    (
+                        span.span_id,
+                        span.trace_id,
+                        span.step_name,
+                        span.parent_span_id,
+                        span.model_id,
+                        span.provider,
+                        span.latency_ms,
+                        span.status,
+                        span.error,
+                        span.started_at,
+                        span.ended_at,
+                        span.tenant_id,
+                    )
+                    for span in trace.spans
+                ],
+            )
+
         return self.traces_dir / f"{trace.trace_id}.json"
 
     async def _async_load_trace(self, trace_id: str) -> Trace | None:
@@ -562,9 +746,11 @@ class PostgresStorage(StorageBase):
         from forensics.models import StepScore
 
         data = dict(row)
-        data["evidence_chain"] = data["evidence_chain"] or []
-        data["step_scores"] = [StepScore.model_validate(s) for s in (data["step_scores"] or [])]
-        data["judge_analysis"] = data["judge_analysis"]
+        data["evidence_chain"] = _json_value(data.get("evidence_chain"), [])
+        data["step_scores"] = [
+            StepScore.model_validate(score) for score in _json_value(data.get("step_scores"), [])
+        ]
+        data["judge_analysis"] = _json_value(data.get("judge_analysis"), None)
         return Diagnosis.model_validate(data)
 
     async def _async_get_diagnosis(
@@ -699,8 +885,8 @@ class PostgresStorage(StorageBase):
 
     def _load_eval_case_row(self, row: asyncpg.Record) -> EvalCase:
         data = dict(row)
-        data["bad_output"] = data["bad_output"] or {}
-        data["corrected_output"] = data["corrected_output"] or {}
+        data["bad_output"] = _json_value(data.get("bad_output"), {})
+        data["corrected_output"] = _json_value(data.get("corrected_output"), {})
         return EvalCase.model_validate(data)
 
     async def _async_get_eval_case(
@@ -794,7 +980,7 @@ class PostgresStorage(StorageBase):
 
     def _load_eval_run_row(self, row: asyncpg.Record) -> EvalRun:
         data = dict(row)
-        data["prompt_versions"] = data["prompt_versions"] or {}
+        data["prompt_versions"] = _json_value(data.get("prompt_versions"), {})
         return EvalRun.model_validate(data)
 
     async def _async_get_eval_run(
@@ -866,20 +1052,16 @@ class PostgresStorage(StorageBase):
             results = []
             for row in rows:
                 data = dict(row)
-                data["details"] = data["details"] or {}
+                data["details"] = _json_value(data.get("details"), {})
                 results.append(EvalResult.model_validate(data))
             return results
 
     # Synchronous wrappers for compatibility with existing code
     def save_trace(self, trace: Trace) -> Path:
-        import asyncio
-
-        return asyncio.run(self._async_save_trace(trace))
+        return self._run_coro(self._async_save_trace(trace))
 
     def load_trace(self, trace_id: str) -> Trace | None:
-        import asyncio
-
-        return asyncio.run(self._async_load_trace(trace_id))
+        return self._run_coro(self._async_load_trace(trace_id))
 
     def list_traces(
         self,
@@ -888,53 +1070,35 @@ class PostgresStorage(StorageBase):
         offset: int = 0,
         tenant_id: str | None = None,
     ) -> list[Trace]:
-        import asyncio
-
-        return asyncio.run(self._async_list_traces(status, limit, offset, tenant_id))
+        return self._run_coro(self._async_list_traces(status, limit, offset, tenant_id))
 
     def get_trace(self, trace_id: str, tenant_id: str | None = None) -> Trace | None:
-        import asyncio
-
-        return asyncio.run(self._async_get_trace(trace_id, tenant_id))
+        return self._run_coro(self._async_get_trace(trace_id, tenant_id))
 
     def latest_root_cause_steps(
         self, trace_ids: list[str], tenant_id: str | None = None
     ) -> dict[str, str]:
-        import asyncio
-
-        return asyncio.run(self._async_latest_root_cause_steps(trace_ids, tenant_id))
+        return self._run_coro(self._async_latest_root_cause_steps(trace_ids, tenant_id))
 
     def create_flag(self, flag: Flag) -> Flag:
-        import asyncio
-
-        return asyncio.run(self._async_create_flag(flag))
+        return self._run_coro(self._async_create_flag(flag))
 
     def get_flag(self, flag_id: str, tenant_id: str | None = None) -> Flag | None:
-        import asyncio
-
-        return asyncio.run(self._async_get_flag(flag_id, tenant_id))
+        return self._run_coro(self._async_get_flag(flag_id, tenant_id))
 
     def list_flags_for_trace(self, trace_id: str, tenant_id: str | None = None) -> list[Flag]:
-        import asyncio
-
-        return asyncio.run(self._async_list_flags_for_trace(trace_id, tenant_id))
+        return self._run_coro(self._async_list_flags_for_trace(trace_id, tenant_id))
 
     def create_diagnosis(self, diagnosis: Diagnosis) -> Diagnosis:
-        import asyncio
-
-        return asyncio.run(self._async_create_diagnosis(diagnosis))
+        return self._run_coro(self._async_create_diagnosis(diagnosis))
 
     def get_diagnosis(self, diagnosis_id: str, tenant_id: str | None = None) -> Diagnosis | None:
-        import asyncio
-
-        return asyncio.run(self._async_get_diagnosis(diagnosis_id, tenant_id))
+        return self._run_coro(self._async_get_diagnosis(diagnosis_id, tenant_id))
 
     def get_diagnosis_for_trace(
         self, trace_id: str, tenant_id: str | None = None
     ) -> Diagnosis | None:
-        import asyncio
-
-        return asyncio.run(self._async_get_diagnosis_for_trace(trace_id, tenant_id))
+        return self._run_coro(self._async_get_diagnosis_for_trace(trace_id, tenant_id))
 
     def update_diagnosis_confirmation(
         self,
@@ -945,9 +1109,7 @@ class PostgresStorage(StorageBase):
         override_reason: str | None = None,
         override_step: str | None = None,
     ) -> None:
-        import asyncio
-
-        return asyncio.run(
+        return self._run_coro(
             self._async_update_diagnosis_confirmation(
                 diagnosis_id,
                 confirmed,
@@ -961,31 +1123,21 @@ class PostgresStorage(StorageBase):
     def find_eval_case(
         self, trace_id: str, failing_step: str, tenant_id: str | None = None
     ) -> EvalCase | None:
-        import asyncio
-
-        return asyncio.run(self._async_find_eval_case(trace_id, failing_step, tenant_id))
+        return self._run_coro(self._async_find_eval_case(trace_id, failing_step, tenant_id))
 
     def create_eval_case(self, case: EvalCase) -> EvalCase:
-        import asyncio
-
-        return asyncio.run(self._async_create_eval_case(case))
+        return self._run_coro(self._async_create_eval_case(case))
 
     def get_eval_case(self, case_id: str, tenant_id: str | None = None) -> EvalCase | None:
-        import asyncio
-
-        return asyncio.run(self._async_get_eval_case(case_id, tenant_id))
+        return self._run_coro(self._async_get_eval_case(case_id, tenant_id))
 
     def list_eval_cases(
         self, limit: int = 100, offset: int = 0, tenant_id: str | None = None
     ) -> list[EvalCase]:
-        import asyncio
-
-        return asyncio.run(self._async_list_eval_cases(limit, offset, tenant_id))
+        return self._run_coro(self._async_list_eval_cases(limit, offset, tenant_id))
 
     def create_eval_run(self, run: EvalRun) -> EvalRun:
-        import asyncio
-
-        return asyncio.run(self._async_create_eval_run(run))
+        return self._run_coro(self._async_create_eval_run(run))
 
     def update_eval_run(
         self,
@@ -995,37 +1147,27 @@ class PostgresStorage(StorageBase):
         failed_count: int | None = None,
         total_cases: int | None = None,
     ) -> None:
-        import asyncio
-
-        return asyncio.run(
+        return self._run_coro(
             self._async_update_eval_run(
                 run_id, completed_at, passed_count, failed_count, total_cases
             )
         )
 
     def get_eval_run(self, run_id: str, tenant_id: str | None = None) -> EvalRun | None:
-        import asyncio
-
-        return asyncio.run(self._async_get_eval_run(run_id, tenant_id))
+        return self._run_coro(self._async_get_eval_run(run_id, tenant_id))
 
     def list_eval_runs(
         self, limit: int = 100, offset: int = 0, tenant_id: str | None = None
     ) -> list[EvalRun]:
-        import asyncio
-
-        return asyncio.run(self._async_list_eval_runs(limit, offset, tenant_id))
+        return self._run_coro(self._async_list_eval_runs(limit, offset, tenant_id))
 
     def create_eval_result(self, result: EvalResult) -> EvalResult:
-        import asyncio
-
-        return asyncio.run(self._async_create_eval_result(result))
+        return self._run_coro(self._async_create_eval_result(result))
 
     def get_eval_results_for_run(
         self, run_id: str, tenant_id: str | None = None
     ) -> list[EvalResult]:
-        import asyncio
-
-        return asyncio.run(self._async_get_eval_results_for_run(run_id, tenant_id))
+        return self._run_coro(self._async_get_eval_results_for_run(run_id, tenant_id))
 
     # --- Tenant operations ---
 
@@ -1071,14 +1213,15 @@ class PostgresStorage(StorageBase):
             await conn.execute(
                 """
                 INSERT INTO api_keys (
-                    key_id, tenant_id, key_hash, prefix, name, created_at, expires_at
+                    key_id, tenant_id, key_hash, prefix, scopes, name, created_at, expires_at
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 """,
                 key.key_id,
                 key.tenant_id,
                 key.key_hash,
                 key.prefix,
+                ",".join(key.scopes),
                 key.name,
                 key.created_at,
                 key.expires_at,
@@ -1089,7 +1232,7 @@ class PostgresStorage(StorageBase):
             rows = await conn.fetch(
                 "SELECT * FROM api_keys WHERE prefix = $1 AND revoked_at IS NULL", prefix
             )
-        return [APIKey.model_validate(dict(r)) for r in rows]
+        return [_row_to_api_key(dict(r)) for r in rows]
 
     async def _async_touch_api_key(self, key_id: str, used_at: datetime) -> None:
         async with self._conn() as conn:
@@ -1102,12 +1245,12 @@ class PostgresStorage(StorageBase):
             rows = await conn.fetch(
                 "SELECT * FROM api_keys WHERE tenant_id = $1 ORDER BY created_at", tenant_id
             )
-        return [APIKey.model_validate(dict(r)) for r in rows]
+        return [_row_to_api_key(dict(r)) for r in rows]
 
     async def _async_get_api_key(self, key_id: str) -> APIKey | None:
         async with self._conn() as conn:
             row = await conn.fetchrow("SELECT * FROM api_keys WHERE key_id = $1", key_id)
-        return APIKey.model_validate(dict(row)) if row else None
+        return _row_to_api_key(dict(row)) if row else None
 
     async def _async_revoke_api_key(self, key_id: str, revoked_at: datetime) -> bool:
         async with self._conn() as conn:
@@ -1121,54 +1264,37 @@ class PostgresStorage(StorageBase):
     # Sync wrappers for the tenant / API-key contract.
 
     def create_tenant(self, tenant: Tenant, *, ignore_existing: bool = False) -> None:
-        import asyncio
 
-        asyncio.run(self._async_create_tenant(tenant, ignore_existing))
+        self._run_coro(self._async_create_tenant(tenant, ignore_existing))
 
     def get_tenant(self, tenant_id: str, *, active_only: bool = True) -> Tenant | None:
-        import asyncio
-
-        return asyncio.run(self._async_get_tenant(tenant_id, active_only))
+        return self._run_coro(self._async_get_tenant(tenant_id, active_only))
 
     def list_tenants(self) -> list[Tenant]:
-        import asyncio
-
-        return asyncio.run(self._async_list_tenants())
+        return self._run_coro(self._async_list_tenants())
 
     def set_tenant_active(self, tenant_id: str, active: bool) -> bool:
-        import asyncio
-
-        return asyncio.run(self._async_set_tenant_active(tenant_id, active))
+        return self._run_coro(self._async_set_tenant_active(tenant_id, active))
 
     def create_api_key(self, key: APIKey) -> None:
-        import asyncio
 
-        asyncio.run(self._async_create_api_key(key))
+        self._run_coro(self._async_create_api_key(key))
 
     def list_api_keys_by_prefix(self, prefix: str) -> list[APIKey]:
-        import asyncio
-
-        return asyncio.run(self._async_list_api_keys_by_prefix(prefix))
+        return self._run_coro(self._async_list_api_keys_by_prefix(prefix))
 
     def touch_api_key(self, key_id: str, used_at: datetime) -> None:
-        import asyncio
 
-        asyncio.run(self._async_touch_api_key(key_id, used_at))
+        self._run_coro(self._async_touch_api_key(key_id, used_at))
 
     def list_api_keys(self, tenant_id: str) -> list[APIKey]:
-        import asyncio
-
-        return asyncio.run(self._async_list_api_keys(tenant_id))
+        return self._run_coro(self._async_list_api_keys(tenant_id))
 
     def get_api_key(self, key_id: str) -> APIKey | None:
-        import asyncio
-
-        return asyncio.run(self._async_get_api_key(key_id))
+        return self._run_coro(self._async_get_api_key(key_id))
 
     def revoke_api_key(self, key_id: str, revoked_at: datetime) -> bool:
-        import asyncio
-
-        return asyncio.run(self._async_revoke_api_key(key_id, revoked_at))
+        return self._run_coro(self._async_revoke_api_key(key_id, revoked_at))
 
 
 __all__ = ["PostgresStorage"]

@@ -18,7 +18,7 @@ from forensics.analyzer_simple import (
     reachable_failure_pairs,
     run_deterministic_checks,
 )
-from forensics.faults import FAULTS, inject, score_fault
+from forensics.faults import FAULTS, fault_by_name, inject, score_all_faults, score_fault
 from forensics.models import (
     Diagnosis,
     DocumentType,
@@ -921,3 +921,162 @@ def test_analytics_span_pass_rate_blames_only_the_root_cause_step(
     assert perf["span_pass_rate"] == pytest.approx(3 / 4)
     assert perf["avg_latency_ms"] == pytest.approx(250.0)
     assert snap.failures_by_step == {"summarization": 1}
+
+
+def test_unscoreable_fault_is_reported_not_counted_as_a_miss() -> None:
+    """`context_loss` needs entities to lose; without them it is not a failure.
+
+    The offline fixture leaves most documents with an empty extraction, so this
+    is the common case in a dry run. Scoring it as 0% made `benchmark-analyzer`
+    report an analyzer defect that the analyzer does not have.
+    """
+    trace = _clean_trace()
+    for span in trace.spans:
+        if span.step_name == "extraction":
+            span.output_json = json.dumps({"entities": []})
+
+    result = score_fault(trace, fault_by_name("context_loss"), DOC, expected_type="contract")
+
+    assert result["scoreable"] is False
+    assert result["actual_step"] == "unscored"
+    assert result["expected_step"] == "summarization"
+    assert "Not scoreable" in result["evidence"][0]
+
+
+def test_score_all_faults_excludes_unscoreable_faults_from_the_denominator() -> None:
+    trace = _clean_trace()
+    for span in trace.spans:
+        if span.step_name == "extraction":
+            span.output_json = json.dumps({"entities": []})
+
+    card = score_all_faults(trace, DOC, expected_type="contract")
+
+    assert card["unscoreable"] == 1
+    assert card["total"] == len(FAULTS) - 1
+    assert card["total"] + card["unscoreable"] == len(FAULTS)
+    unscoreable = [r for r in card["results"] if not r["scoreable"]]
+    assert [r["fault"] for r in unscoreable] == ["context_loss"]
+
+
+def test_a_baseline_with_entities_keeps_context_loss_scoreable() -> None:
+    """The precondition must not switch the fault off where it is meaningful."""
+    card = score_all_faults(_clean_trace(), DOC, expected_type="contract")
+
+    assert card["unscoreable"] == 0
+    assert card["total"] == len(FAULTS)
+    context_loss = next(r for r in card["results"] if r["fault"] == "context_loss")
+    assert context_loss["scoreable"] is True
+    assert context_loss["step_correct"] is True
+
+
+# ─── run_eval is tenant-scoped ──────────────────────────────────────────────
+
+
+class _NullClientContext:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+def _stub_run_eval(monkeypatch: pytest.MonkeyPatch, storage: Storage) -> None:
+    """Point `run_eval` at a test storage and a stub pipeline.
+
+    `run_eval` is the seam the scheduler now relies on for per-tenant runs, so it
+    is exercised for real here: the case filter, the run record's tenant, and the
+    summary update are the code under test, not a mock of them.
+    """
+    from forensics import eval_simple
+
+    monkeypatch.setattr(eval_simple, "get_storage", lambda: storage)
+    monkeypatch.setattr(
+        eval_simple,
+        "Pipeline",
+        lambda client: _StubPipeline(
+            [("classification", {"document_type": "contract", "confidence": 0.9})]
+        ),
+    )
+    monkeypatch.setattr(eval_simple, "using_llm_client", lambda **kw: _NullClientContext())
+    monkeypatch.setattr(eval_simple, "resolve_document_text", lambda trace: DOC)
+
+
+async def test_run_eval_scopes_cases_and_the_run_record_to_one_tenant(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A scheduled run for one tenant must not evaluate another tenant's cases."""
+    from forensics.eval_simple import run_eval
+
+    _stub_run_eval(monkeypatch, storage)
+
+    for tenant_id, trace_id in (("acme", "t_acme"), ("globex", "t_globex")):
+        trace = _clean_trace()
+        trace.trace_id = trace_id
+        trace.tenant_id = tenant_id
+        for span in trace.spans:
+            span.trace_id = trace_id
+            span.tenant_id = tenant_id
+        storage.save_trace(trace)
+
+        case = _eval_case(trace_id, "classification")
+        case.tenant_id = tenant_id
+        storage.create_eval_case(case)
+
+    run = await run_eval(tenant_id="acme")
+
+    assert run is not None
+    # The run belongs to the tenant that asked for it, not to `default`.
+    assert run.tenant_id == "acme"
+    assert run.total_cases == 1
+    assert run.completed_at is not None
+
+    results = storage.get_eval_results_for_run(run.run_id, tenant_id="acme")
+    assert len(results) == 1
+    assert results[0].tenant_id == "acme"
+
+    # Scoped audit: globex's case was never touched.
+    assert storage.get_eval_results_for_run(run.run_id, tenant_id="globex") == []
+    assert storage.list_eval_runs(tenant_id="globex") == []
+
+
+async def test_run_eval_without_a_tenant_evaluates_every_case(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CLI/dev path stays instance-wide and lands in `default`."""
+    from forensics.eval_simple import run_eval
+
+    _stub_run_eval(monkeypatch, storage)
+
+    for tenant_id, trace_id in (("acme", "t_acme"), ("globex", "t_globex")):
+        trace = _clean_trace()
+        trace.trace_id = trace_id
+        trace.tenant_id = tenant_id
+        for span in trace.spans:
+            span.trace_id = trace_id
+            span.tenant_id = tenant_id
+        storage.save_trace(trace)
+
+        case = _eval_case(trace_id, "classification")
+        case.tenant_id = tenant_id
+        storage.create_eval_case(case)
+
+    run = await run_eval()
+
+    assert run is not None
+    assert run.total_cases == 2
+    assert {r.tenant_id for r in storage.get_eval_results_for_run(run.run_id)} == {
+        "acme",
+        "globex",
+    }
+
+
+async def test_run_eval_returns_none_when_a_tenant_has_no_cases(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No cases must not create an empty run that pollutes the accuracy history."""
+    from forensics.eval_simple import run_eval
+
+    _stub_run_eval(monkeypatch, storage)
+
+    assert await run_eval(tenant_id="empty") is None
+    assert storage.list_eval_runs(tenant_id="empty") == []

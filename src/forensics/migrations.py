@@ -41,6 +41,9 @@ _COLUMN_ADDITIONS: dict[str, dict[str, str]] = {
     },
     "api_keys": {
         "expires_at": "TEXT",
+        # Existing keys keep full access: the ALTER widens capability, it never
+        # silently breaks a key that is already in a deployment's CI.
+        "scopes": "TEXT NOT NULL DEFAULT '*'",
     },
 }
 
@@ -64,6 +67,7 @@ _AUTH_TABLE_STATEMENTS: tuple[str, ...] = (
         revoked_at TEXT,
         last_used_at TEXT,
         expires_at TEXT,
+        scopes TEXT NOT NULL DEFAULT '*',
         FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id)
     )
     """,

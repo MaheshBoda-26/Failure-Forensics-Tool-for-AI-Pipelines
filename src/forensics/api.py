@@ -205,15 +205,19 @@ def get_auth() -> AuthManager:
     return _auth
 
 
-def get_current_tenant(authorization: str | None = None) -> Tenant:
+def get_current_tenant(authorization: str | None = None, *, scope: str = "read") -> Tenant:
     """Resolve the calling tenant from the `Authorization` header.
 
     With `AUTH_ENABLED=false` this is the shared default tenant and every request
     succeeds — the documented dev mode, where the API behaves exactly as it did
-    before auth existed.
+    before auth existed. Scopes are an auth-mode concept and do not apply there.
 
     With auth on, a missing header, an unknown key, and a revoked key all answer
-    401; an inactive tenant answers 403. The header is read by FastAPI itself
+    401; an inactive tenant, or a key that does not hold `scope`, answers 403.
+    The default scope is the *narrow* one, so a mutating route that forgets to
+    ask for `write` fails closed rather than accepting a read-only key.
+
+    The header is read by FastAPI itself
     (`authorization: Annotated[str | None, Header()]` on each endpoint) rather
     than through `Depends`, because this codebase's tests call endpoint functions
     directly and a `Depends` default would leak a `Depends` object into those
@@ -232,6 +236,14 @@ def get_current_tenant(authorization: str | None = None) -> Tenant:
     tenant = get_auth().get_tenant(key.tenant_id)
     if tenant is None:
         raise HTTPException(status_code=403, detail="Tenant not found or inactive")
+
+    if not key.allows(scope):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"API key is missing the '{scope}' scope (has: {', '.join(key.scopes) or 'none'})"
+            ),
+        )
     return tenant
 
 
@@ -320,7 +332,7 @@ def scheduler_status(
     Rejects unauthenticated callers like the data routes, and deliberately omits
     `job_store`: a filesystem path is not something every tenant needs.
     """
-    get_current_tenant(authorization)
+    get_current_tenant(authorization, scope="read")
     from forensics.scheduler import get_scheduler
 
     status = get_scheduler(get_storage()).describe()
@@ -379,7 +391,7 @@ def create_flag(
     request: FlagRequest,
     authorization: Annotated[str | None, Header()] = None,
 ) -> Flag:
-    tenant = get_current_tenant(authorization)
+    tenant = get_current_tenant(authorization, scope="write")
     trace = get_storage().get_trace(trace_id, tenant_id=tenant_scope(tenant))
     if not trace:
         raise HTTPException(status_code=404, detail="Trace not found")
@@ -397,7 +409,7 @@ def create_flag(
 def diagnose_trace(
     trace_id: str, authorization: Annotated[str | None, Header()] = None
 ) -> Diagnosis:
-    tenant = get_current_tenant(authorization)
+    tenant = get_current_tenant(authorization, scope="write")
     trace = get_storage().get_trace(trace_id, tenant_id=tenant_scope(tenant))
     if not trace:
         raise HTTPException(status_code=404, detail="Trace not found")
@@ -432,7 +444,7 @@ def confirm_diagnosis(
     request: ConfirmDiagnosisRequest,
     authorization: Annotated[str | None, Header()] = None,
 ) -> Diagnosis:
-    tenant = get_current_tenant(authorization)
+    tenant = get_current_tenant(authorization, scope="write")
     scope = tenant_scope(tenant)
     storage = get_storage()
 
@@ -538,7 +550,7 @@ async def trigger_eval_run(
 ) -> dict[str, object]:
     from forensics.eval_simple import create_eval_cases_from_confirmed_flags, run_eval
 
-    tenant = get_current_tenant(authorization)
+    tenant = get_current_tenant(authorization, scope="write")
     scope = tenant_scope(tenant)
     storage = get_storage()
     create_eval_cases_from_confirmed_flags(scope)
@@ -604,7 +616,7 @@ async def trigger_pipeline_demo(
     from forensics.pipeline import Pipeline
     from forensics.tracing import trace_context
 
-    tenant = get_current_tenant(authorization)
+    tenant = get_current_tenant(authorization, scope="write")
     settings = get_settings()
     dataset_dir = settings.dataset_dir
     labels_path = dataset_dir / "labels.json"
@@ -658,7 +670,7 @@ async def run_pipeline(
     that returns the finished trace. With it enabled the document is queued and
     the request answers 202 with a `job_id` to poll.
     """
-    tenant = get_current_tenant(authorization)
+    tenant = get_current_tenant(authorization, scope="write")
     expected_type = request.expected_type.value if request.expected_type else None
 
     if get_settings().queue_enabled:

@@ -220,10 +220,21 @@ async def test_gives_up_after_max_retries(tmp_path: Path) -> None:
     assert calls == 3, f"expected 1 initial + 2 retries, got {calls}"
 
 
+@pytest.fixture
+def preflight_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Disable the pre-flight estimate so a test can exercise post-hoc accounting."""
+    from forensics.config import reset_settings
+
+    monkeypatch.setenv("SPEND_PREFLIGHT_ENABLED", "false")
+    reset_settings()
+    yield
+    reset_settings()
+
+
 # --- Finding #3: spend caps must actually be enforced ----------------------
 
 
-async def test_spend_cap_is_enforced(tmp_path: Path) -> None:
+async def test_spend_cap_is_enforced(tmp_path: Path, preflight_off: None) -> None:
     """A run whose cost exceeds the cap must be refused."""
     expensive = _model(price_in_per_1m=1000.0, price_out_per_1m=1000.0)
 
@@ -237,7 +248,7 @@ async def test_spend_cap_is_enforced(tmp_path: Path) -> None:
         await client.structured(expensive, "Extract.", ExtractionOutput)
 
 
-async def test_spend_accumulates_across_calls(tmp_path: Path) -> None:
+async def test_spend_accumulates_across_calls(tmp_path: Path, preflight_off: None) -> None:
     """Repeated calls inside one run accumulate against the same cap.
 
     Each mocked call costs 1000 prompt * $1000/1M + 500 completion * $1000/1M
@@ -583,3 +594,84 @@ def test_labelled_entity_is_not_stripped_without_a_grounded_tail() -> None:
     cleaned = _strip_entity_label(entity, "Due Date: March 3, 2024")
 
     assert cleaned.value == "Due Date: March 3, 2025"
+
+
+# --- Pre-flight cost check -------------------------------------------------
+
+
+async def test_preflight_refuses_before_the_call_is_paid_for(tmp_path: Path) -> None:
+    """The cap must be able to refuse a request *before* the provider bills it.
+
+    `check_and_add` only ever reports an overage that already happened; this is
+    the pre-flight half.
+    """
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=_completion('{"entities": [], "raw_response": ""}'))
+
+    expensive = _model(price_in_per_1m=1000.0, price_out_per_1m=1000.0)
+    client = _client(handler, tmp_path)
+    client.spend_tracker.cap_per_run_usd = 0.001
+
+    with pytest.raises(SpendCapExceededError) as excinfo:
+        await client.structured(expensive, "Extract.", ExtractionOutput)
+
+    assert excinfo.value.cap_type == "preflight_per_run"
+    assert calls == 0, "the call was sent despite the pre-flight refusal"
+    assert client.spend_tracker.run_spend_usd == 0.0
+
+
+async def test_preflight_lets_a_call_that_fits_through(tmp_path: Path) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_completion('{"entities": [], "raw_response": ""}'))
+
+    client = _client(handler, tmp_path)
+    # 2048 output tokens at $0.60/1M is ~$0.0012, well inside the default $0.50 cap.
+    result = await client.structured(_model(), "Extract.", ExtractionOutput)
+
+    assert result.parsed.entities == []
+    assert client.spend_tracker.run_spend_usd == pytest.approx(1000 / 1e6 * 0.15 + 500 / 1e6 * 0.60)
+
+
+async def test_preflight_can_be_disabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A deployment that would rather be billed than refused can turn it off."""
+    from forensics.config import reset_settings
+
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=_completion('{"entities": [], "raw_response": ""}'))
+
+    expensive = _model(price_in_per_1m=1000.0, price_out_per_1m=1000.0)
+    client = _client(handler, tmp_path)
+    client.spend_tracker.cap_per_run_usd = 0.001
+
+    monkeypatch.setenv("SPEND_PREFLIGHT_ENABLED", "false")
+    reset_settings()
+    try:
+        with pytest.raises(SpendCapExceededError) as excinfo:
+            await client.structured(expensive, "Extract.", ExtractionOutput)
+    finally:
+        reset_settings()
+
+    assert excinfo.value.cap_type == "per_run", "expected the post-hoc check, not pre-flight"
+    assert calls == 1
+
+
+def test_estimate_call_cost_uses_prompt_length_and_output_budget(tmp_path: Path) -> None:
+    client = NIMClient(
+        api_key="nvapi-test-key",  # pragma: allowlist secret
+        cache_dir=tmp_path / "cache",
+        spend_file=tmp_path / "spend.json",
+        transport=httpx.MockTransport(lambda _r: httpx.Response(200, json={})),
+    )
+    model = _model(price_in_per_1m=1.0, price_out_per_1m=2.0)
+    messages = [{"role": "user", "content": "x" * 4000}]
+
+    # 4000 chars / 4 = 1000 prompt tokens at $1/1M, plus 2000 output at $2/1M.
+    assert client.estimate_call_cost(model, messages, 2000) == pytest.approx(0.001 + 0.004)

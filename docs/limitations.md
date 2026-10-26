@@ -87,20 +87,23 @@ UPDATE job_queue SET status='pending', worker_id=NULL WHERE job_id='…';
 
 ---
 
-## 3. The scheduled eval is tenant-agnostic
+## 3. ~~The scheduled eval is tenant-agnostic~~ — **RESOLVED**
 
-**Limitation**: the nightly run evaluates **every** tenant's eval cases in one
-`EvalRun`, which is recorded under the `default` tenant.
+**Limitation**: the nightly run evaluated **every** tenant's eval cases in one
+`EvalRun`, recorded under the `default` tenant, so a per-tenant accuracy history
+did not exist and one tenant's cases moved another tenant's alerts.
 
-**Impact**: a per-tenant accuracy history is not available from the scheduled
-run. Per-tenant runs are available through `POST /eval/run` with that tenant's
-key.
+**Resolution**: `EvalScheduler.run_scheduled_eval` now walks the active tenants
+and runs one eval per tenant, scoped to that tenant's cases
+(`run_eval(tenant_id=…)`). Each run is compared against *that tenant's* previous
+completed run, and every alert carries the `tenant_id` it belongs to. A tenant
+with no eval cases is skipped without creating an empty run; a database that has
+never had a tenant row (auth never enabled) evaluates `default`, which is where
+all of its data lives.
 
-**Mitigation**: with a single-tenant deployment (the demo) this is exactly the
-desired behaviour — one number for the whole instance. A per-tenant schedule is a
-configuration shape (tenant → cron), not an algorithm.
-
----
+**Impact**: alert volume is per tenant rather than one instance-wide summary,
+and a cron tick with N active tenants performs N evals. That is the point — the
+number now means one tenant's accuracy.
 
 ## 4. With auth disabled, the API serves every tenant's data
 
@@ -137,30 +140,43 @@ path (`doc_id`) instead of inlining `doc_text`.
 
 ---
 
-## 6. The fault scorecard's `context_loss` fault needs a trace with entities
+## 6. ~~The fault scorecard's `context_loss` fault needs a trace with entities~~ — **RESOLVED**
 
 **Limitation**: `_inject_context_loss` summarizes without the grounded entities.
 If the baseline trace extracted **no** entities, a summary that omits them is
 indistinguishable from one that never had them, so `context_preservation` has
-nothing to compare and the fault is scored as a miss.
+nothing to compare. The scorecard counted that as a *miss*, which turned a
+property of the baseline into a fabricated detector failure and under-reported
+accuracy on traces produced by `DRY_RUN=true`, whose canned extraction returns no
+entities for every document but one.
 
-**Impact**: the scorecard under-reports the analyzer's real accuracy on traces
-produced by `DRY_RUN=true`, whose canned extraction returns no entities for every
-document but one (the seeded `invoice_001`).
-`forensics benchmark-analyzer` reports 85.7% step/category accuracy in that
-configuration; the remaining miss is this fault, not a detector failure.
+The scorecard also picked its baseline as *whatever trace the store returned
+first*, so the reported figure moved between 5/7 and 6/7 (71.4%–85.7%) with no
+code change — it was measuring the baseline, not the detector.
 
-The scorecard also picks its baseline as *whatever trace the store returns
-first*, which is the most recently written one. On a store that has accumulated
-several runs, the reported figure therefore moves between 5/7 and 6/7
-(71.4%–85.7%) without any analyzer change: it is measuring the baseline, not the
-detector. Fixing the baseline (or scoring every trace and averaging) is the
-honest version and is not yet done.
+**Resolution**: two independent changes.
+
+- `Fault.scoreable` declares each fault's precondition.
+  `context_loss` is scoreable only when the baseline extracted a *salient,
+  grounded* entity, and `score_fault` reports `scoreable: False` with an
+  explicit reason instead of a miss. `score_all_faults` and the CLI aggregate
+  exclude unscoreable results from the accuracy denominators and print `n/a`
+  for a fault no baseline could host, plus a count of what was skipped.
+- `benchmark-analyzer` scores **every** eligible clean, non-mixed trace and
+  aggregates per fault, showing the sample size per row, so one entity-free
+  baseline no longer defines the whole number and the result does not depend on
+  insertion order. Two consecutive runs now print identical numbers.
+
+**Impact**: on the offline fixture the scorecard reports **100% step and
+category accuracy over 150 injected faults** across six faults, with
+`context_loss` marked unscoreable (25 skipped) rather than "0%". `context_loss`
+is still exercised, on synthetic traces that do have entities, by
+`tests/test_storage_eval_api.py`.
 
 **Mitigation**: score against a real (non-dry-run) baseline trace, which has
-entities to lose, and read the score next to the baseline trace ID the scorecard
-prints. The injector's own no-op class of bug — choosing a label equal to the
-correct one — was fixed and is regression-tested.
+entities to lose; in that configuration `context_loss` becomes scoreable and is
+counted. The injector's own no-op class of bug — choosing a label equal to the
+correct one — was fixed earlier and is regression-tested.
 
 ---
 
@@ -203,21 +219,26 @@ persisting the unredacted trace — would reopen the leak spec 03 closes.
 
 ---
 
-## 8. No pre-flight cost check
+## 8. ~~No pre-flight cost check~~ — **RESOLVED**
 
-**Limitation**: spend caps are enforced *after* the response, using actual token
-counts. Nothing rejects a request that is likely to exceed a cap before sending
-it.
+**Limitation**: spend caps were enforced *after* the response, using actual
+token counts. Nothing rejected a request that was likely to exceed a cap before
+sending it, so one request could overshoot the per-run cap and the global cap
+could be overshot by one request.
 
-**Impact**: one request can overshoot the per-run cap, and the global cap can be
-overshot by one request. With the default prices (0.0, see item 10) the counters
-read as no spend at all.
+**Resolution**: `SpendTracker.check_preflight` and
+`NIMClient.estimate_call_cost` refuse a call *before* it is sent when its
+worst-case cost would breach either cap. The estimate is deliberately an upper
+bound — the measured prompt at ~4 characters per token, plus the full
+`max_tokens` output budget at the configured prices — and it is skipped entirely
+when the estimate is zero (the shipped zero prices). `SPEND_PREFLIGHT_ENABLED=false`
+restores the old post-hoc-only behaviour.
 
-**Mitigation**: caps are generous for the demo ($0.50/run, $20 global) and
-post-hoc accounting prevents repeated overages. Pre-flight estimation from
-`max_tokens × price` is a small addition when real prices are configured.
-
----
+**Impact**: a call that would in fact have fit under the cap can be refused when
+the *bound* does not fit. That is the intended trade: a false refusal costs
+nothing, while an overshoot is already billed. The heuristic chars-per-token
+constant is a fixed 4; a very terse or non-Latin prompt could be under-counted,
+so the post-hoc check remains the backstop.
 
 ## 9. Prompt templates are not stored with traces
 
@@ -284,24 +305,31 @@ practice; see item 18.
 
 ---
 
-## 13. API keys have no scopes (expiry is ~~resolved~~)
+## 13. ~~API keys never expire / have no scopes~~ — **RESOLVED**
 
-**Limitation**: keys are bcrypt-hashed, prefixed for identification, revocable,
-and now expirable — `AUTH_KEY_TTL_DAYS` sets a default lifetime and
-`forensics auth create-key --ttl N` overrides it per key; an expired key fails
-validation and is indistinguishable from a revoked one (both 401). What remains
-missing is **scopes**: every key of a tenant still has that tenant's full read
-and write access.
+**Limitation**: keys were bcrypt-hashed, prefixed for identification, and
+revocable — but with no expiry and no scopes, so a leaked key was valid forever
+and a dashboard key had the same power as a CI key that starts runs.
 
-**Impact**: a leaked key is bounded by its TTL rather than being valid forever,
-but a dashboard or CI key that should only read can still submit traces and
-confirm diagnoses.
+**Resolution**: two independent bounds.
 
-**Mitigation**: mint short-TTL keys for machine callers
-(`--ttl 7`), keep `--ttl 0` for nothing, and revoke on suspicion —
-`revoke-key` takes effect on the next request and revoked rows stay for audit.
-Scoped keys would mean an `scopes` column plus a per-route check; that is a
-deliberate omission, not an oversight.
+- **Expiry**: `AUTH_KEY_TTL_DAYS` sets a default lifetime and
+  `forensics auth create-key --ttl N` overrides it per key. An expired key fails
+  validation and is indistinguishable from a revoked one (both 401).
+- **Scopes**: `api_keys.scopes` (default `*`, added by migration with the same
+  default, so existing keys keep their access) holds `read`, `write`, or `*`.
+  `GET` routes require `read`; mutating routes require `write`; `write` implies
+  `read`, because a key that can start a run but cannot fetch the result is a
+  trap. `forensics auth create-key --scope read` mints a read-only key and
+  `list-keys` shows the scopes.
+
+**Impact**: authorization is per key, not per tenant: there are no per-resource
+scopes (a `write` key can still do anything that tenant can), and an unknown
+scope name is rejected at mint time rather than silently ignored. The scope
+check defaults to the *narrow* scope, so a new route that forgets to declare
+`scope="write"` fails closed for a read-only key.
+
+
 
 ---
 
@@ -371,25 +399,32 @@ is the queue-depth view.
 
 ---
 
-## 18. The PostgreSQL backend is typechecked but not exercised
+## 18. ~~The PostgreSQL backend is typechecked but not exercised~~ — **RESOLVED**
 
-**Limitation**: `storage_postgres.PostgresStorage` implements the full
-`StorageBase` contract — traces, flags, diagnoses, eval data, tenants and API
-keys — but no test in the suite ever connects to a PostgreSQL server. `asyncpg`
-is an opt-in extra (`pip install -e ".[postgres]"`), so CI never installs it,
-and the backend is covered by mypy strict and the import path only.
+**Limitation**: `storage_postgres` implemented the `StorageBase` contract but no
+test ever connected to a server, so three defects were invisible: the schema was
+never created (the first query failed on a fresh database), the trace index was
+never written (`save_trace` only called `finalize_trace`, which writes a *SQLite*
+index), and every synchronous wrapper used `asyncio.run()`, whose per-call event
+loop left the `asyncpg` pool bound to a loop that had already closed — so the
+*second* operation failed.
 
-**Impact**: the first real deployment is the first real execution. Schema
-drift between `migrations.py` (SQLite) and `_init_schema` (PostgreSQL) would
-surface there rather than in CI.
+**Resolution**: `tests/test_storage_postgres.py` runs the backend against a real
+server (`make test-postgres`, `FORENSICS_TEST_POSTGRES_URL`), covering trace
+save/load/list/get with tenant scoping, span replacement on re-save, flags,
+diagnoses and confirmation, eval cases/runs/results, tenant and API-key
+operations including scopes and revocation, backend selection through
+`DATABASE_URL`, repeated operations on one event loop, and shutdown (the pool
+and its loop thread are closed, so rebuilding the backend does not leak threads). Writing those tests is
+what found the three defects above; all are fixed.
 
-**Mitigation**: the two backends share `StorageBase`, `AuthManager` no longer
-reaches into SQLite internals, and the SQLite implementation is the tested
-reference for every method. Adding a `pytest.mark.postgres` job against a
-throwaway container is the next step; until then, treat `DATABASE_URL` as
-unproven in production.
+`tests/test_schema_parity.py` compares the SQLite and PostgreSQL schemas table by
+table and column by column on every run, so drift is caught even where no
+PostgreSQL server exists (CI).
 
----
+**Impact**: the backend is no longer unproven. What remains unverified is
+*operational*: connection-pool sizing under real load, failover, and behaviour
+during a `pg_ctl` restart are not exercised by a test suite.
 
 ## Summary
 

@@ -9,7 +9,7 @@ import json
 import sys
 import threading
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -493,24 +493,27 @@ def analytics() -> None:
 
 @app.command(name="benchmark-analyzer")
 def benchmark_analyzer() -> None:
-    """Run fault injection scorecard against a baseline trace."""
+    """Score the analyzer against every clean trace, not just the newest one.
+
+    Scoring a single baseline made the number a property of the corpus rather
+    than of the detector: the baseline used to be "whatever the store returned
+    first", so the printed accuracy moved between 71.4% and 85.7% with no code
+    change (the `context_loss` fault is unscoreable on a trace that extracted no
+    entities). Every eligible trace is now scored and the per-fault accuracy is
+    aggregated, which is a stable measurement and honest about its sample size.
+    """
     _setup()
 
     from forensics.eval_simple import document_ground_truth
     from forensics.faults import score_all_faults
     from forensics.storage import get_storage
 
-    # Find a clean trace to use as baseline
     storage = get_storage()
-    traces = storage.list_traces(limit=20)
+    traces = storage.list_traces(limit=50)
     if not traces:
         typer.secho("No traces found. Run `demo` first.", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
-    # Prefer a clean baseline whose classification is a single document type:
-    # `check_propagation` exempts `mixed` (a mixed document legitimately uses
-    # several shapes), so a mixed baseline makes the propagation fault
-    # unreachable and scores the analyzer down for a verdict it cannot produce.
     def _classified_type(trace: object) -> str | None:
         for span in getattr(trace, "spans", []):
             if span.step_name != "classification":
@@ -523,84 +526,152 @@ def benchmark_analyzer() -> None:
             return str(value) if value is not None else None
         return None
 
-    clean = [
-        trace
-        for trace in traces
-        if (diag := storage.get_diagnosis_for_trace(trace.trace_id)) is None
-        or diag.root_cause_step in ("", "none")
-    ]
-    baseline_trace = next(
-        (t for t in clean if _classified_type(t) not in (None, "", "mixed")),
-        clean[0] if clean else None,
-    )
+    # Deterministic order: the aggregate must not depend on insertion order.
+    baselines: list[tuple[object, str, str | None]] = []
+    skipped = 0
+    for trace in sorted(traces, key=lambda t: t.trace_id):
+        diagnosis = storage.get_diagnosis_for_trace(trace.trace_id)
+        is_clean = diagnosis is None or diagnosis.root_cause_step in ("", "none")
+        # `check_propagation` exempts `mixed` (a mixed document legitimately
+        # uses several shapes), so a mixed baseline makes the propagation fault
+        # unscorable.
+        if not is_clean or _classified_type(trace) in (None, "", "mixed"):
+            skipped += 1
+            continue
+        # `resolve_document_text` covers the dataset *and* uploads; looking only
+        # in `dataset/documents` failed for traces created from an upload.
+        doc_text = resolve_document_text(trace)
+        if not doc_text:
+            skipped += 1
+            continue
+        baselines.append((trace, doc_text, document_ground_truth(trace.document_id)))
 
-    if baseline_trace is None:
-        baseline_trace = traces[0]
-
-    # `resolve_document_text` covers the dataset *and* documents uploaded
-    # through the API; looking only in `dataset/documents` failed with
-    # "Document not found" whenever the first clean trace came from an upload.
-    doc_text = resolve_document_text(baseline_trace)
-    if not doc_text:
+    if not baselines:
         typer.secho(
-            f"Document not found for baseline trace {baseline_trace.trace_id} "
-            f"({baseline_trace.document_id})",
+            "No scoreable baseline trace found (need a clean, non-mixed trace whose "
+            "document is still readable). Run `demo` first.",
             fg=typer.colors.RED,
             err=True,
         )
         raise typer.Exit(code=1)
 
-    expected_type = document_ground_truth(baseline_trace.document_id)
+    scorecards = [
+        score_all_faults(trace, doc_text, expected_type)  # type: ignore[arg-type]
+        for trace, doc_text, expected_type in baselines
+    ]
+    aggregate = _aggregate_fault_scorecards(scorecards)
 
     typer.secho(
         "\n📊 Benchmark Analyzer — Fault Injection Scorecard", fg=typer.colors.BLUE, bold=True
     )
     typer.secho(
-        f"Baseline trace: {baseline_trace.trace_id} ({baseline_trace.document_id})",
+        f"Baselines scored: {len(baselines)} (skipped {skipped} ineligible of {len(traces)})",
         fg=typer.colors.CYAN,
     )
-    typer.secho(f"Expected type: {expected_type or 'unknown'}", fg=typer.colors.CYAN)
+    typer.secho(
+        "Baseline traces: " + ", ".join(f"{t.trace_id}/{t.document_id}" for t, _, _ in baselines),  # type: ignore[attr-defined]
+        fg=typer.colors.CYAN,
+    )
 
-    results = score_all_faults(baseline_trace, doc_text, expected_type)
-
-    # Print header
     typer.echo()
     typer.secho(
-        f"{'Fault':<25} {'Step':<18} {'Expected':<25} {'Actual Step':<18} "
-        f"{'Actual Cat':<25} {'Step':<6} {'Cat':<6} {'Conf':<6}",
+        f"{'Fault':<25} {'Step':<18} {'Expected':<25} {'Traces':<8} {'Step%':<8} {'Cat%':<8}",
         fg=typer.colors.BLUE,
         bold=True,
     )
-    typer.secho("─" * 140, fg=typer.colors.BLUE)
+    typer.secho("─" * 100, fg=typer.colors.BLUE)
 
-    for r in results["results"]:
-        step_ok = "✓" if r["step_correct"] else "✗"
-        cat_ok = "✓" if r["category_correct"] else "✗"
-        step_color = typer.colors.GREEN if r["step_correct"] else typer.colors.RED
-        cat_color = typer.colors.GREEN if r["category_correct"] else typer.colors.RED
-
+    for row in aggregate["results"]:
+        if not row["traces"]:
+            # Every baseline was missing this fault's precondition. Printing 0%
+            # would blame the analyzer for a corruption that never happened.
+            typer.secho(
+                f"{row['fault']:<25} {row['expected_step']:<18} {row['expected_category']:<25} "
+                f"{'0':<8} {'n/a':<8} {'n/a':<8}",
+                fg=typer.colors.YELLOW,
+            )
+            continue
+        step_pct = row["step_correct"] / row["traces"]
+        cat_pct = row["category_correct"] / row["traces"]
+        step_color = typer.colors.GREEN if step_pct == 1.0 else typer.colors.RED
+        cat_color = typer.colors.GREEN if cat_pct == 1.0 else typer.colors.RED
         typer.secho(
-            f"{r['fault']:<25} {r['expected_step']:<18} {r['expected_category']:<25} ", nl=False
+            f"{row['fault']:<25} {row['expected_step']:<18} {row['expected_category']:<25} ",
+            nl=False,
         )
-        typer.secho(f"{r['actual_step']:<18} ", nl=False)
-        typer.secho(f"{r['actual_category']:<25} ", nl=False)
-        typer.secho(f"{step_ok:<6} ", fg=step_color, nl=False)
-        typer.secho(f"{cat_ok:<6} ", fg=cat_color, nl=False)
-        typer.secho(f"{r['confidence']:.2f}")
+        typer.secho(f"{row['traces']:<8} ", nl=False)
+        typer.secho(f"{step_pct:<8.1%} ", fg=step_color, nl=False)
+        typer.secho(f"{cat_pct:<8.1%}", fg=cat_color)
 
     typer.echo()
-    typer.secho("─" * 140, fg=typer.colors.BLUE)
+    typer.secho("─" * 100, fg=typer.colors.BLUE)
     typer.secho(
-        f"Step-Localization Accuracy: {results['step_accuracy']:.1%}",
+        f"Step-Localization Accuracy: {aggregate['step_accuracy']:.1%}",
         fg=typer.colors.CYAN,
         bold=True,
     )
     typer.secho(
-        f"Category Accuracy:           {results['category_accuracy']:.1%}",
+        f"Category Accuracy:           {aggregate['category_accuracy']:.1%}",
         fg=typer.colors.CYAN,
         bold=True,
     )
-    typer.secho(f"Total Faults Tested:         {results['total']}", fg=typer.colors.CYAN)
+    typer.secho(f"Total Faults Tested:         {aggregate['total']}", fg=typer.colors.CYAN)
+    if aggregate["unscoreable"]:
+        typer.secho(
+            f"Unscoreable (skipped):       {aggregate['unscoreable']} "
+            "(baseline lacked the fault's precondition)",
+            fg=typer.colors.YELLOW,
+        )
+
+
+def _aggregate_fault_scorecards(scorecards: list[dict[str, Any]]) -> dict[str, Any]:
+    """Combine per-baseline scorecards into one per-fault table.
+
+    Only *scoreable* results enter the denominators. A corruption whose
+    precondition the baseline does not meet (context loss on a trace whose
+    extraction found no salient entity) never happened, so the analyzer had
+    nothing to detect; counting it as a miss turned a limitation of the offline
+    fixture into a fabricated detector failure. Unscoreable results are counted
+    separately so the table can say `n/a` instead of 0%.
+    """
+    order: list[str] = []
+    rows: dict[str, dict[str, Any]] = {}
+
+    for card in scorecards:
+        for result in card["results"]:
+            fault = str(result["fault"])
+            if fault not in rows:
+                order.append(fault)
+                rows[fault] = {
+                    "fault": fault,
+                    "expected_step": result["expected_step"],
+                    "expected_category": result["expected_category"],
+                    "traces": 0,
+                    "unscoreable": 0,
+                    "step_correct": 0,
+                    "category_correct": 0,
+                }
+            row = rows[fault]
+            if not result.get("scoreable", True):
+                row["unscoreable"] += 1
+                continue
+            row["traces"] += 1
+            row["step_correct"] += int(bool(result["step_correct"]))
+            row["category_correct"] += int(
+                bool(result["step_correct"]) and bool(result["category_correct"])
+            )
+
+    total = sum(row["traces"] for row in rows.values())
+    step_correct = sum(row["step_correct"] for row in rows.values())
+    category_correct = sum(row["category_correct"] for row in rows.values())
+
+    return {
+        "total": total,
+        "unscoreable": sum(row["unscoreable"] for row in rows.values()),
+        "step_accuracy": step_correct / total if total else 0.0,
+        "category_accuracy": category_correct / total if total else 0.0,
+        "results": [rows[fault] for fault in order],
+    }
 
 
 @app.command()
@@ -673,12 +744,23 @@ def auth_create_key(
     tenant: str = typer.Option(..., "--tenant", help="tenant_id that will own the key"),
     name: str | None = typer.Option(None, "--name", help="Label, e.g. 'ci-cd'"),
     ttl: int = typer.Option(0, "--ttl", help="Key TTL in days (0 = no expiry)"),
+    scope: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--scope",
+            help="Restrict the key: 'read' or 'write' (repeatable, or comma-separated). "
+            "Omit for full access ('*'). 'write' implies read.",
+        ),
+    ] = None,
 ) -> None:
     """Mint an API key. The plaintext key is printed once and never stored."""
     manager = _auth_manager()
+    requested: list[str] | None = None
+    if scope:
+        requested = [part.strip() for chunk in scope for part in chunk.split(",") if part.strip()]
     try:
         api_key, plaintext = manager.create_api_key(
-            tenant, name=name, ttl_days=ttl if ttl > 0 else None
+            tenant, name=name, ttl_days=ttl if ttl > 0 else None, scopes=requested
         )
     except ValueError as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED, err=True)
@@ -689,6 +771,7 @@ def auth_create_key(
         fg=typer.colors.GREEN,
         err=True,
     )
+    typer.secho(f"Scopes: {', '.join(api_key.scopes)}", fg=typer.colors.CYAN, err=True)
     if api_key.expires_at:
         typer.secho(
             f"Key expires at: {api_key.expires_at.isoformat()}", fg=typer.colors.YELLOW, err=True
@@ -710,11 +793,17 @@ def auth_list_keys(
     if not keys:
         typer.secho(f"No keys for tenant {tenant}.", fg=typer.colors.YELLOW, err=True)
         return
-    typer.secho(f"{'key_id':<14} {'prefix':<14} {'name':<16} {'status':<9} last_used", bold=True)
+    typer.secho(
+        f"{'key_id':<14} {'prefix':<14} {'name':<16} {'scopes':<12} {'status':<9} last_used",
+        bold=True,
+    )
     for k in keys:
         status = "revoked" if k.revoked_at else "active"
         last_used = k.last_used_at.isoformat() if k.last_used_at else "never"
-        typer.echo(f"{k.key_id:<14} {k.prefix:<14} {k.name or '-':<16} {status:<9} {last_used}")
+        typer.echo(
+            f"{k.key_id:<14} {k.prefix:<14} {k.name or '-':<16} "
+            f"{','.join(k.scopes):<12} {status:<9} {last_used}"
+        )
 
 
 @auth_app.command("revoke-key")

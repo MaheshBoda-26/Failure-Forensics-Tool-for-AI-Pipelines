@@ -56,7 +56,11 @@ packages = ["src/forensics"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-q --strict-markers"
-markers = ["live: makes real NVIDIA NIM API calls; deselect with -m 'not live'"]
+markers = [
+    "live: makes real NVIDIA NIM API calls; deselect with -m 'not live'",
+    "postgres: requires a live PostgreSQL server (FORENSICS_TEST_POSTGRES_URL)",
+    "deselect with -m 'not postgres'",
+]
 
 [tool.ruff]
 line-length = 100

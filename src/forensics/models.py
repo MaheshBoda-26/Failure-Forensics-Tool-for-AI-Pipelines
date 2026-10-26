@@ -411,25 +411,52 @@ class Tenant(BaseModel):
     active: bool = True
 
 
+#: Scopes a key may hold. `*` is every scope, and is what every key minted
+#: before scopes existed carries — the migration widens, it does not narrow.
+API_KEY_SCOPES: frozenset[str] = frozenset({"read", "write", "*"})
+
+
 class APIKey(BaseModel):
     """A tenant's API key. Only the bcrypt hash is stored, never the key.
 
     `prefix` exists so a key can be identified (in a log, in `list-keys`) without
     holding the plaintext or attempting a bcrypt comparison against every row.
+
+    `scopes` bounds what the key can do: `read` allows the GET routes, `write`
+    allows the mutating routes (and implies `read`, because a key that can start
+    a run but cannot read its result is a trap), and `*` allows everything.
     """
 
     key_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     tenant_id: str
     key_hash: str = Field(..., description="bcrypt hash of the plaintext key")
     prefix: str = Field(..., description="Leading characters, for identification only")
+    scopes: list[str] = Field(
+        default_factory=lambda: ["*"],
+        description="read / write / *; defaults to full access for legacy keys",
+    )
     name: str | None = None
     created_at: datetime = Field(default_factory=_utc_now)
     revoked_at: datetime | None = None
     last_used_at: datetime | None = None
     expires_at: datetime | None = Field(default=None, description="Optional expiration timestamp")
 
+    def allows(self, scope: str) -> bool:
+        """Whether this key may perform `scope` (`read` or `write`).
+
+        `*` allows everything (including scopes added later); `write` implies
+        `read`; nothing implies `write`. A non-wildcard key allows nothing it
+        does not list, which fails closed for an unrecognised scope.
+        """
+        if "*" in self.scopes:
+            return True
+        if scope == "read":
+            return "read" in self.scopes or "write" in self.scopes
+        return scope in self.scopes
+
 
 __all__ = [
+    "API_KEY_SCOPES",
     "DEFAULT_TENANT_ID",
     "APIKey",
     "AnalyticsSnapshot",

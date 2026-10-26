@@ -25,6 +25,7 @@ from forensics.auth import AuthManager
 from forensics.cli import app as cli_app
 from forensics.config import reset_settings
 from forensics.models import (
+    API_KEY_SCOPES,
     DEFAULT_TENANT_ID,
     Diagnosis,
     FailureCategory,
@@ -685,3 +686,159 @@ def test_flag_and_eval_case_inherit_the_writing_tenant(
     assert len(cases) == 1
     assert cases[0].tenant_id == tenant_id
     assert storage.list_eval_cases(tenant_id="other") == []
+
+
+# ─── Scopes ─────────────────────────────────────────────────────────────────
+
+
+def test_scope_semantics_on_the_model() -> None:
+    """`*` is everything, `write` implies `read`, and nothing implies `write`."""
+    from forensics.models import APIKey
+
+    full = APIKey(tenant_id="t", key_hash="h", prefix="ffk_x", scopes=["*"])
+    reader = APIKey(tenant_id="t", key_hash="h", prefix="ffk_x", scopes=["read"])
+    writer = APIKey(tenant_id="t", key_hash="h", prefix="ffk_x", scopes=["write"])
+
+    assert full.allows("read") and full.allows("write")
+    assert reader.allows("read") and not reader.allows("write")
+    assert writer.allows("write") and writer.allows("read")
+    # A wildcard covers scopes it has never heard of; an explicit list does not.
+    assert full.allows("admin")
+    assert not reader.allows("admin")
+
+
+def test_read_only_key_cannot_mutate(
+    auth_on: None, state: tuple[Storage, AuthManager], client: TestClient
+) -> None:
+    storage, manager = state
+    tenant = manager.create_tenant("acme")
+    _, key = manager.create_api_key(tenant.tenant_id, name="dashboard", scopes=["read"])
+    storage.save_trace(_trace("t_acme", tenant.tenant_id))
+
+    assert client.get("/traces", headers=_bearer(key)).status_code == 200
+    assert client.get("/analytics", headers=_bearer(key)).status_code == 200
+
+    response = client.post("/traces/t_acme/flag", json={}, headers=_bearer(key))
+
+    assert response.status_code == 403
+    assert "read" in response.json()["detail"]
+
+
+def test_write_scope_can_mutate_and_read(
+    auth_on: None, state: tuple[Storage, AuthManager], client: TestClient
+) -> None:
+    """`write` implies `read`: a key that can start work must see its result."""
+    storage, manager = state
+    tenant = manager.create_tenant("acme")
+    _, key = manager.create_api_key(tenant.tenant_id, name="ci", scopes=["write"])
+    storage.save_trace(_trace("t_acme", tenant.tenant_id))
+
+    assert client.get("/traces", headers=_bearer(key)).status_code == 200
+    flagged = client.post("/traces/t_acme/flag", json={}, headers=_bearer(key))
+    assert flagged.status_code == 200
+    assert flagged.json()["trace_id"] == "t_acme"
+
+
+def test_default_key_still_has_full_access(
+    auth_on: None, state: tuple[Storage, AuthManager], client: TestClient
+) -> None:
+    """Omitting --scope must not quietly produce a crippled key."""
+    storage, manager = state
+    tenant = manager.create_tenant("acme")
+    api_key, key = manager.create_api_key(tenant.tenant_id, name="legacy")
+    storage.save_trace(_trace("t_acme", tenant.tenant_id))
+
+    assert api_key.scopes == ["*"]
+    assert client.get("/traces", headers=_bearer(key)).status_code == 200
+    assert client.post("/traces/t_acme/flag", json={}, headers=_bearer(key)).status_code == 200
+
+
+def test_unknown_scope_is_rejected_at_mint_time(
+    auth_on: None, state: tuple[Storage, AuthManager]
+) -> None:
+    _, manager = state
+    tenant = manager.create_tenant("acme")
+
+    with pytest.raises(ValueError, match="Unknown scope"):
+        manager.create_api_key(tenant.tenant_id, scopes=["read", "sudo"])
+
+    assert frozenset({"read", "write", "*"}) == API_KEY_SCOPES
+
+
+def test_scopes_survive_a_round_trip_through_sqlite(
+    auth_on: None, state: tuple[Storage, AuthManager]
+) -> None:
+    _, manager = state
+    tenant = manager.create_tenant("acme")
+    api_key, _ = manager.create_api_key(tenant.tenant_id, scopes=["read"])
+
+    stored = manager.get_key(api_key.key_id)
+    assert stored is not None
+    assert stored.scopes == ["read"]
+    assert [k.scopes for k in manager.list_keys(tenant.tenant_id)] == [["read"]]
+
+
+def test_migration_widens_an_existing_keys_table_without_breaking_it(
+    tmp_path: Path, auth_on: None
+) -> None:
+    """A key minted before scopes existed must keep full access.
+
+    The `api_keys` table is created by `CREATE TABLE IF NOT EXISTS`, so a
+    deployed database never gains a new column from that statement; only the
+    `ALTER TABLE` in `migrate()` does, and it has to default to `'*'`.
+    """
+    from forensics.migrations import migrate
+
+    legacy = sqlite3.connect(tmp_path / "legacy.sqlite")
+    legacy.execute(
+        """
+        CREATE TABLE api_keys (
+            key_id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            key_hash TEXT NOT NULL,
+            prefix TEXT NOT NULL,
+            name TEXT,
+            created_at TEXT NOT NULL,
+            revoked_at TEXT,
+            last_used_at TEXT,
+            expires_at TEXT
+        )
+        """
+    )
+    legacy.execute(
+        "INSERT INTO api_keys (key_id, tenant_id, key_hash, prefix, created_at) "
+        "VALUES ('k1', 'default', 'h', 'ffk_abc', '2024-01-01T00:00:00+00:00')"
+    )
+    legacy.commit()
+
+    applied = migrate(legacy)
+    legacy.commit()
+
+    assert "api_keys.scopes" in applied
+    row = legacy.execute("SELECT scopes FROM api_keys WHERE key_id = 'k1'").fetchone()
+    assert row == ("*",)
+    legacy.close()
+
+
+def test_create_key_cli_accepts_scopes(auth_on: None, state: tuple[Storage, AuthManager]) -> None:
+    storage, manager = state
+    # The CLI builds its own AuthManager from the process-wide storage singleton,
+    # so point that at the same database the test is inspecting.
+    reset_storage()
+    forensics.storage._storage_instance = storage
+
+    tenant = manager.create_tenant("acme")
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_app, ["auth", "create-key", "--tenant", tenant.tenant_id, "--scope", "read"]
+    )
+
+    assert result.exit_code == 0, result.output
+    stored = manager.list_keys(tenant.tenant_id)
+    assert [k.scopes for k in stored] == [["read"]]
+
+    invalid = runner.invoke(
+        cli_app, ["auth", "create-key", "--tenant", tenant.tenant_id, "--scope", "sudo"]
+    )
+    assert invalid.exit_code == 1

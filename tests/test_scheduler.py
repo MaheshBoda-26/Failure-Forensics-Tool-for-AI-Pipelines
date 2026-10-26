@@ -26,7 +26,7 @@ from forensics import api
 from forensics import scheduler as scheduler_module
 from forensics.cli import app as cli_app
 from forensics.config import reset_settings
-from forensics.models import EvalCase, EvalResult, EvalRun, FailureCategory
+from forensics.models import EvalCase, EvalResult, EvalRun, FailureCategory, Tenant
 from forensics.scheduler import JOB_ID, EvalScheduler, get_scheduler, reset_scheduler
 from forensics.storage import Storage, get_storage, reset_storage
 
@@ -669,3 +669,77 @@ def test_schedule_survives_a_new_scheduler_instance(
         assert reloaded.next_run_time == first_next_run
     finally:
         second.stop()
+
+
+def test_scheduled_eval_runs_once_per_tenant_and_compares_per_tenant(
+    factory: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each tenant gets its own run, against its own history.
+
+    The scheduled eval used to put every tenant's cases into one run stamped
+    `default`, so a per-tenant accuracy history did not exist and one tenant's
+    regression moved another tenant's alerts.
+    """
+    scheduler = factory(CRON)
+    storage = scheduler.storage
+    for tenant_id, name in (("acme", "Acme"), ("globex", "Globex"), ("idle", "Idle")):
+        storage.create_tenant(Tenant(tenant_id=tenant_id, name=name))
+
+    # `idle` deliberately has no cases: it must not be evaluated at all.
+    for tenant_id in ("acme", "globex"):
+        trace_id = f"trace_{tenant_id}"
+        _trace_row(storage, trace_id)
+        storage.create_eval_case(
+            EvalCase(
+                case_id=f"case_{tenant_id}",
+                trace_id=trace_id,
+                failing_step="extraction",
+                bad_output={},
+                corrected_output={},
+                category=FailureCategory.EXTRACTION_HALLUCINATION,
+                pipeline_version="0.1.0",
+                prompt_version="test",
+                tenant_id=tenant_id,
+            )
+        )
+
+    # acme has a baseline that it will regress against; globex has none.
+    storage.create_eval_run(
+        EvalRun(
+            run_id="acme_prev",
+            pipeline_version="0.1.0",
+            prompt_versions={},
+            total_cases=10,
+            passed_count=9,
+            failed_count=1,
+            tenant_id="acme",
+        )
+    )
+
+    evaluated: list[str | None] = []
+
+    async def fake_run_eval(tenant_id: str | None = None) -> EvalRun:
+        evaluated.append(tenant_id)
+        run = EvalRun(
+            run_id=f"run_{tenant_id}",
+            pipeline_version="0.1.0",
+            prompt_versions={},
+            total_cases=10,
+            passed_count=7 if tenant_id == "acme" else 5,
+            failed_count=3 if tenant_id == "acme" else 5,
+            tenant_id=tenant_id or "default",
+            completed_at=datetime.now(UTC),
+        )
+        storage.create_eval_run(run)
+        return run
+
+    monkeypatch.setattr(scheduler_module, "run_eval", fake_run_eval)
+
+    alerts = asyncio.run(scheduler.run_scheduled_eval())
+
+    assert evaluated == ["acme", "globex"]
+    assert alerts is not None
+    assert [alert["alert_type"] for alert in alerts] == ["eval_regression"]
+    assert alerts[0]["tenant_id"] == "acme"
+    assert alerts[0]["previous_accuracy"] == pytest.approx(0.9)
+    assert alerts[0]["current_accuracy"] == pytest.approx(0.7)

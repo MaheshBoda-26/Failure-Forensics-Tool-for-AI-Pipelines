@@ -33,7 +33,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from forensics.config import get_settings, validate_webhook_url
 from forensics.eval_simple import run_eval
-from forensics.models import DEFAULT_TENANT_ID, EvalRun
+from forensics.models import DEFAULT_TENANT_ID, EvalRun, Tenant
 from forensics.storage import get_storage
 from forensics.storage_base import StorageBase
 
@@ -172,29 +172,60 @@ class EvalScheduler:
             logger.exception("Scheduled eval failed")
 
     async def run_scheduled_eval(self) -> list[dict[str, Any]] | None:
-        """Run the eval, compare against the previous run, and alert.
+        """Run one eval per active tenant, compare, and alert.
 
-        Returns the alerts that were raised (empty when nothing was notable), so
-        that both the caller and the tests can see what was decided. Returns None
-        when there was nothing to evaluate at all.
+        Scheduled runs used to be tenant-agnostic: every tenant's eval cases
+        went into a single `EvalRun` stamped `default`, so a tenant's accuracy
+        history was invisible and one tenant's cases moved another's alerts.
+        Each tenant now gets its own run, compared against that tenant's own
+        previous run.
+
+        Returns every alert raised across tenants (empty when nothing was
+        notable), so that both the caller and the tests can see what was
+        decided. Returns None when no tenant had anything to evaluate.
         """
-        previous = self._latest_completed_run()
-        previous_accuracy = _accuracy(previous) if previous is not None else None
+        tenants = [tenant for tenant in self.storage.list_tenants() if tenant.active]
+        if not tenants:
+            # A database that has never had auth enabled has no tenant rows;
+            # its data all belongs to `default`, which is what a scheduled run
+            # must evaluate.
+            tenants = [Tenant(tenant_id=DEFAULT_TENANT_ID, name="default")]
 
-        run = await run_eval()
-        if run is None:
-            logger.info("Scheduled eval skipped: no eval cases")
+        all_alerts: list[dict[str, Any]] = []
+        evaluated = 0
+
+        for tenant in tenants:
+            if not self.storage.list_eval_cases(limit=1, tenant_id=tenant.tenant_id):
+                continue
+
+            previous = self._latest_completed_run(tenant.tenant_id)
+            previous_accuracy = _accuracy(previous) if previous is not None else None
+
+            run = await run_eval(tenant_id=tenant.tenant_id)
+            if run is None:
+                # The cases disappeared between the check and the run, or the
+                # run failed to produce anything; the next tick can retry.
+                continue
+
+            evaluated += 1
+            alerts = self.evaluate_run(
+                previous=previous,
+                previous_accuracy=previous_accuracy,
+                run=run,
+                current_accuracy=_accuracy(run),
+            )
+            # `tenant_id` is what makes a multi-tenant webhook actionable: the
+            # receiver has to know whose accuracy moved.
+            for alert in alerts:
+                alert["tenant_id"] = tenant.tenant_id
+            await self._deliver_alerts(alerts)
+            all_alerts.extend(alerts)
+
+        if evaluated == 0:
+            logger.info("Scheduled eval skipped: no eval cases for any active tenant")
             return None
 
-        current_accuracy = _accuracy(run)
-        alerts = self.evaluate_run(
-            previous=previous,
-            previous_accuracy=previous_accuracy,
-            run=run,
-            current_accuracy=current_accuracy,
-        )
-        await self._deliver_alerts(alerts)
-        return alerts
+        return all_alerts
 
     async def _deliver_alerts(self, alerts: list[dict[str, Any]]) -> None:
         """Send each alert independently.
@@ -210,16 +241,15 @@ class EvalScheduler:
             except Exception:
                 logger.exception("Alert %s could not be delivered", alert["alert_type"])
 
-    def _latest_completed_run(self) -> EvalRun | None:
-        """Most recent eval run that actually evaluated something.
+    def _latest_completed_run(self, tenant_id: str = DEFAULT_TENANT_ID) -> EvalRun | None:
+        """Most recent eval run for `tenant_id` that actually evaluated something.
 
-        Scoped to the default tenant: scheduled runs are stamped with it, while
-        an ad-hoc run triggered by one tenant is stamped with that tenant's id.
-        Without the filter, a single tenant's small manual run became the
-        baseline for the instance-wide scheduled eval and produced bogus
-        regression alerts.
+        Scoped to one tenant, because the comparison is only meaningful against
+        that tenant's own history: a single tenant's small manual run must not
+        become the baseline for another tenant's scheduled eval, which is what
+        produced bogus regression alerts before the runs were split.
         """
-        for run in self.storage.list_eval_runs(limit=10, tenant_id=DEFAULT_TENANT_ID):
+        for run in self.storage.list_eval_runs(limit=10, tenant_id=tenant_id):
             if run.total_cases > 0:
                 return run
         return None

@@ -461,6 +461,8 @@ def finalize_trace(
     trace: Trace,
     traces_dir: Path | None = None,
     db_path: Path | None = None,
+    *,
+    write_sqlite_index: bool = True,
 ) -> None:
     """Finish a trace: derive status, aggregate totals, persist to both stores.
 
@@ -523,11 +525,16 @@ def finalize_trace(
     # `db_path or _default_db_path()`: the SQLite index was previously skipped
     # whenever a caller omitted `db_path`, so the JSON file and the index
     # disagreed and analytics silently missed those traces.
-    conn = init_db(db_path or _default_db_path())
-    try:
-        write_trace_to_db(trace, conn)
-    finally:
-        conn.close()
+    #
+    # A non-SQLite backend passes `write_sqlite_index=False` and writes its own
+    # index; without it, a PostgreSQL deployment also maintained a SQLite file
+    # in the working tree that nothing ever read.
+    if write_sqlite_index:
+        conn = init_db(db_path or _default_db_path())
+        try:
+            write_trace_to_db(trace, conn)
+        finally:
+            conn.close()
 
     # Mirror to OTel if configured
     try:

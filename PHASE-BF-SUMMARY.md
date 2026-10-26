@@ -128,10 +128,17 @@ Seeded-failure root-cause step accuracy: 5/5, category accuracy: 5/5
 
 ### Benchmark Analyzer (with custom checks)
 ```
-$ python -m forensics.cli benchmark-analyzer
-Step-Localization Accuracy: 71.4%
-Category Accuracy:           71.4%
-Total Faults Tested:         7
+$ DRY_RUN=true python -m forensics.cli benchmark-analyzer
+Baselines scored: 25 (skipped 25 ineligible of 50)
+Step-Localization Accuracy: 100.0%
+Category Accuracy:           100.0%
+Total Faults Tested:         150
+Unscoreable (skipped):       25 (baseline lacked the fault's precondition)
+
+# Every eligible clean trace is scored and the per-fault results aggregated, so
+# the number no longer depends on which baseline the store returned first.
+# `context_loss` is unscoreable on the offline fixture (its canned extraction
+# returns no entities), so it is reported as n/a rather than scored as a miss.
 ```
 
 ---
