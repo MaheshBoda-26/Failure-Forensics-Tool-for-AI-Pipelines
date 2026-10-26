@@ -83,10 +83,10 @@ export const Header: React.FC<HeaderProps> = ({
         {/* Navigation Tabs */}
         <nav style={{ display: "flex", gap: "24px", fontFamily: "var(--font-mono)", fontSize: "12px" }}>
           {[
-            { id: "home", label: "OVERVIEW" },
-            { id: "explorer", label: "TRACE EXPLORER" },
-            { id: "dag", label: "DAG GRAPH & DIFF" },
-            { id: "analytics", label: "EVAL & ANALYTICS" },
+            { id: "home", label: "Overview" },
+            { id: "explorer", label: "Trace explorer" },
+            { id: "dag", label: "DAG graph and diff" },
+            { id: "analytics", label: "Eval and analytics" },
           ].map((tab) => {
             const isActive = activeTab === tab.id;
             return (
@@ -133,7 +133,7 @@ export const Header: React.FC<HeaderProps> = ({
           ) : (
             <AlertCircle size={12} strokeWidth={2.5} />
           )}
-          <span>{backendOnline ? "API CONNECTED" : "OFFLINE / LOCAL"}</span>
+          <span>{backendOnline ? "API connected" : "Offline / local"}</span>
         </div>
 
         {/* API Key Input */}
@@ -216,7 +216,7 @@ export const Header: React.FC<HeaderProps> = ({
           }}
         >
           <Play size={12} fill="currentColor" />
-          <span>{isRunningDemo ? "RUNNING PIPELINE..." : "RUN DEMO"}</span>
+          <span>{isRunningDemo ? "Running pipeline..." : "Run demo"}</span>
         </button>
       </div>
     </header>

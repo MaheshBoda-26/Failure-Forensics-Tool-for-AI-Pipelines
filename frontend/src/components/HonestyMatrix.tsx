@@ -45,19 +45,19 @@ export const HonestyMatrix: React.FC = () => {
         }}
       >
         <span style={{ fontFamily: "var(--font-mono)", fontSize: "12px", fontWeight: 700, color: "var(--color-ink)" }}>
-          TECHNICAL BOUNDARY & HONESTY MATRIX
+          Technical boundary and honesty matrix
         </span>
         <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)" }}>
-          SPECIFICATION INTEGRITY
+          Specification integrity
         </span>
       </div>
 
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", textAlign: "left" }}>
         <thead>
           <tr style={{ borderBottom: "1px solid var(--color-rule)", color: "var(--color-ink-3)", fontFamily: "var(--font-mono)", fontSize: "11px" }}>
-            <th style={{ padding: "12px 24px", width: "220px" }}>CAPABILITY</th>
-            <th style={{ padding: "12px 24px" }}>DETERMINISTIC GUARANTEE</th>
-            <th style={{ padding: "12px 24px" }}>V0 BOUNDARY / LIMITATION</th>
+            <th style={{ padding: "12px 24px", width: "220px" }}>Capability</th>
+            <th style={{ padding: "12px 24px" }}>Deterministic guarantee</th>
+            <th style={{ padding: "12px 24px" }}>V0 boundary / limitation</th>
           </tr>
         </thead>
         <tbody>

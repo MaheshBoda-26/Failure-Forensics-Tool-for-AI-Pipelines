@@ -216,9 +216,8 @@ export const App: React.FC = () => {
                     maxWidth: "680px",
                   }}
                 >
-                  When a multi-step LLM pipeline produces corrupted outputs, debugging by inspection takes
-                  hours. Failure Forensics tracks the deterministic evidence chain from intake to summarization —
-                  pinpointing the root-cause failure in seconds.
+                  Debugging a multi-step LLM pipeline by inspection takes hours. Failure Forensics tracks
+                  the evidence chain from intake to summarization and pinpoints the root-cause failure in seconds.
                 </p>
               </div>
 
@@ -369,29 +368,29 @@ export const App: React.FC = () => {
             {/* Stratigraphy Pipeline Explainer */}
             <section style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
               <h2 style={{ fontFamily: "var(--font-display)", fontSize: "26px", fontWeight: 800, margin: 0 }}>
-                Four Pipeline Strata. Exact Trace Telemetry.
+                Four pipeline strata. Exact trace telemetry.
               </h2>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "20px" }}>
                 {[
                   {
                     num: "01",
                     title: "Intake Normalization",
-                    desc: "Deterministic sanitization, byte validation, and structural chunking without non-deterministic LLM calls.",
+                    desc: "Deterministic sanitization, byte validation, and structural chunking without LLM calls.",
                   },
                   {
                     num: "02",
                     title: "Entity Extraction",
-                    desc: "Extraction of domain fields with exact string-token grounded verification checks against source text.",
+                    desc: "Extraction of domain fields with grounded verification against source text.",
                   },
                   {
                     num: "03",
                     title: "Enum Classification",
-                    desc: "DocumentType strict enum mapping with schema constraint validation and confidence bounds.",
+                    desc: "DocumentType strict enum mapping with schema validation and confidence bounds.",
                   },
                   {
                     num: "04",
                     title: "Context Summarization",
-                    desc: "Synthesis with downstream invariant checks ensuring upstream semantic corruptions do not propagate.",
+                    desc: "Synthesis with downstream invariant checks so upstream corruptions do not propagate.",
                   },
                 ].map((col) => (
                   <div

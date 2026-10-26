@@ -68,10 +68,10 @@ export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
           <GitCompare size={16} color="var(--color-ink)" />
           <span style={{ fontFamily: "var(--font-mono)", fontSize: "13px", fontWeight: 700, color: "var(--color-ink)" }}>
-            STRUCTURED TOKEN DIFF · {trace.document_id}
+            Structured token diff · {trace.document_id}
           </span>
           <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)" }}>
-            COMPARING GOLDEN GROUND TRUTH VS ACTUAL LLM RESPONSE
+            Comparing golden ground truth vs actual LLM response
           </span>
         </div>
 
@@ -109,9 +109,9 @@ export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }
               textTransform: "uppercase",
             }}
           >
-            <span>EXPECTED GROUND TRUTH (GOLDEN CASE)</span>
+            <span>Expected ground truth (golden case)</span>
             <span style={{ backgroundColor: "var(--color-copper-tint)", padding: "2px 6px", borderRadius: "2px" }}>
-              PASS CRITERIA
+              Pass criteria
             </span>
           </div>
 
@@ -159,9 +159,9 @@ export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }
               textTransform: "uppercase",
             }}
           >
-            <span>ACTUAL EXECUTION (TRACE {trace.trace_id})</span>
+            <span>Actual execution (trace {trace.trace_id})</span>
             <span style={{ backgroundColor: "var(--color-cinnabar-tint)", padding: "2px 6px", borderRadius: "2px" }}>
-              {hasRootCause ? "ROOT CAUSE" : "NO FAILURE"}
+              {hasRootCause ? "Root cause" : "No failure"}
             </span>
           </div>
 

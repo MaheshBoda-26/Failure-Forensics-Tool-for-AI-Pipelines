@@ -201,7 +201,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                   backgroundColor: "var(--color-cinnabar)",
                 }}
               />
-              ROOT CAUSE: {diagnosis.category.toUpperCase()} (STAGE {diagnosis.root_cause_step.toUpperCase()})
+              Root cause: {diagnosis.category} (Stage {diagnosis.root_cause_step})
             </span>
           )}
         </div>
@@ -365,7 +365,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                     color: "var(--color-ink)",
                   }}
                 >
-                  ROOT CAUSE FORENSIC DIAGNOSIS
+                  Root cause forensic diagnosis
                 </div>
                 <div
                   style={{
@@ -374,7 +374,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                     color: "var(--color-ink-3)",
                   }}
                 >
-                  ANALYZER: {diagnosis.analyzer_version || "BACKWARD_TRACE_v2"}
+                  Analyzer: {diagnosis.analyzer_version || "BackwardTrace_v2"}
                 </div>
               </div>
 
@@ -460,7 +460,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                       textTransform: "uppercase",
                     }}
                   >
-                    {hasRootCause ? "FAILED CHECKS EVIDENCE CHAIN" : "EVIDENCE CHAIN"} (
+                    {hasRootCause ? "Failed checks evidence chain" : "Evidence chain"} (
                     {diagnosis.evidence_chain?.length || 0})
                   </div>
 
@@ -516,7 +516,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                           textTransform: "uppercase",
                         }}
                       >
-                        PER-STEP SCORES
+                        Per-step scores
                       </div>
                       {diagnosis.step_scores.map((stepScore: StepScore, idx: number) => (
                         <div
@@ -569,7 +569,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                       padding: "7px 16px",
                     }}
                   >
-                    {isConfirming ? "Confirming..." : "Confirm Diagnosis"}
+                    {isConfirming ? "Confirming..." : "Confirm diagnosis"}
                   </button>
 
                   <div style={{ position: "relative" }}>
@@ -585,7 +585,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                         padding: "7px 16px",
                       }}
                     >
-                      Override Classification ▾
+                      Override classification ▾
                     </button>
 
                     {showOverrideMenu && (
@@ -605,7 +605,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                         }}
                       >
                         <div style={{ fontSize: "11px", fontFamily: "var(--font-mono)", color: "var(--color-ink-3)", marginBottom: "6px" }}>
-                          SELECT NEW CATEGORY:
+                          Select new category:
                         </div>
                         {(
                           [
@@ -676,7 +676,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                 </span>
               </div>
               <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)" }}>
-                MODEL: {currentSpan?.model_id || "unknown"}
+                Model: {currentSpan?.model_id || "unknown"}
               </span>
             </div>
 
@@ -699,7 +699,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                     textTransform: "uppercase",
                   }}
                 >
-                  Input Payload & Prompt
+                  Input payload and prompt
                 </div>
                 <pre
                   style={{
@@ -735,7 +735,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                     textTransform: "uppercase",
                   }}
                 >
-                  Raw Model Completion / Output
+                  Raw model completion / output
                 </div>
                 <pre
                   style={{

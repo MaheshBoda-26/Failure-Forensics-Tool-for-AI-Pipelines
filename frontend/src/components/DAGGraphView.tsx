@@ -70,13 +70,13 @@ export const DAGGraphView: React.FC<DAGGraphViewProps> = ({ trace, diagnosis }) 
   const getStepDescription = (stepName: string): string => {
     switch (stepName) {
       case "intake":
-        return "Document normalization · UTF-8 validation";
+        return "Document normalization and UTF-8 validation";
       case "extraction":
         return "Grounded entity extraction";
       case "classification":
         return "DocumentType strict enum mapping";
       case "summarization":
-        return "Context synthesis & downstream consumption";
+        return "Context synthesis and downstream consumption";
       default:
         return "Processing step";
     }
@@ -97,7 +97,7 @@ export const DAGGraphView: React.FC<DAGGraphViewProps> = ({ trace, diagnosis }) 
         overflow: "hidden",
       }}
     >
-      {/* DAG Sub-Header */}
+      {/* DAG sub-header */}
       <div
         style={{
           display: "flex",
@@ -110,10 +110,10 @@ export const DAGGraphView: React.FC<DAGGraphViewProps> = ({ trace, diagnosis }) 
       >
         <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
           <span style={{ fontFamily: "var(--font-mono)", fontSize: "13px", fontWeight: 700, color: "var(--color-ink)" }}>
-            DAG Execution Graph · {trace.trace_id}
+            DAG execution graph · {trace.trace_id}
           </span>
           <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)" }}>
-            Deterministic Dependency Topology
+            Deterministic dependency topology
           </span>
         </div>
 
@@ -340,10 +340,10 @@ export const DAGGraphView: React.FC<DAGGraphViewProps> = ({ trace, diagnosis }) 
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
           <span style={{ fontFamily: "var(--font-mono)", fontSize: "12px", fontWeight: 700 }}>
-            NODE INSPECTION: {selectedNode.toUpperCase()}
+            Node inspection: {selectedNode.toUpperCase()}
           </span>
           <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)" }}>
-            CLICK A NODE ABOVE TO VIEW ITS METADATA
+            Click a node above to view its metadata
           </span>
         </div>
         <p style={{ margin: 0, fontSize: "13px", color: "var(--color-ink-2)" }}>

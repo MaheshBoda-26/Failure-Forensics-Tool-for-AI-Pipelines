@@ -149,10 +149,10 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
               margin: 0,
             }}
           >
-            Reliability & Failure Analytics
+            Reliability and failure analytics
           </h2>
           <p style={{ margin: "4px 0 0 0", color: "var(--color-ink-2)", fontSize: "14px" }}>
-            Aggregate fault isolation, stage vulnerability distribution, and golden regression trends.
+            Aggregate fault isolation, stage vulnerability distribution, and regression trends.
           </p>
         </div>
 
@@ -180,7 +180,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             }}
           >
             <Play size={12} fill="currentColor" />
-            <span>{isRunningEval ? "RUNNING EVAL SUITE..." : "RUN EVAL SUITE"}</span>
+            <span>{isRunningEval ? "Running eval suite..." : "Run eval suite"}</span>
           </button>
         </div>
       </div>
@@ -204,7 +204,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
               textTransform: "uppercase",
             }}
           >
-            PIPELINE PASS RATE
+            Pipeline pass rate
           </div>
           <div
             style={{
@@ -239,7 +239,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
               textTransform: "uppercase",
             }}
           >
-            TOP ROOT CAUSE
+            Top root cause
           </div>
           <div
             style={{
@@ -277,7 +277,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
               textTransform: "uppercase",
             }}
           >
-            MEAN TIME TO ROOT CAUSE
+            Mean time to root cause
           </div>
           <div
             style={{
@@ -314,7 +314,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
               textTransform: "uppercase",
             }}
           >
-            GOLDEN REGRESSIONS
+            Golden regressions
           </div>
           <div
             style={{
@@ -345,10 +345,10 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
           <div>
             <div style={{ fontFamily: "var(--font-display)", fontSize: "18px", fontWeight: 700, color: "var(--color-ink)" }}>
-              Pipeline Stage Vulnerability Map
+              Pipeline stage vulnerability map
             </div>
             <div style={{ fontSize: "13px", color: "var(--color-ink-2)", marginTop: "2px" }}>
-              Originating fault step vs downstream manifestation point
+              Originating fault step versus downstream manifestation point
             </div>
           </div>
           <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)" }}>
@@ -427,19 +427,19 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           }}
         >
           <div style={{ fontFamily: "var(--font-mono)", fontSize: "12px", fontWeight: 700, color: "var(--color-ink)" }}>
-            GOLDEN EVAL BENCHMARK REGRESSION TABLE
+            Golden eval benchmark regression table
           </div>
           <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-cinnabar)", fontWeight: 700 }}>
-            {evalResults.filter(r => !r.fixed).length} REGRESSIONS FLAGGED
+            {evalResults.filter(r => !r.fixed).length} Regressions flagged
           </span>
         </div>
 
         <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "var(--font-mono)", fontSize: "12px", textAlign: "left" }}>
           <thead>
             <tr style={{ borderBottom: "1px solid var(--color-rule)", color: "var(--color-ink-3)", fontSize: "11px" }}>
-              <th style={{ padding: "12px 20px" }}>BENCHMARK SUITE</th>
-              <th style={{ padding: "12px 20px" }}>FAILURE MODE</th>
-              <th style={{ padding: "12px 20px" }}>ISOLATED STEP</th>
+              <th style={{ padding: "12px 20px" }}>Benchmark suite</th>
+              <th style={{ padding: "12px 20px" }}>Failure mode</th>
+              <th style={{ padding: "12px 20px" }}>Isolated step</th>
               <th style={{ padding: "12px 20px" }}>BASELINE</th>
               <th style={{ padding: "12px 20px" }}>CURRENT</th>
               <th style={{ padding: "12px 20px" }}>DELTA</th>
@@ -491,7 +491,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
           <div>
             <div style={{ fontFamily: "var(--font-display)", fontSize: "18px", fontWeight: 700, color: "var(--color-ink)" }}>
-              COST & TOKEN ANALYTICS
+              Cost and token analytics
             </div>
             <div style={{ fontSize: "13px", color: "var(--color-ink-2)", marginTop: "2px" }}>
               Spend breakdown by model and pipeline stage
@@ -506,7 +506,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           {/* Cost by Model */}
           <div style={{ border: "1px solid var(--color-rule)", borderRadius: "var(--radius-1)", backgroundColor: "var(--color-chalk)", padding: "20px" }}>
             <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)", textTransform: "uppercase", marginBottom: "12px" }}>
-              COST BY MODEL
+              Cost by model
             </div>
             {Object.entries(costByModel).length > 0 ? (
               Object.entries(costByModel)
@@ -527,7 +527,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           {/* Tokens by Model */}
           <div style={{ border: "1px solid var(--color-rule)", borderRadius: "var(--radius-1)", backgroundColor: "var(--color-chalk)", padding: "20px" }}>
             <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)", textTransform: "uppercase", marginBottom: "12px" }}>
-              TOKENS BY MODEL
+              Tokens by model
             </div>
             {Object.entries(tokensByModel).length > 0 ? (
               Object.entries(tokensByModel)
@@ -548,7 +548,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           {/* Cost by Step */}
           <div style={{ border: "1px solid var(--color-rule)", borderRadius: "var(--radius-1)", backgroundColor: "var(--color-chalk)", padding: "20px" }}>
             <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)", textTransform: "uppercase", marginBottom: "12px" }}>
-              COST BY PIPELINE STAGE
+              Cost by pipeline stage
             </div>
             {Object.entries(costByStep).length > 0 ? (
               Object.entries(costByStep)
@@ -580,10 +580,10 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
           <div>
             <div style={{ fontFamily: "var(--font-display)", fontSize: "18px", fontWeight: 700, color: "var(--color-ink)" }}>
-              MODEL PERFORMANCE COMPARISON
+              Model performance comparison
             </div>
             <div style={{ fontSize: "13px", color: "var(--color-ink-2)", marginTop: "2px" }}>
-              Share of each model's spans that were not the blamed step, plus latency and cost
+              Share of each model's spans not blamed, plus latency and cost
             </div>
           </div>
           <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)" }}>
@@ -645,10 +645,10 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
           <div>
             <div style={{ fontFamily: "var(--font-display)", fontSize: "18px", fontWeight: 700, color: "var(--color-ink)" }}>
-              FAILURE CORRELATION HEATMAP
+              Failure correlation heatmap
             </div>
             <div style={{ fontSize: "13px", color: "var(--color-ink-2)", marginTop: "2px" }}>
-              Pipeline step × failure category co-occurrence
+              Pipeline step and failure category co-occurrence
             </div>
           </div>
         </div>
@@ -705,7 +705,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
             <div>
               <div style={{ fontFamily: "var(--font-display)", fontSize: "18px", fontWeight: 700, color: "var(--color-ink)" }}>
-                COST TREND OVER TIME
+                Cost trend over time
               </div>
               <div style={{ fontSize: "13px", color: "var(--color-ink-2)", marginTop: "2px" }}>
                 Daily spend trend
@@ -760,7 +760,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
           <div>
             <div style={{ fontFamily: "var(--font-display)", fontSize: "18px", fontWeight: 700, color: "var(--color-ink)" }}>
-              LATENCY ANALYSIS
+              Latency analysis
             </div>
             <div style={{ fontSize: "13px", color: "var(--color-ink-2)", marginTop: "2px" }}>
               Per-model and per-stage latency breakdown
@@ -772,7 +772,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           {/* Latency by Model */}
           <div style={{ border: "1px solid var(--color-rule)", borderRadius: "var(--radius-1)", backgroundColor: "var(--color-chalk)", padding: "20px" }}>
             <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)", textTransform: "uppercase", marginBottom: "12px" }}>
-              LATENCY BY MODEL (AVG MS)
+              Latency by model (avg ms)
             </div>
             {Object.entries(latencyByModel || {}).length > 0 ? (
               Object.entries(latencyByModel)
@@ -814,7 +814,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           {/* Latency by Step */}
           <div style={{ border: "1px solid var(--color-rule)", borderRadius: "var(--radius-1)", backgroundColor: "var(--color-chalk)", padding: "20px" }}>
             <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)", textTransform: "uppercase", marginBottom: "12px" }}>
-              LATENCY BY PIPELINE STAGE (AVG MS)
+              Latency by pipeline stage (avg ms)
             </div>
             {Object.entries(latencyByStep || {}).length > 0 ? (
               Object.entries(latencyByStep)
