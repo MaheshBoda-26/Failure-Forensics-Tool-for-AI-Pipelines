@@ -125,7 +125,8 @@ export interface Diagnosis {
 
 /** Per-model rollup produced by `get_analytics`. */
 export interface ModelPerformance {
-  pass_rate: number;
+  /** Share of this model's spans that were not the diagnosed root-cause step. */
+  span_pass_rate: number;
   avg_latency_ms: number;
   avg_cost_usd: number;
 }

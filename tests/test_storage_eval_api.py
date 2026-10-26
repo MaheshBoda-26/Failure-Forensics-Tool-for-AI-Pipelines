@@ -20,6 +20,7 @@ from forensics.analyzer_simple import (
 )
 from forensics.faults import FAULTS, inject, score_fault
 from forensics.models import (
+    Diagnosis,
     DocumentType,
     EvalCase,
     EvalRun,
@@ -531,7 +532,7 @@ def test_analytics_payload_matches_the_frontend_contract(
         assert isinstance(payload[key], dict)
 
     for model, perf in payload["model_performance"].items():
-        assert {"pass_rate", "avg_latency_ms", "avg_cost_usd"} <= perf.keys(), model
+        assert {"span_pass_rate", "avg_latency_ms", "avg_cost_usd"} <= perf.keys(), model
 
     # A list, not a mapping: this field is built as a list of cells, and a
     # `default_factory=dict` here silently produced `{}` whenever no failure had
@@ -845,3 +846,78 @@ def test_document_ground_truth_reads_the_dataset_labels() -> None:
     assert document_ground_truth("contract_001") == "contract"
     assert document_ground_truth("invoice_001") == "invoice"
     assert document_ground_truth("not_in_the_dataset") is None
+
+
+def test_analytics_cost_is_config_priced_and_reconciles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cost must come from configured prices, not a hardcoded table.
+
+    The previous implementation multiplied tokens by 0.00000015/0.0000006 —
+    numbers no configured price and no invoice supported — so the per-model
+    breakdown disagreed with `trace.total_cost_usd` sitting next to it.
+    """
+    from forensics import api
+    from forensics.config import get_settings, reset_settings
+
+    monkeypatch.setenv("PIPELINE_MODEL_PRICE_IN", "3.0")
+    monkeypatch.setenv("PIPELINE_MODEL_PRICE_OUT", "6.0")
+    reset_settings()
+    pipeline_model = get_settings().pipeline_model.model_id
+
+    st = Storage(traces_dir=tmp_path / "traces", db_path=tmp_path / "db.sqlite")
+    monkeypatch.setattr(api, "_storage", st)
+
+    trace = _clean_trace()
+    for span in trace.spans:
+        span.model_id = pipeline_model
+        span.prompt_tokens = 1000
+        span.completion_tokens = 500
+        span.latency_ms = 100
+    st.save_trace(trace)
+
+    snap = api.get_analytics()
+    per_span = 1000 / 1_000_000 * 3.0 + 500 / 1_000_000 * 6.0
+    assert snap.cost_by_model[pipeline_model] == pytest.approx(per_span * len(trace.spans))
+
+    stored = st.get_trace("t1")
+    assert stored is not None
+    assert snap.total_cost_usd == pytest.approx(stored.total_cost_usd)
+    assert snap.total_cost_usd == pytest.approx(sum(snap.cost_by_model.values()))
+    assert snap.total_cost_usd == pytest.approx(sum(snap.cost_by_step.values()))
+
+
+def test_analytics_span_pass_rate_blames_only_the_root_cause_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`span_pass_rate` is per span, not per trace.
+
+    A trace-level pass rate would be identical for every model, because every
+    trace runs every step — that is why the field was renamed from `pass_rate`.
+    """
+    from forensics import api
+
+    st = Storage(traces_dir=tmp_path / "traces", db_path=tmp_path / "db.sqlite")
+    monkeypatch.setattr(api, "_storage", st)
+
+    trace = _clean_trace()
+    for span in trace.spans:
+        span.latency_ms = 250
+    st.save_trace(trace)
+    st.create_diagnosis(
+        Diagnosis(
+            trace_id="t1",
+            root_cause_step="summarization",
+            category=FailureCategory.CONTEXT_LOSS,
+            confidence=0.8,
+            analyzer_version="0.1.0",
+            model_id="test-model",
+            provider="test",
+        )
+    )
+
+    snap = api.get_analytics()
+    perf = snap.model_performance["test-model"]
+    assert perf["span_pass_rate"] == pytest.approx(3 / 4)
+    assert perf["avg_latency_ms"] == pytest.approx(250.0)
+    assert snap.failures_by_step == {"summarization": 1}

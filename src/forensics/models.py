@@ -355,9 +355,11 @@ class AnalyticsSnapshot(BaseModel):
     avg_latency_ms: float = 0.0
     latency_by_model: dict[str, float] = Field(default_factory=dict)
     latency_by_step: dict[str, float] = Field(default_factory=dict)
-    model_performance: dict[str, dict[str, float]] = Field(
-        default_factory=dict
-    )  # model -> {pass_rate, avg_latency, avg_cost}
+    #: model -> {span_pass_rate, avg_latency_ms, avg_cost_usd}. `span_pass_rate`
+    #: is the share of that model's spans that were *not* the diagnosed
+    #: root-cause step — not a trace-level pass rate, which would be identical
+    #: for every model because every trace runs every step.
+    model_performance: dict[str, dict[str, float]] = Field(default_factory=dict)
     failure_correlation: list[dict[str, Any]] = Field(
         default_factory=list
     )  # step x category heatmap

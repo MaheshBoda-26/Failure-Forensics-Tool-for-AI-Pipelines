@@ -5,7 +5,7 @@ is a scope decision or a known gap with its impact and mitigation stated. Nothin
 here is presented as a bug.
 
 Last verified against the working tree with `make check` (ruff, mypy strict, and
-the test suite: 465 passing, `-m "not live"`). The count is stated as the current
+the test suite: 467 passing, `-m "not live"`). The count is stated as the current
 suite size rather than a commit-pinned one, because the previous revision's
 "344 tests at `cb373e9`" drifted two layers behind the code it described.
 
@@ -244,7 +244,10 @@ attribution (`judge` included) all compute correctly but read zero until real
 prices are set.
 
 **Mitigation**: set real per-1M prices in `.env`. The accounting code is
-price-agnostic; only the values need filling in.
+price-agnostic; only the values need filling in. The dashboard's cost panels go
+through `tracing.span_cost_usd` — the same helper that writes
+`trace.total_cost_usd` — so they read `$0.0000` until prices are configured
+rather than falling back to an invented per-token table.
 
 ---
 

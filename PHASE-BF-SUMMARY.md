@@ -113,7 +113,7 @@ New visualization sections added:
 ## Test Results
 
 ```
-make check: ruff (check + format), mypy strict, 465 tests passing
+make check: ruff (check + format), mypy strict, 467 tests passing
 ```
 
 ### Demo Verification

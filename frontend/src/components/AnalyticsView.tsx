@@ -583,7 +583,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
               MODEL PERFORMANCE COMPARISON
             </div>
             <div style={{ fontSize: "13px", color: "var(--color-ink-2)", marginTop: "2px" }}>
-              Pass rate, latency, and cost per model
+              Share of each model's spans that were not the blamed step, plus latency and cost
             </div>
           </div>
           <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)" }}>
@@ -596,7 +596,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             <thead>
               <tr style={{ borderBottom: "1px solid var(--color-rule)", color: "var(--color-ink-3)", fontSize: "11px" }}>
                 <th style={{ padding: "12px 20px" }}>MODEL</th>
-                <th style={{ padding: "12px 20px" }}>PASS RATE</th>
+                <th style={{ padding: "12px 20px" }}>SPAN PASS RATE</th>
                 <th style={{ padding: "12px 20px" }}>AVG LATENCY</th>
                 <th style={{ padding: "12px 20px" }}>AVG COST</th>
                 <th style={{ padding: "12px 20px" }}>TOTAL COST</th>
@@ -606,12 +606,12 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             <tbody>
               {Object.entries(modelPerformance).length > 0 ? (
                 Object.entries(modelPerformance)
-                  .sort((a, b) => b[1].pass_rate - a[1].pass_rate)
+                  .sort((a, b) => b[1].span_pass_rate - a[1].span_pass_rate)
                   .map(([model, perf]) => (
                     <tr key={model} style={{ borderBottom: "1px solid var(--color-rule)" }}>
                       <td style={{ padding: "12px 20px", fontWeight: 600, color: "var(--color-ink)" }}>{model}</td>
-                      <td style={{ padding: "12px 20px", fontWeight: 700, color: perf.pass_rate >= 0.9 ? "var(--color-copper)" : perf.pass_rate >= 0.7 ? "var(--color-ochre)" : "var(--color-cinnabar)" }}>
-                        {(perf.pass_rate * 100).toFixed(1)}%
+                      <td style={{ padding: "12px 20px", fontWeight: 700, color: perf.span_pass_rate >= 0.9 ? "var(--color-copper)" : perf.span_pass_rate >= 0.7 ? "var(--color-ochre)" : "var(--color-cinnabar)" }}>
+                        {(perf.span_pass_rate * 100).toFixed(1)}%
                       </td>
                       <td style={{ padding: "12px 20px", color: perf.avg_latency_ms > 5000 ? "var(--color-cinnabar)" : "var(--color-ink)" }}>
                         {Math.round(perf.avg_latency_ms)}ms

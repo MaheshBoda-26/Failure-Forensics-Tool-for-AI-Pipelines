@@ -734,9 +734,19 @@ def get_analytics(tenant_id: str | None = None) -> AnalyticsSnapshot:
     completed, but the output was wrong), which is the number the dashboard
     exists to show.
 
+    Costs come from :func:`forensics.tracing.span_cost_usd` — the same helper
+    that finalises ``trace.total_cost_usd`` — so ``total_cost_usd`` always
+    equals ``sum(cost_by_model.values())`` and both are priced by configuration.
+    This function previously multiplied tokens by a hardcoded per-token table
+    (0.00000015 / 0.0000006), which invented spend that no configured price and
+    no invoice supported, and made the per-model breakdown disagree with the
+    trace totals it sat next to.
+
     `tenant_id=None` aggregates every tenant; that is what the CLI and dev mode
     want.
     """
+    from forensics.tracing import span_cost_usd
+
     storage = get_storage()
     traces = storage.list_traces(limit=10000, tenant_id=tenant_id)
 
@@ -747,107 +757,99 @@ def get_analytics(tenant_id: str | None = None) -> AnalyticsSnapshot:
     failure_traces = 0
     root_cause_latencies: list[float] = []
 
-    # Enhanced metrics
     total_cost_usd = 0.0
     cost_by_model: dict[str, float] = {}
     cost_by_step: dict[str, float] = {}
     tokens_by_model: dict[str, int] = {}
     tokens_by_step: dict[str, int] = {}
+
     latency_by_model: dict[str, float] = {}
     latency_by_step: dict[str, float] = {}
     latency_counts_by_model: dict[str, int] = {}
     latency_counts_by_step: dict[str, int] = {}
-    model_pass_counts: dict[str, int] = {}
-    model_total_counts: dict[str, int] = {}
+
+    # Span-level pass accounting, per model: a span "passes" when it is not the
+    # step the diagnosis blames. This is deliberately not the trace-level pass
+    # rate — every trace runs every step, so a per-model trace pass rate is
+    # constant across models and measures nothing.
+    model_span_totals: dict[str, int] = {}
+    model_span_ok: dict[str, int] = {}
     model_cost_sums: dict[str, float] = {}
     model_latency_sums: dict[str, float] = {}
 
-    # Group traces by date for failure_rate_over_time and cost_trend
     traces_by_date: dict[str, dict[str, int]] = {}
     cost_by_date: dict[str, float] = {}
-
-    # Failure correlation matrix: step x category
     failure_correlation: dict[str, dict[FailureCategory, int]] = {}
 
     for trace in traces:
         diagnosis = storage.get_diagnosis_for_trace(trace.trace_id, tenant_id=tenant_id)
-        has_semantic_failure = diagnosis is not None and diagnosis.root_cause_step not in (
-            "",
-            "none",
+        root_cause_step = (
+            diagnosis.root_cause_step
+            if diagnosis is not None and diagnosis.root_cause_step not in ("", "none")
+            else None
         )
+        has_semantic_failure = root_cause_step is not None
         is_run_failure = trace.status == TraceStatus.FAILURE
+        # mypy cannot follow the ternary above; the later guards need the fact
+        # that a blamed step implies a diagnosis object.
+        diagnosed = diagnosis if has_semantic_failure else None
 
-        # Get trace date
         trace_date = trace.created_at.date().isoformat() if trace.created_at else "unknown"
+        day = traces_by_date.setdefault(trace_date, {"total": 0, "failures": 0})
+        day["total"] += 1
 
-        if trace_date not in traces_by_date:
-            traces_by_date[trace_date] = {"total": 0, "failures": 0}
-
-        traces_by_date[trace_date]["total"] += 1
-
-        # Accumulate cost and token metrics from trace
-        if trace.total_cost_usd:
-            total_cost_usd += trace.total_cost_usd
-            cost_by_date[trace_date] = cost_by_date.get(trace_date, 0.0) + trace.total_cost_usd
-
-        # Per-model and per-step metrics from spans
+        trace_cost = 0.0
         for span in trace.spans:
             model = span.model_id or "unknown"
             step = span.step_name
 
-            # Tokens
             total_tokens = span.prompt_tokens + span.completion_tokens + span.reasoning_tokens
             tokens_by_model[model] = tokens_by_model.get(model, 0) + total_tokens
             tokens_by_step[step] = tokens_by_step.get(step, 0) + total_tokens
 
-            # Latency
+            cost = span_cost_usd(span)
+            trace_cost += cost
+            cost_by_model[model] = cost_by_model.get(model, 0.0) + cost
+            cost_by_step[step] = cost_by_step.get(step, 0.0) + cost
+            model_cost_sums[model] = model_cost_sums.get(model, 0.0) + cost
+
+            # Zero-latency spans (cache hits, deterministic steps) must not drag
+            # the average down: they are excluded from both sum and count.
             if span.latency_ms:
                 latency_by_model[model] = latency_by_model.get(model, 0.0) + span.latency_ms
                 latency_by_step[step] = latency_by_step.get(step, 0.0) + span.latency_ms
                 latency_counts_by_model[model] = latency_counts_by_model.get(model, 0) + 1
                 latency_counts_by_step[step] = latency_counts_by_step.get(step, 0) + 1
+                model_latency_sums[model] = model_latency_sums.get(model, 0.0) + span.latency_ms
 
-            # Cost (estimate from tokens if not in trace)
-            if span.prompt_tokens or span.completion_tokens:
-                # Rough cost estimate based on typical pricing
-                cost = (span.prompt_tokens * 0.00000015) + (span.completion_tokens * 0.0000006)
-                cost_by_model[model] = cost_by_model.get(model, 0.0) + cost
-                cost_by_step[step] = cost_by_step.get(step, 0.0) + cost
-                model_cost_sums[model] = model_cost_sums.get(model, 0.0) + cost
+            model_span_totals[model] = model_span_totals.get(model, 0) + 1
+            if root_cause_step is None or step != root_cause_step:
+                model_span_ok[model] = model_span_ok.get(model, 0) + 1
 
-            # Model performance tracking
-            if model not in model_total_counts:
-                model_total_counts[model] = 0
-                model_pass_counts[model] = 0
-                model_latency_sums[model] = 0.0
-            model_total_counts[model] += 1
-            model_latency_sums[model] += span.latency_ms
-            if not (is_run_failure or has_semantic_failure):
-                model_pass_counts[model] += 1
+        total_cost_usd += trace_cost
+        cost_by_date[trace_date] = cost_by_date.get(trace_date, 0.0) + trace_cost
 
         if not (is_run_failure or has_semantic_failure):
             continue
 
         failure_traces += 1
-        traces_by_date[trace_date]["failures"] += 1
+        day["failures"] += 1
 
-        if diagnosis is not None and diagnosis.root_cause_step not in ("", "none"):
-            category = diagnosis.override_category or diagnosis.category
+        if root_cause_step is not None and diagnosed is not None:
+            category = diagnosed.override_category or diagnosed.category
             failures_by_category[category] = failures_by_category.get(category, 0) + 1
-            step = diagnosis.root_cause_step
-            failures_by_step[step] = failures_by_step.get(step, 0) + 1
-
-            # Build failure correlation matrix
-            if step not in failure_correlation:
-                failure_correlation[step] = {}
-            failure_correlation[step][category] = failure_correlation[step].get(category, 0) + 1
+            failures_by_step[root_cause_step] = failures_by_step.get(root_cause_step, 0) + 1
+            failure_correlation.setdefault(root_cause_step, {})
+            failure_correlation[root_cause_step][category] = (
+                failure_correlation[root_cause_step].get(category, 0) + 1
+            )
 
             # Time to root cause = latency accumulated up to and including the
             # failing step, from real span timings (never an invented average).
             elapsed_ms = 0
             for span in trace.spans:
                 elapsed_ms += span.latency_ms
-                if span.step_name == step:
+                if span.step_name == root_cause_step:
                     root_cause_latencies.append(elapsed_ms / 1000.0)
                     break
 
@@ -856,28 +858,24 @@ def get_analytics(tenant_id: str | None = None) -> AnalyticsSnapshot:
         sum(root_cause_latencies) / len(root_cause_latencies) if root_cause_latencies else None
     )
 
-    # Build failure_rate_over_time sorted by date
-    failure_rate_over_time = []
-    for date_str in sorted(traces_by_date.keys()):
-        day_data = traces_by_date[date_str]
-        day_failure_rate = (
-            day_data["failures"] / day_data["total"] if day_data["total"] > 0 else 0.0
-        )
-        failure_rate_over_time.append({"timestamp": date_str, "failure_rate": day_failure_rate})
+    failure_rate_over_time = [
+        {
+            "timestamp": date_str,
+            "failure_rate": (
+                day_data["failures"] / day_data["total"] if day_data["total"] > 0 else 0.0
+            ),
+        }
+        for date_str, day_data in sorted(traces_by_date.items())
+    ]
 
-    # Build cost trend
-    cost_trend = []
-    for date_str in sorted(cost_by_date.keys()):
-        cost_trend.append({"timestamp": date_str, "cost_usd": cost_by_date[date_str]})
+    cost_trend = [
+        {"timestamp": date_str, "cost_usd": round(cost, 8)}
+        for date_str, cost in sorted(cost_by_date.items())
+    ]
 
-    # Compute average latencies
-    avg_latency_ms = 0.0
-    total_spans = 0
-    for model, total_latency in latency_by_model.items():
-        count = latency_counts_by_model.get(model, 1)
-        avg_latency_ms += total_latency
-        total_spans += count
-    avg_latency_ms = avg_latency_ms / total_spans if total_spans > 0 else 0.0
+    total_latency = sum(latency_by_model.values())
+    total_latency_samples = sum(latency_counts_by_model.values())
+    avg_latency_ms = total_latency / total_latency_samples if total_latency_samples else 0.0
 
     latency_by_model_avg = {
         model: total / latency_counts_by_model.get(model, 1)
@@ -887,35 +885,21 @@ def get_analytics(tenant_id: str | None = None) -> AnalyticsSnapshot:
         step: total / latency_counts_by_step.get(step, 1) for step, total in latency_by_step.items()
     }
 
-    # Model performance summary
-    model_performance = {}
-    for model, total_count in model_total_counts.items():
-        pass_count = model_pass_counts.get(model, 0)
+    model_performance: dict[str, dict[str, float]] = {}
+    for model, span_count in model_span_totals.items():
+        latency_samples = latency_counts_by_model.get(model, 0)
         model_performance[model] = {
-            "pass_rate": pass_count / total_count if total_count > 0 else 0.0,
-            "avg_latency_ms": model_latency_sums.get(model, 0.0) / total_count
-            if total_count > 0
-            else 0.0,
-            "avg_cost_usd": model_cost_sums.get(model, 0.0) / total_count
-            if total_count > 0
-            else 0.0,
+            "span_pass_rate": model_span_ok.get(model, 0) / span_count if span_count else 0.0,
+            "avg_latency_ms": (
+                model_latency_sums.get(model, 0.0) / latency_samples if latency_samples else 0.0
+            ),
+            "avg_cost_usd": model_cost_sums.get(model, 0.0) / span_count if span_count else 0.0,
         }
 
-    # Build failure correlation matrix
-    correlation_list = []
-    for step, categories in failure_correlation.items():
-        for category, count in categories.items():
-            correlation_list.append(
-                {
-                    "step": step,
-                    "category": category.value,
-                    "count": count,
-                }
-            )
-
-    # Build cost trend
-    cost_trend_list = [
-        {"timestamp": date_str, "cost_usd": cost} for date_str, cost in sorted(cost_by_date.items())
+    correlation_list = [
+        {"step": step, "category": category.value, "count": count}
+        for step, categories in failure_correlation.items()
+        for category, count in categories.items()
     ]
 
     return AnalyticsSnapshot(
@@ -925,9 +909,9 @@ def get_analytics(tenant_id: str | None = None) -> AnalyticsSnapshot:
         failures_by_step=failures_by_step,
         failure_rate_over_time=failure_rate_over_time,
         avg_time_to_root_cause_seconds=avg_time_to_root_cause,
-        total_cost_usd=total_cost_usd,
-        cost_by_model=cost_by_model,
-        cost_by_step=cost_by_step,
+        total_cost_usd=round(total_cost_usd, 8),
+        cost_by_model={model: round(cost, 8) for model, cost in cost_by_model.items()},
+        cost_by_step={step: round(cost, 8) for step, cost in cost_by_step.items()},
         tokens_by_model=tokens_by_model,
         tokens_by_step=tokens_by_step,
         avg_latency_ms=avg_latency_ms,
@@ -935,7 +919,7 @@ def get_analytics(tenant_id: str | None = None) -> AnalyticsSnapshot:
         latency_by_step=latency_by_step_avg,
         model_performance=model_performance,
         failure_correlation=correlation_list,
-        cost_trend=cost_trend_list,
+        cost_trend=cost_trend,
     )
 
 

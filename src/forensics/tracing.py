@@ -406,6 +406,15 @@ async def _await_and_record(
             _current_span.reset(token)
 
 
+def span_cost_usd(span: Span) -> float:
+    """Public name for the per-span cost model.
+
+    Analytics aggregates with this exact function, so a dashboard total and the
+    `trace.total_cost_usd` written by `finalize_trace` cannot disagree.
+    """
+    return _span_cost_usd(span)
+
+
 def _span_cost_usd(span: Span) -> float:
     """Cost of one span from config-driven price assumptions (C12).
 
