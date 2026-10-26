@@ -161,10 +161,18 @@ async def rate_limit_middleware(
     if not success:
         from fastapi.responses import JSONResponse
 
+        bucket = limiter.get_bucket_state(tenant.tenant_id)
+        cap = float(bucket["capacity"])
+        tok = float(bucket["tokens"])
         return JSONResponse(
             status_code=429,
             content={"detail": "Rate limit exceeded"},
-            headers={"Retry-After": str(int(retry_after) + 1)},
+            headers={
+                "Retry-After": str(int(retry_after) + 1),
+                "X-RateLimit-Limit": str(int(cap)),
+                "X-RateLimit-Remaining": "0",
+                "X-RateLimit-Reset": str(int(cap - tok) + int(retry_after)),
+            },
         )
 
     response = await call_next(request)
