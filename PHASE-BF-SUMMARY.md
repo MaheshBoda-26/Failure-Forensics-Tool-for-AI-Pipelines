@@ -202,7 +202,7 @@ forensics generate-dataset generate --output dataset_large --per-type 30 --failu
 All tests pass:
 ```
 $ make check
-496 passed, 12 skipped, 1 deselected, 4 warnings in 9.73s
+496 passed, 13 skipped, 1 deselected, 4 warnings in 9.73s
 
 $ make test-postgres   # with FORENSICS_TEST_POSTGRES_URL set
 12 passed, 497 deselected, 2 warnings in 2.30s
