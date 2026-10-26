@@ -1,13 +1,16 @@
 """Custom check plugins for domain-specific validation.
 
 These plugins demonstrate how to extend the deterministic analyzer with
-domain-specific checks. Load them with:
+domain-specific checks. Importing this module is what registers all nine: the
+``@check_plugin`` decorator runs at import time. To make the analyzer load them
+at startup, name **one decorated check** in ``CHECK_PLUGINS``:
 
-    CHECK_PLUGINS=forensics.custom_checks:register_custom_checks
+    CHECK_PLUGINS=forensics.custom_checks:check_pii_in_summary
 
-Or individually:
-
-    CHECK_PLUGINS=forensics.custom_checks:check_pii_in_summary,forensics.custom_checks:check_financial_amounts
+Naming an undecorated function (including ``register_custom_checks``) is
+rejected by the loader — it is not a plugin, and a spec that only *looks* like
+one would fail at startup with "is not a @check_plugin". ``PLUGIN_SPEC`` below
+is the value to use, so the documentation and the working spec cannot drift.
 """
 
 import re
@@ -787,13 +790,29 @@ def check_mixed_consistency(span: Span, trace: Trace, document_text: str) -> lis
 
 
 def register_custom_checks() -> None:
-    """Register all custom checks.
+    """Register all nine custom checks. Idempotent; safe to call more than once.
 
-    Called by ``CHECK_PLUGINS=forensics.custom_checks:register_custom_checks``.
+    Importing this module already registers them via the decorators, so this is
+    a no-op in the common case. It exists for the cases where the registry was
+    rebuilt after the import (a test fixture, a host that resets the registry),
+    and it *actually* registers rather than relying on import side effects — a
+    function named ``register_*`` that registers nothing is a trap.
+
+    It deliberately does *not* work as a ``CHECK_PLUGINS`` value: that setting
+    takes ``module:attr`` where ``attr`` is a ``@check_plugin``, and this is a
+    plain function. Use ``PLUGIN_SPEC`` instead.
     """
-    # The decorators above already register the checks when this module is imported.
-    # This function exists for explicit registration if needed.
-    pass
+    from forensics.checks import load_plugins_from_config
+
+    # Each name is a decorated check, so the loader can coerce it. Registering an
+    # already-present name is a no-op inside the loader, which is what makes a
+    # second call safe.
+    load_plugins_from_config(",".join(f"{__name__}:{name}" for name in CUSTOM_CHECK_NAMES))
+
+
+#: The ``CHECK_PLUGINS`` value that enables this module. One decorated check is
+#: enough: importing the module registers all nine.
+PLUGIN_SPEC = "forensics.custom_checks:check_pii_in_summary"
 
 
 # Export the plugin names for explicit loading
@@ -809,4 +828,4 @@ CUSTOM_CHECK_NAMES = [
     "check_mixed_consistency",
 ]
 
-__all__ = ["register_custom_checks", *CUSTOM_CHECK_NAMES]
+__all__ = ["PLUGIN_SPEC", "register_custom_checks", *CUSTOM_CHECK_NAMES]

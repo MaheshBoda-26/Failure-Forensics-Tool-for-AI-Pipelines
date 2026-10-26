@@ -299,3 +299,43 @@ def test_settings_exposes_check_plugins() -> None:
     settings = Settings(check_plugins="my_checks:probe")
 
     assert settings.check_plugins == "my_checks:probe"
+
+
+# --- Criterion 8: the shipped example module loads the way it documents ----
+
+
+def test_shipped_custom_checks_load_through_their_documented_spec() -> None:
+    """The module's docstring used to name a spec that raised at startup.
+
+    It said ``CHECK_PLUGINS=forensics.custom_checks:register_custom_checks``, but
+    the loader requires a ``@check_plugin`` attribute — so an operator following
+    the instructions got "is not a @check_plugin" and the nine shipped checks
+    were unreachable through their own documentation.
+    """
+    from forensics import custom_checks
+
+    loaded = load_plugins_from_config(custom_checks.PLUGIN_SPEC)
+
+    assert loaded == ["check_pii_in_summary"]
+    for name in custom_checks.CUSTOM_CHECK_NAMES:
+        assert get_check(name) is not None, f"{name} was not registered by the import"
+    assert len(custom_checks.CUSTOM_CHECK_NAMES) == 9
+    # The docs and the working spec share one source of truth.
+    assert custom_checks.PLUGIN_SPEC in (custom_checks.__doc__ or "")
+
+
+def test_undecorated_helper_is_not_a_valid_plugin_spec() -> None:
+    """`register_custom_checks` is a function, not a plugin: say so clearly."""
+    with pytest.raises(ValueError, match="is not a @check_plugin"):
+        load_plugins_from_config("forensics.custom_checks:register_custom_checks")
+
+
+def test_register_custom_checks_is_idempotent() -> None:
+    from forensics import checks, custom_checks
+
+    custom_checks.register_custom_checks()
+    custom_checks.register_custom_checks()  # a duplicate registration would raise
+
+    assert len(checks._CHECK_REGISTRY) == len(BUILTIN_CHECK_NAMES) + len(
+        custom_checks.CUSTOM_CHECK_NAMES
+    )
