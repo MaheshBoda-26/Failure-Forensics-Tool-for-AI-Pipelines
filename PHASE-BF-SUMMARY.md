@@ -113,7 +113,7 @@ New visualization sections added:
 ## Test Results
 
 ```
-make check: ruff (check + format), mypy strict, 467 tests passing
+make check: ruff (check + format), mypy strict, 496 tests passing (+12 live-PostgreSQL tests via `make test-postgres`)
 ```
 
 ### Demo Verification
@@ -201,8 +201,11 @@ forensics generate-dataset generate --output dataset_large --per-type 30 --failu
 
 All tests pass:
 ```
-$ pytest tests/ -x --tb=short
-460 passed, 5 warnings in 43.53s
+$ make check
+496 passed, 12 skipped, 1 deselected, 4 warnings in 9.73s
+
+$ make test-postgres   # with FORENSICS_TEST_POSTGRES_URL set
+12 passed, 497 deselected, 2 warnings in 2.30s
 ```
 
 The project is now production-hardened with:

@@ -5,9 +5,12 @@ is a scope decision or a known gap with its impact and mitigation stated. Nothin
 here is presented as a bug.
 
 Last verified against the working tree with `make check` (ruff, mypy strict, and
-the test suite: 467 passing, `-m "not live"`). The count is stated as the current
-suite size rather than a commit-pinned one, because the previous revision's
-"344 tests at `cb373e9`" drifted two layers behind the code it described.
+the test suite: 496 passing, 12 skipped, `-m "not live"`). The twelve skipped are
+the live-PostgreSQL tests, which run with `make test-postgres`; the always-on
+`tests/test_schema_parity.py` still compares the two schemas without a server.
+The count is stated as the current suite size rather than a commit-pinned one,
+because the previous revision's "344 tests at `cb373e9`" drifted two layers behind
+the code it described.
 
 ---
 
@@ -430,24 +433,25 @@ during a `pg_ctl` restart are not exercised by a test suite.
 
 | # | Limitation | Severity | Mitigation available today |
 |---|---|---|---|
-| 1 | Bundled UI cannot send an API key | Medium | Deploy with `AUTH_ENABLED=false`; use the API directly otherwise |
+| 1 | ~~Bundled UI cannot send an API key~~ — **RESOLVED** | ~~Medium~~ | Key entry in the header; `Authorization: Bearer` on every request |
 | 2 | ~~No reaper for jobs whose worker died~~ — **RESOLVED** | ~~Medium~~ | `QUEUE_STALL_TIMEOUT` + heartbeat + periodic reaper + CLI command |
-| 3 | Scheduled eval is instance-wide | Low | Per-tenant runs via `POST /eval/run` |
+| 3 | ~~Scheduled eval is instance-wide~~ — **RESOLVED** | ~~Low~~ | One run per active tenant, compared against that tenant's own history |
 | 4 | Auth off = all tenants visible | Medium | Deployment-wide switch; writes still stamp a tenant |
 | 5 | In-flight job payload holds raw text | Medium | Cleared at terminal state; reference documents by id if unacceptable |
-| 6 | `context_loss` fault needs entities | Low | Score against a real trace, not a dry-run one |
+| 6 | ~~`context_loss` fault needs entities~~ — **RESOLVED** | ~~Low~~ | Unscoreable faults are reported as `n/a`, not as misses; score against a real trace to exercise it |
 | 7 | DRY_RUN's canned output is a fixture, not model behaviour | Low | Reproduces all 15 labels; still needs a real key for accuracy |
 | 7b | Re-diagnosing a persisted trace sees redacted spans | Low | Read the stored diagnosis, or run with redaction off |
-| 8 | No pre-flight cost check | Low | Post-hoc caps bound repeated overshoot |
+| 8 | ~~No pre-flight cost check~~ — **RESOLVED** | ~~Low~~ | Worst-case estimate refused before the call; `SPEND_PREFLIGHT_ENABLED` to disable |
 | 9 | Prompt templates not archived | Low | `prompt_version` + full prompt text per span |
 | 10 | Prices default to 0.0 | Medium | Set real prices in `.env` |
 | 11 | Single-writer SQLite | Low | WAL + `busy_timeout`; `db_path` is substitutable |
 | 12 | Propagation check is a heuristic | Low | Evidence chain cites the upstream span |
-| 13 | ~~Keys never expire, no scopes~~ — **RESOLVED** | ~~Medium~~ | `AUTH_KEY_TTL_DAYS` + `--ttl` CLI option + expiration check in `validate_api_key` |
+| 13 | ~~Keys never expire, no scopes~~ — **RESOLVED** | ~~Medium~~ | `--ttl` + `AUTH_KEY_TTL_DAYS` for expiry; `--scope read` for a read-only key, enforced per route |
 | 14 | ~~No rate limiting~~ — **RESOLVED** | ~~Low~~ | Per-tenant token bucket in SQLite with `RATE_LIMIT_ENABLED`, `RATE_LIMIT_REQUESTS_PER_MINUTE`, `RATE_LIMIT_BURST` |
-| 15 | Small dataset (15 documents) | Low | Schema is size-agnostic; fault injection scales failures |
+| 15 | Small demo dataset (15 documents) | Low | `generate-dataset` is seeded and reproducible; `dataset_large/` ships 150 documents / 43 seeded failures |
 | 16 | Live model calls not in CI | Medium | `pytest -m live`; mock-transport coverage of the ladders |
 | 17 | No orchestrator or tenant fairness | Low | Atomic claims, concurrency/priority levers |
+| 18 | ~~PostgreSQL backend unexercised~~ — **RESOLVED** | ~~High~~ | 12 live-server tests + schema-parity test on every run |
 
 ---
 
