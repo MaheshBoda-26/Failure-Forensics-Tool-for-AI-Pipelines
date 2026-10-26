@@ -316,12 +316,16 @@ def test_shipped_custom_checks_load_through_their_documented_spec() -> None:
 
     loaded = load_plugins_from_config(custom_checks.PLUGIN_SPEC)
 
-    assert loaded == ["check_pii_in_summary"]
+    # Every check is named in the spec, so loading does not depend on the module
+    # having been imported first (a rebuilt registry would otherwise end up with
+    # only the one check the spec named).
+    assert loaded == custom_checks.CUSTOM_CHECK_NAMES
     for name in custom_checks.CUSTOM_CHECK_NAMES:
-        assert get_check(name) is not None, f"{name} was not registered by the import"
+        assert get_check(name) is not None, f"{name} was not registered by the spec"
     assert len(custom_checks.CUSTOM_CHECK_NAMES) == 9
-    # The docs and the working spec share one source of truth.
-    assert custom_checks.PLUGIN_SPEC in (custom_checks.__doc__ or "")
+    # The docs point at the spec rather than at a hand-copied value.
+    assert "CHECK_PLUGINS=" in (custom_checks.__doc__ or "")
+    assert "register_custom_checks" in (custom_checks.__doc__ or "")
 
 
 def test_undecorated_helper_is_not_a_valid_plugin_spec() -> None:

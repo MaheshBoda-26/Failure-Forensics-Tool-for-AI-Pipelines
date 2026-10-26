@@ -1,22 +1,44 @@
 """Custom check plugins for domain-specific validation.
 
 These plugins demonstrate how to extend the deterministic analyzer with
-domain-specific checks. Importing this module is what registers all nine: the
-``@check_plugin`` decorator runs at import time. To make the analyzer load them
-at startup, name **one decorated check** in ``CHECK_PLUGINS``:
+domain-specific checks. ``PLUGIN_SPEC`` is the value to give ``CHECK_PLUGINS``
+(get it with `python -c "from forensics.custom_checks import PLUGIN_SPEC; print(PLUGIN_SPEC)"`):
 
-    CHECK_PLUGINS=forensics.custom_checks:check_pii_in_summary
+    CHECK_PLUGINS=<paste PLUGIN_SPEC here>
 
-Naming an undecorated function (including ``register_custom_checks``) is
-rejected by the loader — it is not a plugin, and a spec that only *looks* like
-one would fail at startup with "is not a @check_plugin". ``PLUGIN_SPEC`` below
-is the value to use, so the documentation and the working spec cannot drift.
+It lists every decorated check, so loading does not depend on the module having
+been imported first. Naming an undecorated function (including
+``register_custom_checks``) is rejected by the loader — it is not a plugin, and
+a spec that only *looks* like one fails at startup with "is not a @check_plugin".
 """
 
 import re
+from decimal import Decimal, InvalidOperation
 
 from forensics.checks import CheckResult, check_plugin
 from forensics.models import Span, Trace
+
+#: Every check this module defines, in registration order.
+CUSTOM_CHECK_NAMES = [
+    "check_pii_in_summary",
+    "check_pii_in_extraction",
+    "check_financial_amounts",
+    "check_invoice_totals",
+    "check_contract_parties",
+    "check_contract_dates",
+    "check_report_structure",
+    "check_correspondence_metadata",
+    "check_mixed_consistency",
+]
+
+#: The ``CHECK_PLUGINS`` value that enables this module.
+#:
+#: One spec per check, deliberately: ``load_plugins_from_config`` registers only
+#: the attribute it is given, so a single-entry spec would rely on the module's
+#: import having registered the other eight — true on a fresh process, false for
+#: any caller that rebuilt the registry. Listing all nine makes loading
+#: deterministic instead of an import-order accident.
+PLUGIN_SPEC = ",".join(f"{__name__}:{name}" for name in CUSTOM_CHECK_NAMES)
 
 # ============================================================================
 # PII Detection Checks
@@ -207,9 +229,18 @@ def check_financial_amounts(span: Span, trace: Trace, document_text: str) -> lis
         entity_type = entity.get("entity_type", "").lower()
         value = entity.get("value", "")
 
+        if "currency" in entity_type:
+            # A currency entity carries a symbol or code ("$", "USD"), not an
+            # amount. "currency" used to be in the amount-type list below, so a
+            # plain "$" was fed to Decimal() and every invoice that extracted a
+            # currency was flagged "Unparseable financial amount".
+            if value:
+                currencies.add(value.strip())
+            continue
+
         if any(
             t in entity_type
-            for t in ["amount", "money", "total", "price", "cost", "subtotal", "tax", "currency"]
+            for t in ["amount", "money", "total", "price", "cost", "subtotal", "tax"]
         ):
             # Normalize amount string
             normalized = (
@@ -303,6 +334,25 @@ def check_financial_amounts(span: Span, trace: Trace, document_text: str) -> lis
     return results
 
 
+_NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def _amounts_mentioned(text: str) -> set[Decimal]:
+    """Every number in `text`, parsed the way the amounts were parsed.
+
+    Commas are thousands separators in prose ("$10,000.00") but not in a
+    `Decimal`, so both sides are normalised to the same representation before
+    comparison.
+    """
+    found: set[Decimal] = set()
+    for match in _NUMBER.findall(text):
+        try:
+            found.add(Decimal(match.replace(",", "")))
+        except InvalidOperation:
+            continue
+    return found
+
+
 @check_plugin(
     "check_invoice_totals",
     step="summarization",
@@ -348,7 +398,9 @@ def check_invoice_totals(span: Span, trace: Trace, document_text: str) -> list[C
                 except (InvalidOperation, ValueError):
                     continue
 
-    if not total_amount:
+    # `Decimal("0")` is falsy, so a zero total was silently skipped instead of
+    # checked.
+    if total_amount is None:
         return results
 
     # Check summary for the amount
@@ -356,9 +408,10 @@ def check_invoice_totals(span: Span, trace: Trace, document_text: str) -> list[C
     key_points = summary_data.get("key_points", [])
     searchable = f"{summary} {' '.join(key_points) if isinstance(key_points, list) else ''}"
 
-    # Look for the amount in summary
-    amount_str = f"${total_amount}"
-    if amount_str in searchable or str(total_amount) in searchable:
+    # Numeric comparison, not a substring one. `str(Decimal("10000.00"))` is
+    # "10000.00", so a correctly written "$10,000.00" summary was reported as an
+    # omission; comparing raw substrings also let a total of 100 "match" 1,000.
+    if total_amount in _amounts_mentioned(searchable):
         results.append(
             CheckResult(
                 check_name="invoice_totals",
@@ -617,6 +670,17 @@ def check_report_structure(span: Span, trace: Trace, document_text: str) -> list
 # ============================================================================
 
 
+def _entity_type_has(entity_type: str, *keywords: str) -> bool:
+    """Whether `entity_type` names one of `keywords` as a whole word.
+
+    Bare substring matching made `total` count as a correspondence *recipient*
+    (it contains "to") and would make `token` a sender. Entity types are
+    snake_case, so splitting on non-alphanumerics yields the words.
+    """
+    parts = set(re.split(r"[^a-z0-9]+", entity_type.lower()))
+    return any(keyword in parts for keyword in keywords)
+
+
 @check_plugin(
     "check_correspondence_metadata",
     step="extraction",
@@ -654,13 +718,13 @@ def check_correspondence_metadata(
             continue
         entity_type = entity.get("entity_type", "").lower()
 
-        if any(kw in entity_type for kw in ["from", "sender", "author"]):
+        if _entity_type_has(entity_type, "from", "sender", "author"):
             metadata["sender"] = True
-        elif any(kw in entity_type for kw in ["to", "recipient", "addressee"]):
+        elif _entity_type_has(entity_type, "to", "recipient", "addressee"):
             metadata["recipient"] = True
-        elif "date" in entity_type:
+        elif _entity_type_has(entity_type, "date"):
             metadata["date"] = True
-        elif "subject" in entity_type:
+        elif _entity_type_has(entity_type, "subject"):
             metadata["subject"] = True
 
     missing = [k for k, v in metadata.items() if not v]
@@ -804,28 +868,10 @@ def register_custom_checks() -> None:
     """
     from forensics.checks import load_plugins_from_config
 
-    # Each name is a decorated check, so the loader can coerce it. Registering an
+    # Every name is a decorated check, so the loader can coerce it. Registering an
     # already-present name is a no-op inside the loader, which is what makes a
     # second call safe.
-    load_plugins_from_config(",".join(f"{__name__}:{name}" for name in CUSTOM_CHECK_NAMES))
+    load_plugins_from_config(PLUGIN_SPEC)
 
-
-#: The ``CHECK_PLUGINS`` value that enables this module. One decorated check is
-#: enough: importing the module registers all nine.
-PLUGIN_SPEC = "forensics.custom_checks:check_pii_in_summary"
-
-
-# Export the plugin names for explicit loading
-CUSTOM_CHECK_NAMES = [
-    "check_pii_in_summary",
-    "check_pii_in_extraction",
-    "check_financial_amounts",
-    "check_invoice_totals",
-    "check_contract_parties",
-    "check_contract_dates",
-    "check_report_structure",
-    "check_correspondence_metadata",
-    "check_mixed_consistency",
-]
 
 __all__ = ["PLUGIN_SPEC", "register_custom_checks", *CUSTOM_CHECK_NAMES]
