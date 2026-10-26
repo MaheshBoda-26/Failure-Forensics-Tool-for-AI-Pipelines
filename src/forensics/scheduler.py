@@ -34,7 +34,8 @@ from apscheduler.triggers.cron import CronTrigger
 from forensics.config import get_settings, validate_webhook_url
 from forensics.eval_simple import run_eval
 from forensics.models import DEFAULT_TENANT_ID, EvalRun
-from forensics.storage import Storage
+from forensics.storage import get_storage
+from forensics.storage_base import StorageBase
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ class EvalScheduler:
 
     def __init__(
         self,
-        storage: Storage,
+        storage: StorageBase,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.storage = storage
@@ -341,13 +342,13 @@ _scheduler: EvalScheduler | None = None
 
 
 def get_scheduler(
-    storage: Storage | None = None,
+    storage: Any | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> EvalScheduler:
     """Return the process-wide scheduler, creating it on first use."""
     global _scheduler
     if _scheduler is None:
-        _scheduler = EvalScheduler(storage or Storage(), transport=transport)
+        _scheduler = EvalScheduler(storage or get_storage(), transport=transport)
     return _scheduler
 
 

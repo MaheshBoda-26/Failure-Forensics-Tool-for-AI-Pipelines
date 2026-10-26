@@ -407,6 +407,7 @@ class APIKey(BaseModel):
     created_at: datetime = Field(default_factory=_utc_now)
     revoked_at: datetime | None = None
     last_used_at: datetime | None = None
+    expires_at: datetime | None = Field(default=None, description="Optional expiration timestamp")
 
 
 __all__ = [

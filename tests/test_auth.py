@@ -19,6 +19,7 @@ import pytest
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
+import forensics.storage
 from forensics import api
 from forensics.auth import AuthManager
 from forensics.cli import app as cli_app
@@ -31,7 +32,7 @@ from forensics.models import (
     Span,
     Trace,
 )
-from forensics.storage import Storage
+from forensics.storage import Storage, reset_storage
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -415,6 +416,8 @@ def test_cli_create_tenant_prints_the_new_tenant_id(auth_on: None) -> None:
 
 
 def test_cli_create_key_prints_plaintext_once_and_never_again(auth_on: None) -> None:
+    """The key is printed to stdout exactly once; the DB only keeps the hash."""
+    reset_storage()  # Ensure fresh singleton for this test
     runner = CliRunner()
     created = runner.invoke(cli_app, ["auth", "create-tenant", "--name", "Acme"])
     tenant_id = created.stdout.strip().splitlines()[-1]
@@ -433,7 +436,9 @@ def test_cli_create_key_prints_plaintext_once_and_never_again(auth_on: None) -> 
     assert "ci" in listed.stdout
 
     # ...and the secret is nowhere in the database either.
-    storage = Storage()
+    from forensics.storage import get_storage
+
+    storage = get_storage()
     with storage._conn() as conn:
         stored = conn.execute("SELECT key_hash, prefix FROM api_keys").fetchall()
     assert len(stored) == 1
@@ -452,6 +457,10 @@ def test_cli_create_key_for_unknown_tenant_fails_cleanly(auth_on: None) -> None:
 def test_cli_revoke_key_stops_validation(auth_on: None, state: tuple[Storage, AuthManager]) -> None:
     """The CLI writes to the same database the API reads, so revoking works."""
     storage, manager = state
+    # Ensure the CLI uses the same storage singleton
+    reset_storage()
+    forensics.storage._storage_instance = storage
+
     tenant = manager.create_tenant("Acme")
     api_key, key = manager.create_api_key(tenant.tenant_id)
     storage.save_trace(_trace("t_acme", tenant.tenant_id))

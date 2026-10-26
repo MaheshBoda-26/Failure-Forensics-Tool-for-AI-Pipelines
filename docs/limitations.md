@@ -24,6 +24,9 @@ implemented, tested, and reachable by configuration:
 | "No Custom Check Plugins" | `CHECK_PLUGINS=module:attr,…` registers custom deterministic checks, validated at startup (spec 05). |
 | "No PII Redaction" | Regex redaction at the persistence boundary, before the JSON and SQLite writes (spec 03). |
 | "No React Frontend (Streamlit Only)" | `frontend/` is React + Vite + React Flow; `streamlit_app.py` is the legacy explorer. |
+| "No Job Reaper" | `QUEUE_STALL_TIMEOUT` + `claim_expires_at` column + heartbeat loop + periodic reaper; `forensics queue reaper` CLI command for manual recovery. |
+| "No Rate Limiting" | Per-tenant token bucket in SQLite with `RATE_LIMIT_ENABLED`, `RATE_LIMIT_REQUESTS_PER_MINUTE`, `RATE_LIMIT_BURST`; FastAPI middleware with 429 + `Retry-After` headers. |
+| "No API Key Expiry" | `AUTH_KEY_TTL_DAYS` + `--ttl` CLI option + expiration check in `validate_api_key`. |
 
 Two further configuration gaps were closed at the same time, because a setting
 that silently does nothing is worse than a missing one:
@@ -56,26 +59,29 @@ wrapper (one header, one input).
 
 ---
 
-## 2. A worker that dies mid-job leaves the job `running` forever
+## 2. ~~A worker that dies mid-job leaves the job `running` forever~~ — **RESOLVED**
 
 **Limitation**: jobs are claimed by an atomic `UPDATE … RETURNING`, but nothing
 reclaims a job whose worker was killed (SIGKILL, OOM, deploy) after claiming it.
 There is no visibility timeout and no reaper.
 
-**Impact**: the job never completes and is never retried; `attempts` stays at
-whatever the claim set. Nothing else in the queue is affected, and no other job
-is blocked.
+**Resolution**: Implemented in `src/forensics/queue.py` and `src/forensics/worker.py`:
 
-**Mitigation**: `SIGTERM` is handled cleanly (the loop finishes its current batch
+- Added `claim_expires_at` column to `job_queue` table
+- Worker sets expiration on claim (`QUEUE_STALL_TIMEOUT`, default 300s)
+- Worker sends periodic heartbeats (every `stall_timeout/3` seconds) to extend claim
+- Periodic reaper in worker loop reclaims stalled jobs from other workers
+- `forensics queue reaper` CLI command for manual recovery
+- `forensics queue reaper --stall-timeout N` for custom timeout
+
+**Impact**: Jobs from crashed workers are automatically reclaimed and retried.
+
+**Previous mitigation** (now obsolete): `SIGTERM` is handled cleanly (the loop finishes its current batch
 and exits), which covers an ordinary deploy or restart. For a hard kill, requeue
 by hand:
-
 ```sql
 UPDATE job_queue SET status='pending', worker_id=NULL WHERE job_id='…';
 ```
-
-A reaper would need `QUEUE_STALL_TIMEOUT` plus a policy for repeated crashes;
-that is deliberately not guessed at here.
 
 ---
 
@@ -342,7 +348,7 @@ is the queue-depth view.
 | # | Limitation | Severity | Mitigation available today |
 |---|---|---|---|
 | 1 | Bundled UI cannot send an API key | Medium | Deploy with `AUTH_ENABLED=false`; use the API directly otherwise |
-| 2 | No reaper for jobs whose worker died | Medium | Handlers stop cleanly on SIGTERM; manual `UPDATE` for hard kills |
+| 2 | ~~No reaper for jobs whose worker died~~ — **RESOLVED** | ~~Medium~~ | `QUEUE_STALL_TIMEOUT` + heartbeat + periodic reaper + CLI command |
 | 3 | Scheduled eval is instance-wide | Low | Per-tenant runs via `POST /eval/run` |
 | 4 | Auth off = all tenants visible | Medium | Deployment-wide switch; writes still stamp a tenant |
 | 5 | In-flight job payload holds raw text | Medium | Cleared at terminal state; reference documents by id if unacceptable |
@@ -354,8 +360,8 @@ is the queue-depth view.
 | 10 | Prices default to 0.0 | Medium | Set real prices in `.env` |
 | 11 | Single-writer SQLite | Low | WAL + `busy_timeout`; `db_path` is substitutable |
 | 12 | Propagation check is a heuristic | Low | Evidence chain cites the upstream span |
-| 13 | Keys never expire, no scopes | Medium | Immediate revocation, audited rows |
-| 14 | No rate limiting | Low | Model latency bounds a single-tenant demo |
+| 13 | ~~Keys never expire, no scopes~~ — **RESOLVED** | ~~Medium~~ | `AUTH_KEY_TTL_DAYS` + `--ttl` CLI option + expiration check in `validate_api_key` |
+| 14 | ~~No rate limiting~~ — **RESOLVED** | ~~Low~~ | Per-tenant token bucket in SQLite with `RATE_LIMIT_ENABLED`, `RATE_LIMIT_REQUESTS_PER_MINUTE`, `RATE_LIMIT_BURST` |
 | 15 | Small dataset (15 documents) | Low | Schema is size-agnostic; fault injection scales failures |
 | 16 | Live model calls not in CI | Medium | `pytest -m live`; mock-transport coverage of the ladders |
 | 17 | No orchestrator or tenant fairness | Low | Atomic claims, concurrency/priority levers |

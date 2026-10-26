@@ -51,12 +51,14 @@ _SCHEMA = (
         error TEXT,
         worker_id TEXT,
         attempts INTEGER DEFAULT 0,
-        max_attempts INTEGER DEFAULT 3
+        max_attempts INTEGER DEFAULT 3,
+        claim_expires_at TEXT
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_job_queue_status "
     "ON job_queue(status, priority DESC, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_job_queue_tenant ON job_queue(tenant_id)",
+    "CREATE INDEX IF NOT EXISTS idx_job_queue_claim_expires ON job_queue(claim_expires_at)",
 )
 
 
@@ -85,6 +87,7 @@ class Job(BaseModel):
     worker_id: str | None = None
     attempts: int = 0
     max_attempts: int = 3
+    claim_expires_at: str | None = None
 
 
 class JobQueue:
@@ -132,6 +135,9 @@ class JobQueue:
         data = dict(zip(cols, row, strict=False))
         data["payload"] = json.loads(data["payload"] or "{}")
         data["result"] = json.loads(data["result"]) if data.get("result") else None
+        # claim_expires_at may not exist in older databases
+        if "claim_expires_at" not in data:
+            data["claim_expires_at"] = None
         return Job.model_validate(data)
 
     # --- producer ---
@@ -179,20 +185,26 @@ class JobQueue:
 
     # --- consumer ---
 
-    def dequeue(self, worker_id: str, concurrency: int = 1) -> list[Job]:
+    def dequeue(self, worker_id: str, concurrency: int = 1, stall_timeout: int = 300) -> list[Job]:
         """Atomically claim up to `concurrency` pending jobs, highest priority first.
 
         One statement per claim, so the row is claimed and returned from the same
         locked write: a second worker racing for the same job finds it already
         `running` and gets nothing.
+
+        `stall_timeout` is the number of seconds after which a claimed job is
+        considered stalled and eligible for reclamation. The `claim_expires_at`
+        timestamp is set to `now + stall_timeout`.
         """
         claimed: list[Job] = []
+        expires_at = datetime.now(UTC) + timedelta(seconds=stall_timeout)
         with self._conn() as conn:
             for _ in range(max(concurrency, 0)):
                 cursor = conn.execute(
                     """
                     UPDATE job_queue
-                    SET status = ?, started_at = ?, worker_id = ?, attempts = attempts + 1
+                    SET status = ?, started_at = ?, worker_id = ?, attempts = attempts + 1,
+                        claim_expires_at = ?
                     WHERE job_id = (
                         SELECT job_id FROM job_queue
                         WHERE status = ?
@@ -205,6 +217,7 @@ class JobQueue:
                         JobStatus.RUNNING.value,
                         datetime.now(UTC).isoformat(),
                         worker_id,
+                        expires_at.isoformat(),
                         JobStatus.PENDING.value,
                     ),
                 )
@@ -220,7 +233,8 @@ class JobQueue:
             cursor = conn.execute(
                 """
                 UPDATE job_queue
-                SET status = ?, completed_at = ?, result = ?, payload = ?, error = NULL
+                SET status = ?, completed_at = ?, result = ?, payload = ?, error = NULL,
+                    claim_expires_at = NULL
                 WHERE job_id = ?
                 """,
                 (
@@ -249,7 +263,8 @@ class JobQueue:
             attempts, max_attempts = int(row[0]), int(row[1])
             if attempts < max_attempts:
                 conn.execute(
-                    "UPDATE job_queue SET status = ?, error = ?, worker_id = NULL WHERE job_id = ?",
+                    "UPDATE job_queue SET status = ?, error = ?, worker_id = NULL, "
+                    "claim_expires_at = NULL WHERE job_id = ?",
                     (JobStatus.PENDING.value, error, job_id),
                 )
                 return JobStatus.PENDING
@@ -257,7 +272,8 @@ class JobQueue:
             conn.execute(
                 """
                 UPDATE job_queue
-                SET status = ?, completed_at = ?, error = ?, worker_id = NULL, payload = ?
+                SET status = ?, completed_at = ?, error = ?, worker_id = NULL, payload = ?,
+                    claim_expires_at = NULL
                 WHERE job_id = ?
                 """,
                 (
@@ -337,6 +353,49 @@ class JobQueue:
                 "DELETE FROM job_queue WHERE status IN (?, ?) AND completed_at IS NOT NULL "
                 "AND completed_at < ?",
                 (JobStatus.COMPLETED.value, JobStatus.FAILED.value, cutoff),
+            )
+            return cursor.rowcount
+
+    def heartbeat(self, job_id: str, worker_id: str, stall_timeout: int = 300) -> bool:
+        """Extend the claim expiration for a job being processed.
+
+        Returns True if the job was found and belongs to this worker, False otherwise.
+        This should be called periodically by the worker while processing a long job.
+        """
+        expires_at = datetime.now(UTC) + timedelta(seconds=stall_timeout)
+        with self._conn() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE job_queue
+                SET claim_expires_at = ?
+                WHERE job_id = ? AND worker_id = ? AND status = ?
+                """,
+                (
+                    expires_at.isoformat(),
+                    job_id,
+                    worker_id,
+                    JobStatus.RUNNING.value,
+                ),
+            )
+            return cursor.rowcount > 0
+
+    def reclaim_stalled_jobs(self, stall_timeout: int = 300) -> int:
+        """Reclaim jobs that have been running past their claim expiration.
+
+        Finds jobs with status 'running' where claim_expires_at is in the past,
+        resets them to 'pending' with worker_id=NULL, and clears the expiration.
+
+        Returns the number of jobs reclaimed.
+        """
+        now = datetime.now(UTC).isoformat()
+        with self._conn() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE job_queue
+                SET status = ?, worker_id = NULL, claim_expires_at = NULL
+                WHERE status = ? AND claim_expires_at IS NOT NULL AND claim_expires_at < ?
+                """,
+                (JobStatus.PENDING.value, JobStatus.RUNNING.value, now),
             )
             return cursor.rowcount
 

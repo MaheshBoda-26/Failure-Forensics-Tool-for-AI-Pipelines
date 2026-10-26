@@ -35,7 +35,8 @@ from forensics.models import (
     TraceStatus,
 )
 from forensics.queue import Job, JobStatus, get_queue
-from forensics.storage import Storage
+from forensics.storage import get_storage as _get_storage_factory
+from forensics.storage_base import StorageBase
 
 
 @asynccontextmanager
@@ -87,7 +88,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_storage: Storage | None = None
+
+_storage: StorageBase | None = None
 _auth: AuthManager | None = None
 
 #: Tenant used for every record written while auth is disabled. It matches the
@@ -96,7 +98,81 @@ _auth: AuthManager | None = None
 DEFAULT_TENANT = Tenant(tenant_id=DEFAULT_TENANT_ID, name="default")
 
 
-def get_storage() -> Storage:
+async def get_current_tenant_from_request(request):
+    """Extract tenant from request without using Depends."""
+    from forensics.auth import AuthManager
+    from forensics.config import get_settings
+    from forensics.storage import get_storage
+
+    settings = get_settings()
+    if not settings.auth_enabled:
+        return DEFAULT_TENANT
+
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        # Will be handled by the endpoint's own auth check
+        return DEFAULT_TENANT
+
+    auth = AuthManager(
+        get_storage(),
+        prefix=settings.auth_api_key_prefix,
+        rounds=settings.auth_bcrypt_rounds,
+    )
+    api_key = auth.validate_api_key(auth_header[len("Bearer ") :].strip())
+    if api_key is None:
+        return DEFAULT_TENANT
+
+    return api_key
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request, call_next):
+    """Per-tenant token bucket rate limiting.
+
+    Only applies when RATE_LIMIT_ENABLED=true and auth is enabled (so we have a tenant).
+    Skips health checks and static files.
+    """
+    settings = get_settings()
+
+    # Skip if rate limiting is disabled
+    if not settings.rate_limit_enabled:
+        return await call_next(request)
+
+    # Skip health check and static files
+    if request.url.path in ("/health", "/") or request.url.path.startswith("/static"):
+        return await call_next(request)
+
+    # Resolve tenant
+    tenant = await get_current_tenant_from_request(request)
+
+    # If no tenant (auth disabled), skip rate limiting
+    if tenant.tenant_id == DEFAULT_TENANT_ID and not settings.auth_enabled:
+        return await call_next(request)
+
+    # Apply rate limit
+    from forensics.rate_limit import get_rate_limiter
+
+    limiter = get_rate_limiter()
+    success, retry_after = limiter.try_consume(tenant.tenant_id)
+
+    if not success:
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Rate limit exceeded"},
+            headers={"Retry-After": str(int(retry_after) + 1)},
+        )
+
+    response = await call_next(request)
+    # Add rate limit headers
+    bucket = limiter.get_bucket_state(tenant.tenant_id)
+    response.headers["X-RateLimit-Limit"] = str(int(bucket["capacity"]))
+    response.headers["X-RateLimit-Remaining"] = str(int(bucket["tokens"]))
+    return response
+
+
+def get_storage() -> StorageBase:
     """Return the process-wide Storage, creating it on first use.
 
     Constructing Storage at import time opened (and created) the SQLite file as
@@ -105,7 +181,7 @@ def get_storage() -> Storage:
     """
     global _storage
     if _storage is None:
-        _storage = Storage()
+        _storage = _get_storage_factory()
     return _storage
 
 

@@ -28,7 +28,7 @@ from forensics.cli import app as cli_app
 from forensics.config import reset_settings
 from forensics.models import EvalCase, EvalResult, EvalRun, FailureCategory
 from forensics.scheduler import JOB_ID, EvalScheduler, get_scheduler, reset_scheduler
-from forensics.storage import Storage
+from forensics.storage import Storage, get_storage, reset_storage
 
 CRON = "0 2 * * *"
 SECRET = "webhook-signing-secret"  # pragma: allowlist secret — a test fixture
@@ -576,7 +576,9 @@ def test_cli_scheduler_status_lists_recent_runs(
     monkeypatch.setenv("EVAL_SCHEDULE", CRON)
     reset_settings()
     reset_scheduler()
-    _persisted_run(Storage(), run_id="run_abc", passed=7, failed=3)
+    reset_storage()
+    storage = get_storage()
+    _persisted_run(storage, run_id="run_abc", passed=7, failed=3)
 
     result = CliRunner().invoke(cli_app, ["scheduler-status"])
 

@@ -13,7 +13,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from forensics.cli import app
-from forensics.storage import Storage
+from forensics.storage import get_storage, reset_storage
 
 
 def _fixture_count() -> int:
@@ -27,10 +27,11 @@ def test_seed_loads_committed_live_traces_with_diagnoses() -> None:
     expected = _fixture_count()
     assert expected >= 1, "dataset/live/traces must ship at least one real trace"
 
+    reset_storage()  # Ensure fresh singleton
     result = CliRunner().invoke(app, ["seed"])
 
     assert result.exit_code == 0, result.output
-    storage = Storage()
+    storage = get_storage()
     traces = storage.list_traces(limit=100)
     assert len(traces) == expected
     assert all(trace.spans for trace in traces), "a seeded trace has no spans"
@@ -39,6 +40,7 @@ def test_seed_loads_committed_live_traces_with_diagnoses() -> None:
 
 
 def test_seed_is_idempotent_on_every_boot() -> None:
+    reset_storage()  # Ensure fresh singleton
     runner = CliRunner()
 
     first = runner.invoke(app, ["seed"])
@@ -47,4 +49,5 @@ def test_seed_is_idempotent_on_every_boot() -> None:
     assert first.exit_code == 0, first.output
     assert second.exit_code == 0, second.output
     assert "0 loaded" in second.output
-    assert len(Storage().list_traces(limit=100)) == _fixture_count()
+    storage = get_storage()
+    assert len(storage.list_traces(limit=100)) == _fixture_count()

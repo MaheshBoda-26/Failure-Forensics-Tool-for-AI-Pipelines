@@ -20,7 +20,7 @@ from forensics.documents import is_valid_doc_id, resolve_document_text
 from forensics.llm import QuotaExhaustedError, RateLimitError, using_llm_client
 from forensics.models import DEFAULT_TENANT_ID, Document, DocumentType, FailureCategory
 from forensics.pipeline import Pipeline
-from forensics.storage import Storage
+from forensics.storage import get_storage
 from forensics.tracing import trace_context
 
 # The demo runs one pipeline per dataset document. A hosted provider's
@@ -105,7 +105,7 @@ def seed() -> None:
         )
         return
 
-    storage = Storage()
+    storage = get_storage()
     seeded = skipped = failed = 0
 
     for path in fixture_paths:
@@ -179,7 +179,7 @@ def run(doc_path: Path) -> None:
             pipeline = Pipeline(client=client)
             with trace_context(document_id=doc_path.stem) as ctx:
                 result = await pipeline.run(doc, document_id=doc_path.stem)
-                storage = Storage()
+                storage = get_storage()
                 assert ctx.trace is not None
                 # Diagnose the unredacted trace, then persist (save_trace redacts
                 # in place when PII_REDACTION_ENABLED is on).
@@ -295,7 +295,7 @@ def demo() -> None:
     with open(labels_path) as f:
         labels = json.load(f)
 
-    storage = Storage()
+    storage = get_storage()
 
     async def _run_demo() -> None:
         async with using_llm_client() as client:
@@ -492,10 +492,10 @@ def benchmark_analyzer() -> None:
 
     from forensics.eval_simple import document_ground_truth
     from forensics.faults import score_all_faults
-    from forensics.storage import Storage
+    from forensics.storage import get_storage
 
     # Find a clean trace to use as baseline
-    storage = Storage()
+    storage = get_storage()
     traces = storage.list_traces(limit=20)
     if not traces:
         typer.secho("No traces found. Run `demo` first.", fg=typer.colors.RED, err=True)
@@ -623,7 +623,7 @@ def _auth_manager() -> AuthManager:
     """
     settings = get_settings()
     manager = AuthManager(
-        Storage(),
+        get_storage(),
         prefix=settings.auth_api_key_prefix,
         rounds=settings.auth_bcrypt_rounds,
     )
@@ -666,11 +666,14 @@ def auth_list_tenants() -> None:
 def auth_create_key(
     tenant: str = typer.Option(..., "--tenant", help="tenant_id that will own the key"),
     name: str | None = typer.Option(None, "--name", help="Label, e.g. 'ci-cd'"),
+    ttl: int = typer.Option(0, "--ttl", help="Key TTL in days (0 = no expiry)"),
 ) -> None:
     """Mint an API key. The plaintext key is printed once and never stored."""
     manager = _auth_manager()
     try:
-        api_key, plaintext = manager.create_api_key(tenant, name=name)
+        api_key, plaintext = manager.create_api_key(
+            tenant, name=name, ttl_days=ttl if ttl > 0 else None
+        )
     except ValueError as e:
         typer.secho(f"Error: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from e
@@ -680,6 +683,10 @@ def auth_create_key(
         fg=typer.colors.GREEN,
         err=True,
     )
+    if api_key.expires_at:
+        typer.secho(
+            f"Key expires at: {api_key.expires_at.isoformat()}", fg=typer.colors.YELLOW, err=True
+        )
     typer.secho(
         "Store this now — only the bcrypt hash is kept, so it cannot be shown again.",
         fg=typer.colors.YELLOW,
@@ -739,7 +746,7 @@ def scheduler_start() -> None:
     # Same startup gate as `serve`/`worker`: an invalid webhook, cron string or
     # PII pattern must fail here, not hours later when the first alert fires.
     _setup()
-    scheduler = get_scheduler(Storage())
+    scheduler = get_scheduler(get_storage())
     scheduler.start()
     if not scheduler.settings.eval_schedule:
         typer.secho(
@@ -766,7 +773,7 @@ def scheduler_status() -> None:
     """Show the eval schedule, the next run, and recent runs."""
     from forensics.scheduler import get_scheduler
 
-    scheduler = get_scheduler(Storage())
+    scheduler = get_scheduler(get_storage())
     status = scheduler.describe()
 
     typer.secho("\n⏰ Eval scheduler", fg=typer.colors.BLUE, bold=True)
@@ -830,7 +837,7 @@ def worker_start() -> None:
         fg=typer.colors.GREEN,
         err=True,
     )
-    worker = PipelineWorker(Storage(), get_queue())
+    worker = PipelineWorker(get_storage(), get_queue())
     try:
         asyncio.run(worker.run())
     except KeyboardInterrupt:
@@ -953,6 +960,23 @@ def queue_list(
         "\n  Totals: " + ", ".join(f"{name}={count}" for name, count in sorted(counts.items())),
         fg=typer.colors.BLUE,
     )
+
+
+@queue_app.command("reaper")
+def queue_reaper(
+    stall_timeout: int = typer.Option(
+        300, "--stall-timeout", help="Seconds before a running job is considered stalled"
+    ),
+) -> None:
+    """Reclaim stalled jobs (running past their claim expiration).
+
+    Useful for manual recovery after a worker crash, or to test the reaper logic.
+    """
+    _setup()
+    from forensics.queue import get_queue
+
+    reclaimed = get_queue().reclaim_stalled_jobs(stall_timeout=stall_timeout)
+    typer.secho(f"Reclaimed {reclaimed} stalled jobs", fg=typer.colors.GREEN)
 
 
 def main() -> None:

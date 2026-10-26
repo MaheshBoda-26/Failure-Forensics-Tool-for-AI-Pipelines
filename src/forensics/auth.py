@@ -22,13 +22,13 @@ Design notes:
 
 import contextlib
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import bcrypt
 
 from forensics.models import DEFAULT_TENANT_ID, APIKey, Tenant
-from forensics.storage import Storage
+from forensics.storage_base import StorageBase
 
 #: Bcrypt truncates at 72 bytes and raises on longer input in bcrypt >= 4.1.
 #: Our own keys are ~36 characters; this bound only ever rejects hostile input.
@@ -75,9 +75,9 @@ def _key_prefix(raw_key: str, configured_prefix: str) -> str:
 
 
 class AuthManager:
-    """Tenant and API key operations over the shared SQLite database."""
+    """Tenant and API key operations over the shared database."""
 
-    def __init__(self, storage: Storage, prefix: str = "ffk_", rounds: int = 12) -> None:
+    def __init__(self, storage: StorageBase, prefix: str = "ffk_", rounds: int = 12) -> None:
         if not prefix:
             raise ValueError("AUTH_API_KEY_PREFIX must be non-empty")
         if not 4 <= rounds <= 16:
@@ -158,25 +158,36 @@ class AuthManager:
 
     # --- API keys ---
 
-    def create_api_key(self, tenant_id: str, name: str | None = None) -> tuple[APIKey, str]:
-        """Mint a key. Returns `(APIKey, plaintext)`; the plaintext is not stored."""
+    def create_api_key(
+        self, tenant_id: str, name: str | None = None, ttl_days: int | None = None
+    ) -> tuple[APIKey, str]:
+        """Mint a key. Returns `(APIKey, plaintext)`; the plaintext is not stored.
+
+        If `ttl_days` is provided, the key will expire after that many days.
+        """
         if self.get_tenant(tenant_id, active_only=False) is None:
             raise ValueError(f"Unknown tenant: {tenant_id}")
 
         raw_key = self.prefix + secrets.token_urlsafe(24)
         key_hash = bcrypt.hashpw(raw_key.encode(), bcrypt.gensalt(self.rounds)).decode()
+        expires_at = None
+        if ttl_days is not None and ttl_days > 0:
+            expires_at = datetime.now(UTC) + timedelta(days=ttl_days)
         api_key = APIKey(
             key_id=secrets.token_hex(6),
             tenant_id=tenant_id,
             key_hash=key_hash,
             prefix=_key_prefix(raw_key, self.prefix),
             name=name,
+            expires_at=expires_at,
         )
         with self.storage._conn() as conn:
             conn.execute(
                 """
-                INSERT INTO api_keys (key_id, tenant_id, key_hash, prefix, name, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO api_keys (
+                    key_id, tenant_id, key_hash, prefix, name, created_at, expires_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     api_key.key_id,
@@ -185,6 +196,7 @@ class AuthManager:
                     api_key.prefix,
                     api_key.name,
                     api_key.created_at.isoformat(),
+                    api_key.expires_at.isoformat() if api_key.expires_at else None,
                 ),
             )
         return api_key, raw_key
@@ -192,8 +204,9 @@ class AuthManager:
     def validate_api_key(self, raw_key: str) -> APIKey | None:
         """Return the key record for a valid key, else None.
 
-        Fails closed: an unknown prefix, a revoked key, an over-long key, and a
-        hash mismatch are indistinguishable to the caller (all None → 401).
+        Fails closed: an unknown prefix, a revoked key, an over-long key, an
+        expired key, and a hash mismatch are indistinguishable to the caller
+        (all None → 401).
         """
         if not raw_key or not raw_key.startswith(self.prefix):
             return None
@@ -230,6 +243,20 @@ class AuthManager:
                 return None
 
             data = dict(zip(cols, matched_row, strict=False))
+
+            # Check expiration
+            expires_at = data.get("expires_at")
+            if expires_at:
+                try:
+                    if datetime.fromisoformat(expires_at.replace("Z", "+00:00")) < datetime.now(
+                        UTC
+                    ):
+                        _spend_bcrypt(raw_key)
+                        return None
+                except ValueError:
+                    # Malformed date, treat as not expired
+                    pass
+
             used_at = datetime.now(UTC).isoformat()
             conn.execute(
                 "UPDATE api_keys SET last_used_at = ? WHERE key_id = ?",

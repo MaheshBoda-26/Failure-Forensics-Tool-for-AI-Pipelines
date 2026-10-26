@@ -39,6 +39,9 @@ _COLUMN_ADDITIONS: dict[str, dict[str, str]] = {
         # "none", so the override has to survive persistence.
         "override_step": "TEXT",
     },
+    "api_keys": {
+        "expires_at": "TEXT",
+    },
 }
 
 _AUTH_TABLE_STATEMENTS: tuple[str, ...] = (
@@ -60,6 +63,7 @@ _AUTH_TABLE_STATEMENTS: tuple[str, ...] = (
         created_at TEXT NOT NULL,
         revoked_at TEXT,
         last_used_at TEXT,
+        expires_at TEXT,
         FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id)
     )
     """,

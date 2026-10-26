@@ -313,6 +313,7 @@ forensics worker start
 forensics queue enqueue --file doc.txt --expected invoice
 forensics queue status --job-id <id>
 forensics queue list --status pending
+forensics queue reaper [--stall-timeout N]  # reclaim stalled jobs from crashed workers
 ```
 
 ---
@@ -328,9 +329,11 @@ Everything is environment-driven; `.env.example` documents every setting.
 | Cost control | `SPEND_CAP_PER_RUN_USD`, `SPEND_CAP_GLOBAL_USD`, `CACHE_ENABLED`, `DRY_RUN` |
 | Diagnosis | `JUDGE_ENABLED`, `JUDGE_FORCE`, `CHECK_PLUGINS`, `ANALYZER_VERSION` |
 | Privacy | `PII_REDACTION_ENABLED`, `PII_ENTITY_TYPES`, `PII_CUSTOM_PATTERNS` |
-| Auth | `AUTH_ENABLED`, `AUTH_API_KEY_PREFIX`, `AUTH_BCRYPT_ROUNDS` |
+| Auth | `AUTH_ENABLED`, `AUTH_API_KEY_PREFIX`, `AUTH_BCRYPT_ROUNDS`, `AUTH_KEY_TTL_DAYS` |
 | Scheduling | `EVAL_SCHEDULE`, `EVAL_SCHEDULE_TIMEZONE`, `ALERT_WEBHOOK_URL`, `ALERT_WEBHOOK_SECRET`, `ALERT_REGRESSION_THRESHOLD` |
-| Queue | `QUEUE_ENABLED`, `QUEUE_WORKER_CONCURRENCY`, `QUEUE_POLL_INTERVAL`, `QUEUE_JOB_TTL` |
+| Queue | `QUEUE_ENABLED`, `QUEUE_WORKER_CONCURRENCY`, `QUEUE_POLL_INTERVAL`, `QUEUE_JOB_TTL`, `QUEUE_STALL_TIMEOUT` |
+| Rate Limiting | `RATE_LIMIT_ENABLED`, `RATE_LIMIT_REQUESTS_PER_MINUTE`, `RATE_LIMIT_BURST` |
+| Database | `DATABASE_URL` (PostgreSQL) |
 | Observability | `OTEL_EXPORTER`, `OTEL_ENDPOINT`, `OTEL_SERVICE_NAME`, `OTEL_SAMPLING_RATE` |
 | Paths / server | `DATA_DIR`, `TRACES_DIR`, `DB_PATH`, `CACHE_DIR`, `SPEND_FILE`, `STATIC_DIR`, `CORS_ORIGINS` |
 
@@ -350,6 +353,10 @@ fails immediately instead of at the first request.
 | Worker queue | `QUEUE_ENABLED=true` | Runs move to `forensics worker start`; requests return 202 |
 | Custom checks | `CHECK_PLUGINS=mod:fn` | Domain checks join the deterministic suite |
 | Judge LLM | `JUDGE_ENABLED=true` | Optional semantic second opinion |
+| Job Reaper | `QUEUE_STALL_TIMEOUT=300` | Auto-reclaim stalled jobs from crashed workers |
+| Rate Limiting | `RATE_LIMIT_ENABLED=true` | Per-tenant token bucket with 429 + `Retry-After` |
+| API Key Expiry | `AUTH_KEY_TTL_DAYS=90` | Keys auto-expire after configured days |
+| PostgreSQL Backend | `DATABASE_URL=postgresql://...` | Horizontal scaling with asyncpg |
 
 All are off by default, so the base system needs no broker, collector, or
 scheduler service — only the model API.

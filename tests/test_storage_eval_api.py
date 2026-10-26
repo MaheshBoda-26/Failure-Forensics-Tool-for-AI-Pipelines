@@ -663,12 +663,14 @@ def test_legacy_duplicate_eval_cases_are_collapsed_on_migration(tmp_path: Path) 
 def test_eval_case_sweep_is_idempotent() -> None:
     """`forensics eval-cases` twice must not double the suite.
 
-    `Storage()` resolves the env-redirected paths the autouse fixture installs,
+    `get_storage()` resolves the env-redirected paths the autouse fixture installs,
     so this exercises the same code path the CLI does.
     """
     from forensics.eval_simple import create_eval_cases_from_confirmed_flags
+    from forensics.storage import get_storage, reset_storage
 
-    storage = Storage()
+    reset_storage()
+    storage = get_storage()
     trace = _failing_trace()
     storage.save_trace(trace)
     diagnosis = analyze_trace(trace, DOC, "contract")

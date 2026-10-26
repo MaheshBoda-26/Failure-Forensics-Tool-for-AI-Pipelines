@@ -26,7 +26,8 @@ from forensics.models import (
     Trace,
 )
 from forensics.pipeline import Pipeline
-from forensics.storage import Storage
+from forensics.storage import get_storage
+from forensics.storage_base import StorageBase
 
 
 def _pipeline_version() -> str:
@@ -87,7 +88,9 @@ def document_ground_truth(document_id: str) -> str | None:
     return None
 
 
-def _document_text_for_trace(storage: Storage, trace_id: str, tenant_id: str | None = None) -> str:
+def _document_text_for_trace(
+    storage: StorageBase, trace_id: str, tenant_id: str | None = None
+) -> str:
     """Resolve the source document text for a trace.
 
     A case carries a trace id; the trace carries the document id. Resolving
@@ -139,7 +142,7 @@ def _corrected_output(bad_output: Any, doc_text: str) -> dict[str, Any]:
     return {**bad_output, "_needs_golden": True}
 
 
-def flag_to_eval_case(flag: Flag, diagnosis: Diagnosis, storage: Storage) -> EvalCase | None:
+def flag_to_eval_case(flag: Flag, diagnosis: Diagnosis, storage: StorageBase) -> EvalCase | None:
     """Convert a confirmed flag into an eval case.
 
     `corrected_output` is the failing span's output with the hallucinated/
@@ -314,7 +317,7 @@ async def run_eval(tenant_id: str | None = None) -> EvalRun | None:
     `tenant_id=None` evaluates every case (CLI and dev mode); when a tenant is
     given, both the cases considered and the run record created are scoped to it.
     """
-    storage = Storage()
+    storage = get_storage()
 
     # Get all eval cases
     cases = storage.list_eval_cases(limit=1000, tenant_id=tenant_id)
@@ -357,7 +360,7 @@ async def run_eval(tenant_id: str | None = None) -> EvalRun | None:
 
 
 async def _evaluate_cases(
-    storage: Storage, run: EvalRun, cases: list[EvalCase], pipeline: Pipeline
+    storage: StorageBase, run: EvalRun, cases: list[EvalCase], pipeline: Pipeline
 ) -> tuple[int, int, list[EvalResult]]:
     """Re-run every case against the current pipeline: (passed, failed, results).
 
@@ -409,7 +412,7 @@ async def _evaluate_cases(
 
 def print_eval_results(run_id: str) -> None:
     """Print formatted eval results table."""
-    storage = Storage()
+    storage = get_storage()
     run = storage.get_eval_run(run_id)
     if not run:
         print(f"Eval run {run_id} not found")
@@ -452,7 +455,7 @@ def create_eval_cases_from_confirmed_flags(tenant_id: str | None = None) -> int:
 
     `tenant_id=None` sweeps every tenant (CLI and dev mode).
     """
-    storage = Storage()
+    storage = get_storage()
 
     created = 0
     # Seed the dedupe set from what is already persisted. An in-memory set that

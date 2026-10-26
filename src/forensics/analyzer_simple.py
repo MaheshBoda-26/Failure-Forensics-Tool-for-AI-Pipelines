@@ -33,6 +33,7 @@ from forensics.models import (
     StepScore,
     Trace,
 )
+from forensics.storage import get_storage
 
 DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -1068,9 +1069,7 @@ def analyze_trace(trace: Trace, document_text: str, expected_type: str | None = 
 
 def analyze_trace_from_storage(trace_id: str, document_text: str) -> Diagnosis | None:
     """Analyze a trace loaded from storage."""
-    from forensics.storage import Storage
-
-    storage = Storage()
+    storage = get_storage()
     trace = storage.get_trace(trace_id)
     if not trace:
         return None

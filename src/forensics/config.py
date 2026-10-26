@@ -166,6 +166,15 @@ class Settings(BaseSettings):
     cache_enabled: bool = Field(default=True, description="Enable response cache")
     dry_run: bool = Field(default=False, description="Dry-run mode (no network calls)")
 
+    # --- Database ---
+    # DATABASE_URL enables PostgreSQL backend. If unset, SQLite is used.
+    # Format: postgresql://user:pass@host:port/dbname  # pragma: allowlist secret
+    database_url: str | None = Field(
+        default=None,
+        validation_alias="DATABASE_URL",
+        description="PostgreSQL connection URL (enables PostgreSQL backend)",
+    )
+
     # --- Paths ---
     # Read from env so a test (or a deployment) can redirect every output
     # location without touching the code that consumes it.
@@ -260,6 +269,11 @@ class Settings(BaseSettings):
         le=16,
         description="bcrypt cost factor for API key hashing (AUTH_BCRYPT_ROUNDS)",
     )
+    auth_key_ttl_days: int = Field(
+        default=0,
+        ge=0,
+        description="Default TTL for new API keys in days (0 = no expiry) (AUTH_KEY_TTL_DAYS)",
+    )
 
     # --- Scheduled eval and alerting (spec 06) ---
     eval_schedule: str = Field(
@@ -302,6 +316,23 @@ class Settings(BaseSettings):
     )
     queue_job_ttl: int = Field(
         default=86400, ge=0, description="Seconds a finished job is retained before cleanup"
+    )
+    queue_stall_timeout: int = Field(
+        default=300,
+        ge=10,
+        description="Seconds before a running job is considered stalled and reclaimed",
+    )
+
+    # --- Rate limiting ---
+    rate_limit_enabled: bool = Field(
+        default=False,
+        description="Enable per-tenant rate limiting (RATE_LIMIT_ENABLED)",
+    )
+    rate_limit_requests_per_minute: int = Field(
+        default=60, ge=1, description="Maximum requests per minute per tenant"
+    )
+    rate_limit_burst: int = Field(
+        default=10, ge=1, description="Burst allowance above the sustained rate"
     )
 
     # --- Versions ---
