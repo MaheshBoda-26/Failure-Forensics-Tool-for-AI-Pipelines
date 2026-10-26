@@ -67,7 +67,14 @@ def get_storage(
     use_postgres = force_backend == "postgres" or (force_backend is None and _should_use_postgres())
 
     if use_postgres:
-        from forensics.storage_postgres import PostgresStorage
+        try:
+            from forensics.storage_postgres import PostgresStorage
+        except ModuleNotFoundError as exc:  # pragma: no cover - depends on install
+            raise RuntimeError(
+                "DATABASE_URL selects the PostgreSQL backend, but the 'asyncpg' "
+                "driver is not installed. Install the extra with "
+                '`pip install -e ".[postgres]"`, or unset DATABASE_URL to use SQLite.'
+            ) from exc
 
         _storage_instance = PostgresStorage(traces_dir=traces_dir, db_path=db_path)
     else:
