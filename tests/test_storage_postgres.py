@@ -41,6 +41,17 @@ from forensics.models import (
 
 PG_URL = os.environ.get("FORENSICS_TEST_POSTGRES_URL", "")
 
+if PG_URL:
+    # A clear message beats an ImportError deep inside a fixture: the driver is an
+    # opt-in extra, so "URL set but driver missing" is a setup mistake, not a bug.
+    try:
+        import asyncpg  # noqa: F401
+    except ImportError:  # pragma: no cover - depends on the environment
+        pytest.skip(
+            "asyncpg is not installed: pip install -e '.[postgres]'",
+            allow_module_level=True,
+        )
+
 pytestmark = [
     pytest.mark.postgres,
     pytest.mark.skipif(
@@ -365,3 +376,24 @@ def test_close_stops_the_event_loop_thread(tmp_path: Path, monkeypatch: pytest.M
 
     assert st._loop is None
     assert threading.active_count() == before
+
+
+def test_close_is_idempotent_and_the_backend_can_be_reopened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`reset_storage()` closes, and a later call may build on the same object.
+
+    Closing must therefore be safe to repeat and must leave the storage usable,
+    not permanently dead.
+    """
+    from forensics.storage_postgres import PostgresStorage
+
+    monkeypatch.setenv("DATABASE_URL", PG_URL)
+    st = PostgresStorage(traces_dir=tmp_path / "traces3")
+
+    assert st.list_traces() == []
+    st.close()
+    st.close()  # idempotent
+
+    assert st.list_traces(tenant_id=DEFAULT_TENANT_ID) == []
+    st.close()

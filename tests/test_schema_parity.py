@@ -12,13 +12,12 @@ backend declares, table by table, column by column.
 
 from __future__ import annotations
 
-import inspect
 import re
 from pathlib import Path
 
 import pytest
 
-from forensics.storage_postgres import PostgresStorage
+import forensics
 from forensics.storage_sqlite import Storage as SQLiteStorage
 
 _CREATE_TABLE = re.compile(
@@ -46,7 +45,17 @@ def _sqlite_schema(tmp_path: Path) -> dict[str, set[str]]:
 
 
 def _postgres_schema() -> dict[str, set[str]]:
-    source = inspect.getsource(PostgresStorage._init_schema)
+    """Parse the DDL out of the module source instead of importing it.
+
+    Importing `forensics.storage_postgres` needs the opt-in `asyncpg` driver, and
+    this guard is meant to run on a plain `pip install -e ".[dev]"`. The DDL is
+    static text, so it can be read without the driver.
+    """
+    source_path = Path(forensics.__file__).parent / "storage_postgres.py"
+    module_source = source_path.read_text()
+    start = module_source.index("async def _init_schema")
+    end = module_source.index("\n    async def _async_save_trace", start)
+    source = module_source[start:end]
     schema: dict[str, set[str]] = {}
     for table, body in _CREATE_TABLE.findall(source):
         columns: set[str] = set()
