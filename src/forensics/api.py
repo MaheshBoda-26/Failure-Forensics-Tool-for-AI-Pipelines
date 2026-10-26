@@ -9,7 +9,7 @@ import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -205,7 +205,9 @@ def get_auth() -> AuthManager:
     return _auth
 
 
-def get_current_tenant(authorization: str | None = None, *, scope: str = "read") -> Tenant:
+def get_current_tenant(
+    authorization: str | None = None, *, scope: str = "read", request: Request | None = None
+) -> Tenant:
     """Resolve the calling tenant from the `Authorization` header.
 
     With `AUTH_ENABLED=false` this is the shared default tenant and every request
@@ -222,7 +224,28 @@ def get_current_tenant(authorization: str | None = None, *, scope: str = "read")
     than through `Depends`, because this codebase's tests call endpoint functions
     directly and a `Depends` default would leak a `Depends` object into those
     calls.
+
+    If `request` is provided and the middleware already validated the key, the
+    cached result is reused — one bcrypt + DB write per request instead of two.
     """
+    # Fast path: middleware already validated and cached the key
+    if (
+        request is not None
+        and hasattr(request.state, "auth_key")
+        and request.state.auth_key is not None
+    ):
+        key = request.state.auth_key
+        if not key.allows(scope):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"API key is missing the '{scope}' scope "
+                    f"(has: {', '.join(key.scopes) or 'none'})"
+                ),
+            )
+        return cast(Tenant, request.state.auth_tenant)
+
+    # Slow path: direct call (tests, non-middleware paths) or no cached value
     if not get_settings().auth_enabled:
         return DEFAULT_TENANT
 
