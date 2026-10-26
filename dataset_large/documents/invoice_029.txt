@@ -1,32 +1,35 @@
-TAX INVOICE
+COMMERCIAL INVOICE
 
-ABN: 23 127 859 156
-Invoice #: INV-2025-2198
-Date: 2024-10-28
+Invoice Number: INV-2024-4655
+Invoice Date: 2024-05-06
+Purchase Order: PO-15177
 
-FROM:
-Horizon Enterprises
-2351 Oak Ave, Suite 410
+SELLER:
+Apex Dynamics
+4450 Main St, Suite 830
+Tax ID: TAX-663407273
 
-TO:
-Nexus Digital Services
-9408 Main St, Suite 462
+BUYER:
+Vertex Solutions
+9636 Main St, Suite 828
+Tax ID: TAX-293432142
 
-DESCRIPTION                                         QTY    UNIT PRICE    GST    TOTAL
-Item 1: 41 x $2573 = $105493
-Item 2: 13 x $4659 = $60567
-Item 3: 3 x $564 = $1692
-Item 4: 44 x $1281 = $56364
-Item 5: 31 x $366 = $11346
-Item 6: 1 x $1165 = $1165
-Item 7: 24 x $4960 = $119040
-Item 8: 22 x $4964 = $109208
+LINE ITEMS:
+Item 1: 8 x $4748 = $37984
+Item 2: 24 x $559 = $13416
+Item 3: 46 x $4487 = $206402
+Item 4: 32 x $290 = $9280
 
-GST-FREE AMOUNT: $139,462.50
-GST AMOUNT: $92,975.00
-TOTAL INC GST: $557,850.00
+CURRENCY: CAD
+SUBTOTAL: $267,082.00
+VAT: $40,062.30
+TOTAL DUE: $307,144.30
 
-PAYMENT DUE: 2024-12-12
-BANK: NAB
-BSB: 907-776
-ACCOUNT: 48792037
+PAYMENT TERMS: Net 15 days
+DUE DATE: 2024-06-07
+
+IBAN: US18 4097US18 4097US18 4097US18 4097
+SWIFT: CITIUS33
+
+
+[PROMPT FAILURE] Summary output is completely malformed and missing required fields.

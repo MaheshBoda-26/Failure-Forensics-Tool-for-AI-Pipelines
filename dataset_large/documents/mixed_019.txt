@@ -1,8 +1,8 @@
 PROPOSAL WITH CONTRACT TERMS
 
-PROPOSAL #PROP-2024-778
-Date: 2025-02-06
-Valid Until: 2025-03-08
+PROPOSAL #PROP-2024-664
+Date: 2025-09-12
+Valid Until: 2025-10-12
 
 PREPARED FOR:
 Summit Partners
@@ -11,13 +11,13 @@ PREPARED BY:
 Vanguard Analytics
 
 EXECUTIVE SUMMARY
-Incident involving contractual service levels.
+Incident involving invoiceual service levels.
 
 SCOPE OF WORK
 Full lifecycle services including design, implementation, and support.
 
 PRICING
-Total estimated investment: $63,531.60
+Total estimated investment: $11,631.40
 
 TERMS AND CONDITIONS
 1. This proposal constitutes an offer valid for 30 days.
@@ -29,5 +29,5 @@ TERMS AND CONDITIONS
 ACCEPTANCE
 Summit Partners                              Vanguard Analytics
 _________________________              _________________________
-Michael Brown                          Michelle Martin
-Date: 2025-02-06                           Date: 2025-02-06
+Sarah Johnson                          Christopher Moore
+Date: 2025-09-12                           Date: 2025-09-12

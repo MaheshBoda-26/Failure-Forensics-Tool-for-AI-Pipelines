@@ -1,38 +1,30 @@
-COMMERCIAL INVOICE
+TAX INVOICE
 
-Invoice Number: INV-2023-7031
-Invoice Date: 2023-09-06
-Purchase Order: PO-80763
+ABN: 90 56090 56090 560
+Invoice #: INV-2025-2892
+Date: 2024-06-13
 
-SELLER:
-BlueSky Innovations
-3706 Elm St, Suite 543
-Tax ID: TAX-652987411
+FROM:
+Quantum Leap Labs
+9328 Elm St, Suite 493
 
-BUYER:
-IronClad Security
-4736 First St, Suite 290
-Tax ID: TAX-901538431
+TO:
+Stellar Communications
+8675 Maple Dr, Suite 440
 
-LINE ITEMS:
-Item 1: 9 x $56 = $504
-Item 2: 46 x $1042 = $47932
-Item 3: 12 x $1512 = $18144
-Item 4: 30 x $4508 = $135240
-Item 5: 46 x $1564 = $71944
-Item 6: 10 x $2352 = $23520
-Item 7: 21 x $1190 = $24990
+DESCRIPTION                                         QTY    UNIT PRICE    GST    TOTAL
+Item 1: 27 x $2311 = $62397
+Item 2: 3 x $4695 = $14085
+Item 3: 41 x $1135 = $46535
 
-CURRENCY: EUR
-SUBTOTAL: $322,274.00
-VAT: $0.00
-TOTAL DUE: $322,274.00
+GST-FREE AMOUNT: $36,905.10
+GST AMOUNT: $24,603.40
+TOTAL INC GST: $147,620.40
 
-PAYMENT TERMS: Net 15 days
-DUE DATE: 2023-10-15
-
-IBAN: US86 3052 8405 7364 5824
-SWIFT: WFBIUS6S
+PAYMENT DUE: 2024-08-08
+BANK: Commonwealth Bank
+BSB: 658-999
+ACCOUNT: 65898640
 
 
 [HALLUCINATED ENTITY] Fake Vendor Inc - $50,000 - Contract ID: FAKE-2024-001

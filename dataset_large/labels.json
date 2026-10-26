@@ -186,25 +186,22 @@
       "doc_id": "invoice_003",
       "doc_type": "invoice",
       "should_fail": true,
-      "failure_step": "summarization",
-      "failure_category": "propagation_error",
-      "notes": "Seeded failure: propagation_error at summarization"
+      "failure_step": "extraction",
+      "failure_category": "extraction_hallucination",
+      "notes": "Seeded failure: extraction_hallucination at extraction"
     },
     {
       "doc_id": "invoice_004",
       "doc_type": "invoice",
-      "should_fail": true,
-      "failure_step": "classification",
-      "failure_category": "misclassification",
-      "notes": "Seeded failure: misclassification at classification"
+      "should_fail": false
     },
     {
       "doc_id": "invoice_005",
       "doc_type": "invoice",
       "should_fail": true,
-      "failure_step": "summarization",
-      "failure_category": "context_loss",
-      "notes": "Seeded failure: context_loss at summarization"
+      "failure_step": "extraction",
+      "failure_category": "extraction_hallucination",
+      "notes": "Seeded failure: extraction_hallucination at extraction"
     },
     {
       "doc_id": "invoice_006",
@@ -214,7 +211,10 @@
     {
       "doc_id": "invoice_007",
       "doc_type": "invoice",
-      "should_fail": false
+      "should_fail": true,
+      "failure_step": "extraction",
+      "failure_category": "extraction_hallucination",
+      "notes": "Seeded failure: extraction_hallucination at extraction"
     },
     {
       "doc_id": "invoice_008",
@@ -234,10 +234,7 @@
     {
       "doc_id": "invoice_011",
       "doc_type": "invoice",
-      "should_fail": true,
-      "failure_step": "extraction",
-      "failure_category": "extraction_hallucination",
-      "notes": "Seeded failure: extraction_hallucination at extraction"
+      "should_fail": false
     },
     {
       "doc_id": "invoice_012",
@@ -248,22 +245,22 @@
       "doc_id": "invoice_013",
       "doc_type": "invoice",
       "should_fail": true,
-      "failure_step": "extraction",
-      "failure_category": "extraction_hallucination",
-      "notes": "Seeded failure: extraction_hallucination at extraction"
+      "failure_step": "classification",
+      "failure_category": "misclassification",
+      "notes": "Seeded failure: misclassification at classification"
     },
     {
       "doc_id": "invoice_014",
       "doc_type": "invoice",
-      "should_fail": true,
-      "failure_step": "extraction",
-      "failure_category": "extraction_hallucination",
-      "notes": "Seeded failure: extraction_hallucination at extraction"
+      "should_fail": false
     },
     {
       "doc_id": "invoice_015",
       "doc_type": "invoice",
-      "should_fail": false
+      "should_fail": true,
+      "failure_step": "summarization",
+      "failure_category": "propagation_error",
+      "notes": "Seeded failure: propagation_error at summarization"
     },
     {
       "doc_id": "invoice_016",
@@ -273,10 +270,7 @@
     {
       "doc_id": "invoice_017",
       "doc_type": "invoice",
-      "should_fail": true,
-      "failure_step": "summarization",
-      "failure_category": "context_loss",
-      "notes": "Seeded failure: context_loss at summarization"
+      "should_fail": false
     },
     {
       "doc_id": "invoice_018",
@@ -304,12 +298,18 @@
     {
       "doc_id": "invoice_022",
       "doc_type": "invoice",
-      "should_fail": false
+      "should_fail": true,
+      "failure_step": "summarization",
+      "failure_category": "context_loss",
+      "notes": "Seeded failure: context_loss at summarization"
     },
     {
       "doc_id": "invoice_023",
       "doc_type": "invoice",
-      "should_fail": false
+      "should_fail": true,
+      "failure_step": "extraction",
+      "failure_category": "extraction_hallucination",
+      "notes": "Seeded failure: extraction_hallucination at extraction"
     },
     {
       "doc_id": "invoice_024",
@@ -319,15 +319,15 @@
     {
       "doc_id": "invoice_025",
       "doc_type": "invoice",
-      "should_fail": true,
-      "failure_step": "extraction",
-      "failure_category": "extraction_hallucination",
-      "notes": "Seeded failure: extraction_hallucination at extraction"
+      "should_fail": false
     },
     {
       "doc_id": "invoice_026",
       "doc_type": "invoice",
-      "should_fail": false
+      "should_fail": true,
+      "failure_step": "summarization",
+      "failure_category": "context_loss",
+      "notes": "Seeded failure: context_loss at summarization"
     },
     {
       "doc_id": "invoice_027",
@@ -345,7 +345,10 @@
     {
       "doc_id": "invoice_029",
       "doc_type": "invoice",
-      "should_fail": false
+      "should_fail": true,
+      "failure_step": "summarization",
+      "failure_category": "prompt_failure",
+      "notes": "Seeded failure: prompt_failure at summarization"
     },
     {
       "doc_id": "invoice_030",
@@ -375,10 +378,7 @@
     {
       "doc_id": "report_005",
       "doc_type": "report",
-      "should_fail": true,
-      "failure_step": "classification",
-      "failure_category": "misclassification",
-      "notes": "Seeded failure: misclassification at classification"
+      "should_fail": false
     },
     {
       "doc_id": "report_006",
@@ -390,8 +390,8 @@
       "doc_type": "report",
       "should_fail": true,
       "failure_step": "summarization",
-      "failure_category": "prompt_failure",
-      "notes": "Seeded failure: prompt_failure at summarization"
+      "failure_category": "propagation_error",
+      "notes": "Seeded failure: propagation_error at summarization"
     },
     {
       "doc_id": "report_008",
@@ -401,10 +401,7 @@
     {
       "doc_id": "report_009",
       "doc_type": "report",
-      "should_fail": true,
-      "failure_step": "extraction",
-      "failure_category": "extraction_hallucination",
-      "notes": "Seeded failure: extraction_hallucination at extraction"
+      "should_fail": false
     },
     {
       "doc_id": "report_010",
@@ -424,7 +421,10 @@
     {
       "doc_id": "report_013",
       "doc_type": "report",
-      "should_fail": false
+      "should_fail": true,
+      "failure_step": "summarization",
+      "failure_category": "context_loss",
+      "notes": "Seeded failure: context_loss at summarization"
     },
     {
       "doc_id": "report_014",
@@ -449,12 +449,18 @@
     {
       "doc_id": "report_018",
       "doc_type": "report",
-      "should_fail": false
+      "should_fail": true,
+      "failure_step": "summarization",
+      "failure_category": "context_loss",
+      "notes": "Seeded failure: context_loss at summarization"
     },
     {
       "doc_id": "report_019",
       "doc_type": "report",
-      "should_fail": false
+      "should_fail": true,
+      "failure_step": "summarization",
+      "failure_category": "prompt_failure",
+      "notes": "Seeded failure: prompt_failure at summarization"
     },
     {
       "doc_id": "report_020",
@@ -479,7 +485,10 @@
     {
       "doc_id": "report_024",
       "doc_type": "report",
-      "should_fail": false
+      "should_fail": true,
+      "failure_step": "extraction",
+      "failure_category": "extraction_hallucination",
+      "notes": "Seeded failure: extraction_hallucination at extraction"
     },
     {
       "doc_id": "report_025",
@@ -492,7 +501,10 @@
     {
       "doc_id": "report_026",
       "doc_type": "report",
-      "should_fail": false
+      "should_fail": true,
+      "failure_step": "summarization",
+      "failure_category": "propagation_error",
+      "notes": "Seeded failure: propagation_error at summarization"
     },
     {
       "doc_id": "report_027",
@@ -502,10 +514,7 @@
     {
       "doc_id": "report_028",
       "doc_type": "report",
-      "should_fail": true,
-      "failure_step": "classification",
-      "failure_category": "misclassification",
-      "notes": "Seeded failure: misclassification at classification"
+      "should_fail": false
     },
     {
       "doc_id": "report_029",
@@ -522,16 +531,13 @@
       "doc_type": "correspondence",
       "should_fail": true,
       "failure_step": "summarization",
-      "failure_category": "context_loss",
-      "notes": "Seeded failure: context_loss at summarization"
+      "failure_category": "prompt_failure",
+      "notes": "Seeded failure: prompt_failure at summarization"
     },
     {
       "doc_id": "correspondence_002",
       "doc_type": "correspondence",
-      "should_fail": true,
-      "failure_step": "extraction",
-      "failure_category": "extraction_hallucination",
-      "notes": "Seeded failure: extraction_hallucination at extraction"
+      "should_fail": false
     },
     {
       "doc_id": "correspondence_003",
@@ -541,10 +547,7 @@
     {
       "doc_id": "correspondence_004",
       "doc_type": "correspondence",
-      "should_fail": true,
-      "failure_step": "summarization",
-      "failure_category": "context_loss",
-      "notes": "Seeded failure: context_loss at summarization"
+      "should_fail": false
     },
     {
       "doc_id": "correspondence_005",
@@ -554,15 +557,18 @@
     {
       "doc_id": "correspondence_006",
       "doc_type": "correspondence",
-      "should_fail": false
+      "should_fail": true,
+      "failure_step": "extraction",
+      "failure_category": "extraction_hallucination",
+      "notes": "Seeded failure: extraction_hallucination at extraction"
     },
     {
       "doc_id": "correspondence_007",
       "doc_type": "correspondence",
       "should_fail": true,
-      "failure_step": "summarization",
-      "failure_category": "context_loss",
-      "notes": "Seeded failure: context_loss at summarization"
+      "failure_step": "extraction",
+      "failure_category": "extraction_hallucination",
+      "notes": "Seeded failure: extraction_hallucination at extraction"
     },
     {
       "doc_id": "correspondence_008",
@@ -572,7 +578,10 @@
     {
       "doc_id": "correspondence_009",
       "doc_type": "correspondence",
-      "should_fail": false
+      "should_fail": true,
+      "failure_step": "summarization",
+      "failure_category": "context_loss",
+      "notes": "Seeded failure: context_loss at summarization"
     },
     {
       "doc_id": "correspondence_010",
@@ -582,15 +591,15 @@
     {
       "doc_id": "correspondence_011",
       "doc_type": "correspondence",
-      "should_fail": true,
-      "failure_step": "classification",
-      "failure_category": "misclassification",
-      "notes": "Seeded failure: misclassification at classification"
+      "should_fail": false
     },
     {
       "doc_id": "correspondence_012",
       "doc_type": "correspondence",
-      "should_fail": false
+      "should_fail": true,
+      "failure_step": "summarization",
+      "failure_category": "context_loss",
+      "notes": "Seeded failure: context_loss at summarization"
     },
     {
       "doc_id": "correspondence_013",
@@ -605,15 +614,15 @@
     {
       "doc_id": "correspondence_015",
       "doc_type": "correspondence",
-      "should_fail": true,
-      "failure_step": "summarization",
-      "failure_category": "propagation_error",
-      "notes": "Seeded failure: propagation_error at summarization"
+      "should_fail": false
     },
     {
       "doc_id": "correspondence_016",
       "doc_type": "correspondence",
-      "should_fail": false
+      "should_fail": true,
+      "failure_step": "classification",
+      "failure_category": "misclassification",
+      "notes": "Seeded failure: misclassification at classification"
     },
     {
       "doc_id": "correspondence_017",
@@ -634,9 +643,9 @@
       "doc_id": "correspondence_020",
       "doc_type": "correspondence",
       "should_fail": true,
-      "failure_step": "classification",
-      "failure_category": "misclassification",
-      "notes": "Seeded failure: misclassification at classification"
+      "failure_step": "summarization",
+      "failure_category": "propagation_error",
+      "notes": "Seeded failure: propagation_error at summarization"
     },
     {
       "doc_id": "correspondence_021",
@@ -646,10 +655,7 @@
     {
       "doc_id": "correspondence_022",
       "doc_type": "correspondence",
-      "should_fail": true,
-      "failure_step": "summarization",
-      "failure_category": "propagation_error",
-      "notes": "Seeded failure: propagation_error at summarization"
+      "should_fail": false
     },
     {
       "doc_id": "correspondence_023",
@@ -664,20 +670,23 @@
     {
       "doc_id": "correspondence_025",
       "doc_type": "correspondence",
-      "should_fail": false
+      "should_fail": true,
+      "failure_step": "classification",
+      "failure_category": "misclassification",
+      "notes": "Seeded failure: misclassification at classification"
     },
     {
       "doc_id": "correspondence_026",
+      "doc_type": "correspondence",
+      "should_fail": false
+    },
+    {
+      "doc_id": "correspondence_027",
       "doc_type": "correspondence",
       "should_fail": true,
       "failure_step": "summarization",
       "failure_category": "propagation_error",
       "notes": "Seeded failure: propagation_error at summarization"
-    },
-    {
-      "doc_id": "correspondence_027",
-      "doc_type": "correspondence",
-      "should_fail": false
     },
     {
       "doc_id": "correspondence_028",
@@ -699,16 +708,13 @@
       "doc_type": "mixed",
       "should_fail": true,
       "failure_step": "summarization",
-      "failure_category": "context_loss",
-      "notes": "Seeded failure: context_loss at summarization"
+      "failure_category": "propagation_error",
+      "notes": "Seeded failure: propagation_error at summarization"
     },
     {
       "doc_id": "mixed_002",
       "doc_type": "mixed",
-      "should_fail": true,
-      "failure_step": "summarization",
-      "failure_category": "propagation_error",
-      "notes": "Seeded failure: propagation_error at summarization"
+      "should_fail": false
     },
     {
       "doc_id": "mixed_003",
@@ -723,7 +729,10 @@
     {
       "doc_id": "mixed_005",
       "doc_type": "mixed",
-      "should_fail": false
+      "should_fail": true,
+      "failure_step": "summarization",
+      "failure_category": "prompt_failure",
+      "notes": "Seeded failure: prompt_failure at summarization"
     },
     {
       "doc_id": "mixed_006",
@@ -733,26 +742,20 @@
     {
       "doc_id": "mixed_007",
       "doc_type": "mixed",
-      "should_fail": true,
-      "failure_step": "extraction",
-      "failure_category": "extraction_hallucination",
-      "notes": "Seeded failure: extraction_hallucination at extraction"
+      "should_fail": false
     },
     {
       "doc_id": "mixed_008",
       "doc_type": "mixed",
-      "should_fail": true,
-      "failure_step": "classification",
-      "failure_category": "misclassification",
-      "notes": "Seeded failure: misclassification at classification"
+      "should_fail": false
     },
     {
       "doc_id": "mixed_009",
       "doc_type": "mixed",
       "should_fail": true,
-      "failure_step": "classification",
-      "failure_category": "misclassification",
-      "notes": "Seeded failure: misclassification at classification"
+      "failure_step": "summarization",
+      "failure_category": "context_loss",
+      "notes": "Seeded failure: context_loss at summarization"
     },
     {
       "doc_id": "mixed_010",
@@ -763,9 +766,9 @@
       "doc_id": "mixed_011",
       "doc_type": "mixed",
       "should_fail": true,
-      "failure_step": "classification",
-      "failure_category": "misclassification",
-      "notes": "Seeded failure: misclassification at classification"
+      "failure_step": "summarization",
+      "failure_category": "prompt_failure",
+      "notes": "Seeded failure: prompt_failure at summarization"
     },
     {
       "doc_id": "mixed_012",
@@ -775,15 +778,15 @@
     {
       "doc_id": "mixed_013",
       "doc_type": "mixed",
-      "should_fail": true,
-      "failure_step": "summarization",
-      "failure_category": "propagation_error",
-      "notes": "Seeded failure: propagation_error at summarization"
+      "should_fail": false
     },
     {
       "doc_id": "mixed_014",
       "doc_type": "mixed",
-      "should_fail": false
+      "should_fail": true,
+      "failure_step": "summarization",
+      "failure_category": "context_loss",
+      "notes": "Seeded failure: context_loss at summarization"
     },
     {
       "doc_id": "mixed_015",
@@ -803,15 +806,15 @@
     {
       "doc_id": "mixed_018",
       "doc_type": "mixed",
-      "should_fail": true,
-      "failure_step": "extraction",
-      "failure_category": "extraction_hallucination",
-      "notes": "Seeded failure: extraction_hallucination at extraction"
+      "should_fail": false
     },
     {
       "doc_id": "mixed_019",
       "doc_type": "mixed",
-      "should_fail": false
+      "should_fail": true,
+      "failure_step": "classification",
+      "failure_category": "misclassification",
+      "notes": "Seeded failure: misclassification at classification"
     },
     {
       "doc_id": "mixed_020",
@@ -826,15 +829,15 @@
     {
       "doc_id": "mixed_022",
       "doc_type": "mixed",
-      "should_fail": true,
-      "failure_step": "classification",
-      "failure_category": "misclassification",
-      "notes": "Seeded failure: misclassification at classification"
+      "should_fail": false
     },
     {
       "doc_id": "mixed_023",
       "doc_type": "mixed",
-      "should_fail": false
+      "should_fail": true,
+      "failure_step": "summarization",
+      "failure_category": "prompt_failure",
+      "notes": "Seeded failure: prompt_failure at summarization"
     },
     {
       "doc_id": "mixed_024",
@@ -849,10 +852,7 @@
     {
       "doc_id": "mixed_026",
       "doc_type": "mixed",
-      "should_fail": true,
-      "failure_step": "summarization",
-      "failure_category": "propagation_error",
-      "notes": "Seeded failure: propagation_error at summarization"
+      "should_fail": false
     },
     {
       "doc_id": "mixed_027",
@@ -862,20 +862,23 @@
     {
       "doc_id": "mixed_028",
       "doc_type": "mixed",
-      "should_fail": false
+      "should_fail": true,
+      "failure_step": "summarization",
+      "failure_category": "context_loss",
+      "notes": "Seeded failure: context_loss at summarization"
     },
     {
       "doc_id": "mixed_029",
       "doc_type": "mixed",
-      "should_fail": true,
-      "failure_step": "classification",
-      "failure_category": "misclassification",
-      "notes": "Seeded failure: misclassification at classification"
+      "should_fail": false
     },
     {
       "doc_id": "mixed_030",
       "doc_type": "mixed",
-      "should_fail": false
+      "should_fail": true,
+      "failure_step": "summarization",
+      "failure_category": "propagation_error",
+      "notes": "Seeded failure: propagation_error at summarization"
     }
   ]
 }

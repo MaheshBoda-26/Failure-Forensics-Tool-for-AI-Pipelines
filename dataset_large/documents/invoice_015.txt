@@ -1,32 +1,31 @@
-COMMERCIAL INVOICE
+TAX INVOICE
 
-Invoice Number: INV-2025-1882
-Invoice Date: 2024-06-10
-Purchase Order: PO-47482
+ABN: 64 96764 96764 967
+Invoice #: INV-2023-1853
+Date: 2023-11-24
 
-SELLER:
+FROM:
 Meridian Industries
-5782 Second Ave, Suite 275
-Tax ID: TAX-604329135
+8530 Oak Ave, Suite 451
 
-BUYER:
+TO:
 Apex Consulting Group
-3616 Park Blvd, Suite 664
-Tax ID: TAX-255454846
+9906 Park Blvd, Suite 935
 
-LINE ITEMS:
-Item 1: 23 x $1211 = $27853
-Item 2: 4 x $4630 = $18520
-Item 3: 8 x $2596 = $20768
-Item 4: 17 x $1770 = $30090
+DESCRIPTION                                         QTY    UNIT PRICE    GST    TOTAL
+Item 1: 13 x $4439 = $57707
+Item 2: 20 x $1858 = $37160
+Item 3: 20 x $1084 = $21680
+Item 4: 35 x $3656 = $127960
+Item 5: 10 x $738 = $7380
+Item 6: 23 x $659 = $15157
+Item 7: 2 x $1517 = $3034
 
-CURRENCY: GBP
-SUBTOTAL: $97,231.00
-VAT: $9,723.10
-TOTAL DUE: $106,954.10
+GST-FREE AMOUNT: $81,023.40
+GST AMOUNT: $40,511.70
+TOTAL INC GST: $310,589.70
 
-PAYMENT TERMS: Net 45 days
-DUE DATE: 2024-08-05
-
-IBAN: US74 1813 8027 1732 1370
-SWIFT: CHASUS33
+PAYMENT DUE: 2023-12-28
+BANK: Westpac
+BSB: 585-261
+ACCOUNT: 27282978

@@ -1,31 +1,30 @@
-INVOICE
+TAX INVOICE
 
-Invoice #: INV-2024-8105
-Date: 2025-09-14
-Due Date: 2025-11-04
+ABN: 71 45471 45471 454
+Invoice #: INV-2024-9959
+Date: 2025-11-26
 
-BILL TO:
-Apex Dynamics
-7487 Elm St, Suite 829
+FROM:
+Meridian Industries
+4426 Elm St, Suite 430
 
-SHIP TO:
-Vertex Solutions
-9510 Oak Ave, Suite 537
+TO:
+Apex Consulting Group
+7046 Main St, Suite 283
 
-ITEMS:
-Item 1: 6 x $2822 = $16932
-Item 2: 18 x $4505 = $81090
-Item 3: 21 x $4003 = $84063
-Item 4: 23 x $4566 = $105018
-Item 5: 20 x $4404 = $88080
-Item 6: 23 x $1540 = $35420
-Item 7: 22 x $661 = $14542
+DESCRIPTION                                         QTY    UNIT PRICE    GST    TOTAL
+Item 1: 9 x $392 = $3528
+Item 2: 6 x $1405 = $8430
+Item 3: 10 x $3644 = $36440
+Item 4: 37 x $3641 = $134717
+Item 5: 2 x $2656 = $5312
+Item 6: 27 x $2726 = $73602
 
-SUBTOTAL: $425,145.00
-TAX (0%): $0.00
-TOTAL: $425,145.00
+GST-FREE AMOUNT: $78,608.70
+GST AMOUNT: $20,962.32
+TOTAL INC GST: $282,991.32
 
-Payment Terms: Net 45 days
-Bank Details: Bank: Citi | Account: 52901188
-
-Thank you for your business!
+PAYMENT DUE: 2026-01-08
+BANK: Westpac
+BSB: 807-976
+ACCOUNT: 81349128

@@ -487,6 +487,65 @@ def test_analytics_counts_diagnosed_failures(
     assert snap.failure_rate > 0.0
 
 
+def test_analytics_payload_matches_the_frontend_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The extended analytics fields must exist, typecheck, and serialize.
+
+    `frontend/src/api/types.ts` declares these keys on `AnalyticsSnapshot`. The
+    dashboard reads them directly, so a renamed or missing field degrades to an
+    empty panel instead of an error — which is how the cost and latency
+    sections could look "built" while being fed nothing.
+    """
+    from forensics import api
+
+    st = Storage(traces_dir=tmp_path / "traces", db_path=tmp_path / "db.sqlite")
+    monkeypatch.setattr(api, "_storage", st)
+
+    trace = _clean_trace()
+    st.save_trace(trace)
+    st.create_diagnosis(analyze_trace(st.get_trace("t1"), DOC))  # type: ignore[arg-type]
+
+    snap = api.get_analytics()
+    # `mode="json"` is the wire format FastAPI sends (and what the dashboard sees).
+    payload = snap.model_dump(mode="json")
+
+    expected = {
+        "total_cost_usd",
+        "cost_by_model",
+        "cost_by_step",
+        "tokens_by_model",
+        "tokens_by_step",
+        "avg_latency_ms",
+        "latency_by_model",
+        "latency_by_step",
+        "model_performance",
+        "failure_correlation",
+        "cost_trend",
+    }
+    assert expected <= payload.keys()
+
+    assert isinstance(payload["total_cost_usd"], float)
+    assert isinstance(payload["avg_latency_ms"], float)
+    for key in ("cost_by_model", "cost_by_step", "tokens_by_model", "latency_by_model"):
+        assert isinstance(payload[key], dict)
+
+    for model, perf in payload["model_performance"].items():
+        assert {"pass_rate", "avg_latency_ms", "avg_cost_usd"} <= perf.keys(), model
+
+    # A list, not a mapping: this field is built as a list of cells, and a
+    # `default_factory=dict` here silently produced `{}` whenever no failure had
+    # been diagnosed yet.
+    assert isinstance(payload["failure_correlation"], list)
+    for cell in payload["failure_correlation"]:
+        assert {"step", "category", "count"} <= cell.keys()
+
+    for point in payload["cost_trend"]:
+        assert {"timestamp", "cost_usd"} <= point.keys()
+
+    json.dumps(payload)  # the endpoint must be JSON-serializable as-is
+
+
 def test_list_eval_runs_endpoint_is_wired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from forensics import api
 

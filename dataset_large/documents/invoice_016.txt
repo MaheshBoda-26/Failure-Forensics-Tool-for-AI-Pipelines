@@ -1,29 +1,32 @@
-INVOICE
+TAX INVOICE
 
-Invoice #: INV-2023-4182
-Date: 2024-04-17
-Due Date: 2024-05-13
+ABN: 53 97153 97153 971
+Invoice #: INV-2024-9827
+Date: 2024-12-02
 
-BILL TO:
-Summit Partners
-9798 Maple Dr, Suite 726
+FROM:
+Quantum Leap Labs
+8162 Maple Dr, Suite 582
 
-SHIP TO:
-Vanguard Analytics
-8664 Second Ave, Suite 391
+TO:
+Stellar Communications
+3445 Oak Ave, Suite 623
 
-ITEMS:
-Item 1: 3 x $4305 = $12915
-Item 2: 46 x $1275 = $58650
-Item 3: 21 x $3666 = $76986
-Item 4: 41 x $3540 = $145140
-Item 5: 35 x $446 = $15610
+DESCRIPTION                                         QTY    UNIT PRICE    GST    TOTAL
+Item 1: 25 x $498 = $12450
+Item 2: 1 x $2107 = $2107
+Item 3: 40 x $2347 = $93880
+Item 4: 17 x $114 = $1938
+Item 5: 12 x $3432 = $41184
+Item 6: 50 x $3633 = $181650
+Item 7: 27 x $1351 = $36477
+Item 8: 3 x $402 = $1206
 
-SUBTOTAL: $309,301.00
-TAX (20%): $61,860.20
-TOTAL: $371,161.20
+GST-FREE AMOUNT: $111,267.60
+GST AMOUNT: $74,178.40
+TOTAL INC GST: $445,070.40
 
-Payment Terms: Net 30 days
-Bank Details: Bank: Citi | Account: 16403366
-
-Thank you for your business!
+PAYMENT DUE: 2025-01-11
+BANK: Commonwealth Bank
+BSB: 612-922
+ACCOUNT: 30805208

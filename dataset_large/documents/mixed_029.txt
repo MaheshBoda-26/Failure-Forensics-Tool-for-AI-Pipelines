@@ -1,33 +1,31 @@
-PROPOSAL WITH CONTRACT TERMS
+SERVICE ORDER WITH INVOICE DETAILS
 
-PROPOSAL #PROP-2024-951
-Date: 2023-11-03
-Valid Until: 2023-12-03
+Service Order #: SO-71210
+Date: 2023-02-28
+Customer: Apex Dynamics
+Provider: Vertex Solutions
 
-PREPARED FOR:
-Acme Corporation
+SERVICE DESCRIPTION
+Professional services engagement with deliverables.
 
-PREPARED BY:
-GlobalTech Solutions
-
-EXECUTIVE SUMMARY
-Incident involving invoiceual service levels.
-
-SCOPE OF WORK
-Full lifecycle services including design, implementation, and support.
+SCHEDULE
+Start: 2023-02-28
+End: 2023-05-29
+Milestones: M1: Design (Week 2), M2: Development (Week 6), M3: Testing (Week 10), M4: Deploy (Week 12)
 
 PRICING
-Total estimated investment: $85,424.90
+  Service 1: 1 hours @ $944/hr = $944
+  Service 2: 8 hours @ $1835/hr = $14680
+  Service 3: 13 hours @ $169/hr = $2197
+Subtotal: $17,821.00
+Tax: $1,782.10
+Total: $19,603.10
 
-TERMS AND CONDITIONS
-1. This proposal constitutes an offer valid for 30 days.
-2. Acceptance creates a binding agreement.
-3. Payment terms: 50% upfront, 25% at milestone, 25% on completion.
-4. Intellectual property transfers upon full payment.
-5. Confidentiality survives termination.
+BILLING
+Frequency: Monthly
+Method: Wire Transfer
+Terms: 50% upfront, 25% at milestone, 25% on completion
 
-ACCEPTANCE
-Acme Corporation                              GlobalTech Solutions
-_________________________              _________________________
-Lisa Wang                          Michelle Martin
-Date: 2023-11-03                           Date: 2023-11-03
+AUTHORIZATION
+Customer: _________________ Date: ________
+Provider: _________________ Date: ________

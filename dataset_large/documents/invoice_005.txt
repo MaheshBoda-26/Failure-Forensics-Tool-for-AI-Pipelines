@@ -1,29 +1,33 @@
-INVOICE
+TAX INVOICE
 
-Invoice #: INV-2024-1038
-Date: 2024-02-04
-Due Date: 2024-02-20
+ABN: 13 39713 39713 397
+Invoice #: INV-2023-6778
+Date: 2025-07-27
 
-BILL TO:
+FROM:
+Meridian Industries
+7272 Maple Dr, Suite 878
 
-3847 Second Ave, Suite 961
+TO:
+Apex Consulting Group
+468 Maple Dr, Suite 782
 
-SHIP TO:
+DESCRIPTION                                         QTY    UNIT PRICE    GST    TOTAL
+Item 1: 29 x $4755 = $137895
+Item 2: 14 x $3548 = $49672
+Item 3: 15 x $2035 = $30525
+Item 4: 23 x $3812 = $87676
+Item 5: 21 x $3619 = $75999
+Item 6: 27 x $4352 = $117504
 
-3897 Maple Dr, Suite 971
+GST-FREE AMOUNT: $149,781.30
+GST AMOUNT: $0.00
+TOTAL INC GST: $499,271.00
 
-ITEMS:
-Item 1: 44 x $3296 = $145024
-Item 2: 33 x $1526 = $50358
-Item 3: 13 x $2764 = $35932
-Item 4: 21 x $2846 = $59766
-Item 5: 28 x $2055 = $57540
+PAYMENT DUE: 2025-09-07
+BANK: NAB
+BSB: 613-762
+ACCOUNT: 34189689
 
-SUBTOTAL: $348,620.00
-TAX (5%): $17,431.00
-TOTAL: $366,051.00
 
-Payment Terms: Net 15 days
-Bank Details: Bank: Citi | Account: 28614532
-
-Thank you for your business!
+[HALLUCINATED ENTITY] Fake Vendor Inc - $50,000 - Contract ID: FAKE-2024-001

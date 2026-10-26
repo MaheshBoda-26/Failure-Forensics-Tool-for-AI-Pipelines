@@ -1,17 +1,23 @@
-EMAIL
+FORMAL LETTER
 
-From: Lisa Wang <lisa.wang@company.com>
-To: David Chen <david.chen@company.com>
-CC: Maria Rodriguez <michelle.martin@company.com>
-Date: 2023-01-12
-Subject: Project Update
+2024-05-09
 
-Dear David Chen,
+Michael Brown
+Senior Vice President
+Stellar Communications
+3164 Elm St, Suite 211
 
-This is a sample contract body with relevant business content.
+Re: Status Report
 
-Best regards,
-Lisa Wang
-VP Engineering
-Catalyst Ventures
-lisa.wang@company.com | +1-555-950-3893
+Dear Michael Brown,
+
+This is a sample correspondence body with relevant business content.
+
+We look forward to your response.
+
+Sincerely,
+
+James Anderson
+General Counsel
+BlueSky Innovations
+james.anderson@company.com | +1-555-475-2177

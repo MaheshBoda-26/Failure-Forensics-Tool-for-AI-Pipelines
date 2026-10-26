@@ -1,25 +1,25 @@
 SERVICE ORDER WITH INVOICE DETAILS
 
-Service Order #: SO-72590
-Date: 2024-09-21
-Customer: Quantum Leap Labs
-Provider: Stellar Communications
+Service Order #: SO-96307
+Date: 2024-04-09
+Customer: Horizon Enterprises
+Provider: Nexus Digital Services
 
 SERVICE DESCRIPTION
 Professional services engagement with deliverables.
 
 SCHEDULE
-Start: 2024-09-21
-End: 2024-12-20
+Start: 2024-04-09
+End: 2024-07-08
 Milestones: M1: Design (Week 2), M2: Development (Week 6), M3: Testing (Week 10), M4: Deploy (Week 12)
 
 PRICING
-  Service 1: 11 hours @ $693/hr = $7623
-  Service 2: 4 hours @ $1803/hr = $7212
-  Service 3: 19 hours @ $1374/hr = $26106
-Subtotal: $40,941.00
-Tax: $4,094.10
-Total: $45,035.10
+  Service 1: 9 hours @ $227/hr = $2043
+  Service 2: 10 hours @ $1140/hr = $11400
+  Service 3: 16 hours @ $1533/hr = $24528
+Subtotal: $37,971.00
+Tax: $3,797.10
+Total: $41,768.10
 
 BILLING
 Frequency: Monthly

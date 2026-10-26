@@ -1,27 +1,35 @@
-INVOICE
+COMMERCIAL INVOICE
 
-Invoice #: INV-2023-7975
-Date: 2025-07-07
-Due Date: 2025-08-20
+Invoice Number: INV-2024-3336
+Invoice Date: 2024-02-09
+Purchase Order: PO-54648
 
-BILL TO:
-Catalyst Ventures
-8575 Maple Dr, Suite 116
+SELLER:
+Quantum Leap Labs
+3743 Second Ave, Suite 976
+Tax ID: TAX-907090549
 
-SHIP TO:
-Pinnacle Systems
-9737 Main St, Suite 668
+BUYER:
+Stellar Communications
+9382 Maple Dr, Suite 589
+Tax ID: TAX-131572385
 
-ITEMS:
-Item 1: 3 x $4293 = $12879
-Item 2: 5 x $4659 = $23295
-Item 3: 37 x $805 = $29785
+LINE ITEMS:
+Item 1: 8 x $1357 = $10856
+Item 2: 42 x $1491 = $62622
+Item 3: 36 x $3097 = $111492
+Item 4: 8 x $1068 = $8544
 
-SUBTOTAL: $65,959.00
-TAX (8%): $5,276.72
-TOTAL: $71,235.72
+CURRENCY: GBP
+SUBTOTAL: $193,514.00
+VAT: $38,702.80
+TOTAL DUE: $232,216.80
 
-Payment Terms: Net 30 days
-Bank Details: Bank: Wells Fargo | Account: 66431525
+PAYMENT TERMS: Net 45 days
+DUE DATE: 2024-03-23
 
-Thank you for your business!
+IBAN: US10 6375US10 6375US10 6375US10 6375
+SWIFT: CHASUS33
+
+
+[HALLUCINATED ENTITY] Fake Vendor Inc - $50,000 - Contract ID: FAKE-2024-001

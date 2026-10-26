@@ -1,33 +1,23 @@
-PROPOSAL WITH CONTRACT TERMS
+INCIDENT REPORT WITH CONTRACT REFERENCES
 
-PROPOSAL #PROP-2025-498
-Date: 2024-12-11
-Valid Until: 2025-01-10
+Incident Report: INC-2023-3459
+Related Contract: CTR-2023-404
+Date: 2024-12-04
 
-PREPARED FOR:
-Catalyst Ventures
-
-PREPARED BY:
-Pinnacle Systems
-
-EXECUTIVE SUMMARY
+INCIDENT SUMMARY
 Incident involving contractual service levels.
 
-SCOPE OF WORK
-Full lifecycle services including design, implementation, and support.
+CONTRACTUAL IMPACT
+Affected Clauses: Section 4.2 (Availability), Section 7.1 (Response Time)
+SLA Breach: Yes - 99.9% availability not met
+Penalties: Service credits per Section 8.3
 
-PRICING
-Total estimated investment: $40,862.80
+TECHNICAL DETAILS
+Root Cause: Database connection pool exhaustion
+Systems Affected: Primary API cluster, Cache layer
+Resolution Time: 2 hours 15 minutes
 
-TERMS AND CONDITIONS
-1. This proposal constitutes an offer valid for 30 days.
-2. Acceptance creates a binding agreement.
-3. Payment terms: 50% upfront, 25% at milestone, 25% on completion.
-4. Intellectual property transfers upon full payment.
-5. Confidentiality survives termination.
-
-ACCEPTANCE
-Catalyst Ventures                              Pinnacle Systems
-_________________________              _________________________
-David Chen                          Robert Taylor
-Date: 2024-12-11                           Date: 2024-12-11
+NEXT STEPS
+1. Post-incident review
+2. Capacity planning
+3. Update runbooks

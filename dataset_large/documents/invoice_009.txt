@@ -1,36 +1,28 @@
-COMMERCIAL INVOICE
+INVOICE
 
-Invoice Number: INV-2025-7054
-Invoice Date: 2025-05-11
-Purchase Order: PO-59695
+Invoice #: INV-2025-6560
+Date: 2025-10-10
+Due Date: 2025-11-13
 
-SELLER:
-Meridian Industries
-4746 Elm St, Suite 907
-Tax ID: TAX-441045649
+BILL TO:
+Quantum Leap Labs
+8042 Main St, Suite 798
 
-BUYER:
-Apex Consulting Group
-1285 Main St, Suite 435
-Tax ID: TAX-589208203
+SHIP TO:
+Stellar Communications
+5228 First St, Suite 363
 
-LINE ITEMS:
-Item 1: 7 x $4618 = $32326
-Item 2: 11 x $343 = $3773
-Item 3: 44 x $1389 = $61116
-Item 4: 21 x $516 = $10836
-Item 5: 13 x $2086 = $27118
-Item 6: 33 x $1780 = $58740
-Item 7: 42 x $4973 = $208866
-Item 8: 8 x $3327 = $26616
+ITEMS:
+Item 1: 28 x $739 = $20692
+Item 2: 16 x $3439 = $55024
+Item 3: 12 x $4491 = $53892
+Item 4: 38 x $4245 = $161310
 
-CURRENCY: USD
-SUBTOTAL: $429,391.00
-VAT: $21,469.55
-TOTAL DUE: $450,860.55
+SUBTOTAL: $290,918.00
+TAX (0%): $0.00
+TOTAL: $290,918.00
 
-PAYMENT TERMS: Net 45 days
-DUE DATE: 2025-05-30
+Payment Terms: Net 45 days
+Bank Details: Bank: Wells Fargo | Account: 83262193
 
-IBAN: US45 7138 1488 5378 6932
-SWIFT: CHASUS33
+Thank you for your business!

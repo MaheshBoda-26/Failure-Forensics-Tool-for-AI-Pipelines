@@ -1,15 +1,23 @@
-MEMO
+FORMAL LETTER
 
-MEMORANDUM
+2024-03-06
 
-TO: Maria Rodriguez <maria.rodriguez@company.com>
-FROM: James Anderson <james.anderson@company.com>
-DATE: 2024-05-04
-SUBJECT: Contract Review
+Maria Rodriguez
+Senior Vice President
+Apex Consulting Group
+5182 Main St, Suite 581
+
+Re: Project Update
+
+Dear Maria Rodriguez,
 
 This is a sample correspondence body with relevant business content.
 
-ACTION REQUIRED: Please review and respond by end of week.
-DEADLINE: 2023-12-10
+We look forward to your response.
 
-cc: Sarah Johnson <maria.rodriguez@company.com>
+Sincerely,
+
+Robert Taylor
+VP Sales
+Horizon Enterprises
+robert.taylor@company.com | +1-555-855-4670

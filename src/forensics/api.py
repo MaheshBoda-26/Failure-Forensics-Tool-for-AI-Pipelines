@@ -6,12 +6,12 @@ and trend data, fetch analytics.
 """
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI, Header, HTTPException, Query, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -23,6 +23,7 @@ from forensics.documents import DOC_ID_REGEX, read_document, resolve_document_te
 from forensics.models import (
     DEFAULT_TENANT_ID,
     AnalyticsSnapshot,
+    APIKey,
     Diagnosis,
     DocumentType,
     EvalCase,
@@ -98,7 +99,7 @@ _auth: AuthManager | None = None
 DEFAULT_TENANT = Tenant(tenant_id=DEFAULT_TENANT_ID, name="default")
 
 
-async def get_current_tenant_from_request(request):
+async def get_current_tenant_from_request(request: Request) -> Tenant | APIKey:
     """Extract tenant from request without using Depends."""
     from forensics.auth import AuthManager
     from forensics.config import get_settings
@@ -126,7 +127,9 @@ async def get_current_tenant_from_request(request):
 
 
 @app.middleware("http")
-async def rate_limit_middleware(request, call_next):
+async def rate_limit_middleware(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
     """Per-tenant token bucket rate limiting.
 
     Only applies when RATE_LIMIT_ENABLED=true and auth is enabled (so we have a tenant).

@@ -1,32 +1,30 @@
-COMMERCIAL INVOICE
+TAX INVOICE
 
-Invoice Number: INV-2025-7775
-Invoice Date: 2024-08-24
-Purchase Order: PO-28102
+ABN: 97 14897 14897 148
+Invoice #: INV-2023-1819
+Date: 2024-09-24
 
-SELLER:
-Apex Dynamics
-8146 Park Blvd, Suite 164
-Tax ID: TAX-829901796
+FROM:
+Catalyst Ventures
+1196 Second Ave, Suite 927
 
-BUYER:
-Vertex Solutions
-9016 Second Ave, Suite 739
-Tax ID: TAX-117235759
+TO:
+Pinnacle Systems
+8664 Second Ave, Suite 391
 
-LINE ITEMS:
-Item 1: 6 x $2029 = $12174
-Item 2: 11 x $2341 = $25751
-Item 3: 23 x $487 = $11201
-Item 4: 10 x $1877 = $18770
+DESCRIPTION                                         QTY    UNIT PRICE    GST    TOTAL
+Item 1: 26 x $1763 = $45838
+Item 2: 15 x $1464 = $21960
+Item 3: 17 x $401 = $6817
+Item 4: 34 x $1275 = $43350
+Item 5: 21 x $3666 = $76986
+Item 6: 41 x $3540 = $145140
 
-CURRENCY: USD
-SUBTOTAL: $67,896.00
-VAT: $5,431.68
-TOTAL DUE: $73,327.68
+GST-FREE AMOUNT: $102,027.30
+GST AMOUNT: $51,013.65
+TOTAL INC GST: $391,104.65
 
-PAYMENT TERMS: Net 15 days
-DUE DATE: 2024-10-01
-
-IBAN: US92 1273 7741 5522 1660
-SWIFT: WFBIUS6S
+PAYMENT DUE: 2024-10-14
+BANK: NAB
+BSB: 217-773
+ACCOUNT: 45161094

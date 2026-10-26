@@ -1,36 +1,30 @@
-COMMERCIAL INVOICE
+INVOICE
 
-Invoice Number: INV-2024-7675
-Invoice Date: 2025-05-05
-Purchase Order: PO-12574
+Invoice #: INV-2024-3978
+Date: 2023-02-09
+Due Date: 2023-03-08
 
-SELLER:
-Quantum Leap Labs
-8461 Second Ave, Suite 642
-Tax ID: TAX-270932923
+BILL TO:
+BlueSky Innovations
+1521 Maple Dr, Suite 984
 
-BUYER:
-Stellar Communications
-5366 First St, Suite 395
-Tax ID: TAX-459443898
+SHIP TO:
+IronClad Security
+1532 Elm St, Suite 344
 
-LINE ITEMS:
-Item 1: 6 x $135 = $810
-Item 2: 22 x $992 = $21824
-Item 3: 17 x $2317 = $39389
-Item 4: 33 x $2277 = $75141
-Item 5: 42 x $1169 = $49098
-Item 6: 33 x $3567 = $117711
-Item 7: 30 x $2191 = $65730
-Item 8: 6 x $3223 = $19338
+ITEMS:
+Item 1: 35 x $798 = $27930
+Item 2: 21 x $4533 = $95193
+Item 3: 18 x $2773 = $49914
+Item 4: 44 x $2506 = $110264
+Item 5: 1 x $4027 = $4027
+Item 6: 12 x $451 = $5412
 
-CURRENCY: CAD
-SUBTOTAL: $389,041.00
-VAT: $31,123.28
-TOTAL DUE: $420,164.28
+SUBTOTAL: $292,740.00
+TAX (10%): $29,274.00
+TOTAL: $322,014.00
 
-PAYMENT TERMS: Net 30 days
-DUE DATE: 2025-06-24
+Payment Terms: Net 15 days
+Bank Details: Bank: Citi | Account: 77375307
 
-IBAN: US56 2921 6894 4113 5076
-SWIFT: CITIUS33
+Thank you for your business!

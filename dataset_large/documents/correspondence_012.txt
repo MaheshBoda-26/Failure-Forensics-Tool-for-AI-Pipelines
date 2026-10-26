@@ -2,14 +2,14 @@ MEMO
 
 MEMORANDUM
 
-TO: Michelle Martin <michelle.martin@company.com>
-FROM: Christopher Moore <christopher.moore@company.com>
-DATE: 2024-06-18
+TO: Lisa Wang <lisa.wang@company.com>
+FROM: Sarah Johnson <sarah.johnson@company.com>
+DATE: 2024-01-25
 SUBJECT: Project Update
 
 This is a sample correspondence body with relevant business content.
 
 ACTION REQUIRED: Please review and respond by end of week.
-DEADLINE: 2024-10-14
+DEADLINE: 2025-04-10
 
-cc: James Anderson <jennifer.lee@company.com>
+cc: David Chen <lisa.wang@company.com>

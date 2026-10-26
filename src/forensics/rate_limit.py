@@ -114,7 +114,7 @@ class RateLimiter:
         self._update_bucket(tenant_id, current_tokens, now)
         return False, retry_after
 
-    def get_bucket_state(self, tenant_id: str) -> dict[str, float]:
+    def get_bucket_state(self, tenant_id: str) -> dict[str, str | float]:
         """Get current bucket state for debugging/monitoring."""
         settings = get_settings()
         capacity = settings.rate_limit_burst + settings.rate_limit_requests_per_minute

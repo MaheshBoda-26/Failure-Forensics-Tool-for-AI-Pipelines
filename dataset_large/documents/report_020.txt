@@ -1,11 +1,11 @@
 TECHNICAL ANALYSIS REPORT
 
-Document ID: DOC-73844
-Title: Annual Security Assessment
-Version: 1.9
-Date: 2024-06-16
-Author: Michael Brown
-Reviewed By: Michael Brown
+Document ID: DOC-60336
+Title: Market Analysis Report
+Version: 1.7
+Date: 2025-05-26
+Author: Sarah Johnson
+Reviewed By: William Davis
 
 1. INTRODUCTION
 This technical report details the analysis performed.

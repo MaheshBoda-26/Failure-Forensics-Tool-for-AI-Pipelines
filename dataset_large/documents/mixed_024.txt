@@ -1,23 +1,34 @@
-INCIDENT REPORT WITH CONTRACT REFERENCES
+SERVICE ORDER WITH INVOICE DETAILS
 
-Incident Report: INC-2025-5535
-Related Contract: CTR-2024-579
-Date: 2025-05-03
+Service Order #: SO-63240
+Date: 2025-07-06
+Customer: Apex Dynamics
+Provider: Vertex Solutions
 
-INCIDENT SUMMARY
-Incident involving contractual service levels.
+SERVICE DESCRIPTION
+Professional services engagement with deliverables.
 
-CONTRACTUAL IMPACT
-Affected Clauses: Section 4.2 (Availability), Section 7.1 (Response Time)
-SLA Breach: Yes - 99.9% availability not met
-Penalties: Service credits per Section 8.3
+SCHEDULE
+Start: 2025-07-06
+End: 2025-10-04
+Milestones: M1: Design (Week 2), M2: Development (Week 6), M3: Testing (Week 10), M4: Deploy (Week 12)
 
-TECHNICAL DETAILS
-Root Cause: Database connection pool exhaustion
-Systems Affected: Primary API cluster, Cache layer
-Resolution Time: 2 hours 15 minutes
+PRICING
+  Service 1: 6 hours @ $1129/hr = $6774
+  Service 2: 9 hours @ $728/hr = $6552
+  Service 3: 6 hours @ $106/hr = $636
+  Service 4: 19 hours @ $1182/hr = $22458
+  Service 5: 19 hours @ $502/hr = $9538
+  Service 6: 12 hours @ $483/hr = $5796
+Subtotal: $51,754.00
+Tax: $5,175.40
+Total: $56,929.40
 
-NEXT STEPS
-1. Post-incident review
-2. Capacity planning
-3. Update runbooks
+BILLING
+Frequency: Monthly
+Method: Wire Transfer
+Terms: 50% upfront, 25% at milestone, 25% on completion
+
+AUTHORIZATION
+Customer: _________________ Date: ________
+Provider: _________________ Date: ________

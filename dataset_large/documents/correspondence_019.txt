@@ -2,14 +2,14 @@ MEMO
 
 MEMORANDUM
 
-TO: Christopher Moore <christopher.moore@company.com>
-FROM: Maria Rodriguez <maria.rodriguez@company.com>
-DATE: 2023-05-30
+TO: Michael Brown <michael.brown@company.com>
+FROM: Robert Taylor <robert.taylor@company.com>
+DATE: 2023-03-18
 SUBJECT: Action Items
 
 This is a sample correspondence body with relevant business content.
 
 ACTION REQUIRED: Please review and respond by end of week.
-DEADLINE: 2023-04-05
+DEADLINE: 2023-05-07
 
-cc: Michael Brown <christopher.moore@company.com>
+cc: Michelle Martin <robert.taylor@company.com>

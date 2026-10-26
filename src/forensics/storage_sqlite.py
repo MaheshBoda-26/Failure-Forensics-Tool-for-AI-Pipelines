@@ -15,11 +15,13 @@ from typing import Any
 
 from forensics.migrations import migrate
 from forensics.models import (
+    APIKey,
     Diagnosis,
     EvalCase,
     EvalResult,
     EvalRun,
     Flag,
+    Tenant,
     Trace,
     TraceStatus,
 )
@@ -834,3 +836,121 @@ class Storage(StorageBase):
                 data["details"] = json.loads(data["details"] or "{}")
                 results.append(EvalResult.model_validate(data))
             return results
+
+    # --- Tenant operations ---
+
+    def create_tenant(self, tenant: Tenant, *, ignore_existing: bool = False) -> None:
+        """Insert a tenant, optionally leaving an existing row untouched."""
+        verb = "INSERT OR IGNORE" if ignore_existing else "INSERT"
+        with self._conn() as conn:
+            conn.execute(
+                f"{verb} INTO tenants (tenant_id, name, created_at, active) VALUES (?, ?, ?, ?)",
+                (
+                    tenant.tenant_id,
+                    tenant.name,
+                    tenant.created_at.isoformat(),
+                    int(tenant.active),
+                ),
+            )
+
+    def get_tenant(self, tenant_id: str, *, active_only: bool = True) -> Tenant | None:
+        """Fetch one tenant; inactive tenants are hidden unless `active_only=False`."""
+        sql = "SELECT * FROM tenants WHERE tenant_id = ?"
+        if active_only:
+            sql += " AND active = 1"
+        with self._conn() as conn:
+            cursor = conn.execute(sql, (tenant_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cursor.description]
+            return Tenant.model_validate(dict(zip(cols, row, strict=False)))
+
+    def list_tenants(self) -> list[Tenant]:
+        """List every tenant, active or not."""
+        with self._conn() as conn:
+            cursor = conn.execute("SELECT * FROM tenants ORDER BY created_at")
+            rows = cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            return [Tenant.model_validate(dict(zip(cols, r, strict=False))) for r in rows]
+
+    def set_tenant_active(self, tenant_id: str, active: bool) -> bool:
+        """Activate or deactivate a tenant. False when it does not exist."""
+        with self._conn() as conn:
+            cursor = conn.execute(
+                "UPDATE tenants SET active = ? WHERE tenant_id = ?",
+                (int(active), tenant_id),
+            )
+            return cursor.rowcount > 0
+
+    # --- API key operations ---
+
+    def create_api_key(self, key: APIKey) -> None:
+        """Store a key record (hash only, never the plaintext)."""
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO api_keys (
+                    key_id, tenant_id, key_hash, prefix, name, created_at, expires_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    key.key_id,
+                    key.tenant_id,
+                    key.key_hash,
+                    key.prefix,
+                    key.name,
+                    key.created_at.isoformat(),
+                    key.expires_at.isoformat() if key.expires_at else None,
+                ),
+            )
+
+    def list_api_keys_by_prefix(self, prefix: str) -> list[APIKey]:
+        """Every un-revoked key sharing `prefix`."""
+        with self._conn() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM api_keys WHERE prefix = ? AND revoked_at IS NULL",
+                (prefix,),
+            )
+            rows = cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            return [APIKey.model_validate(dict(zip(cols, r, strict=False))) for r in rows]
+
+    def touch_api_key(self, key_id: str, used_at: datetime) -> None:
+        """Record a successful authentication."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE api_keys SET last_used_at = ? WHERE key_id = ?",
+                (used_at.isoformat(), key_id),
+            )
+
+    def list_api_keys(self, tenant_id: str) -> list[APIKey]:
+        """List a tenant's keys, including revoked ones."""
+        with self._conn() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM api_keys WHERE tenant_id = ? ORDER BY created_at",
+                (tenant_id,),
+            )
+            rows = cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            return [APIKey.model_validate(dict(zip(cols, r, strict=False))) for r in rows]
+
+    def get_api_key(self, key_id: str) -> APIKey | None:
+        """Fetch one key record by ID."""
+        with self._conn() as conn:
+            cursor = conn.execute("SELECT * FROM api_keys WHERE key_id = ?", (key_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cursor.description]
+            return APIKey.model_validate(dict(zip(cols, row, strict=False)))
+
+    def revoke_api_key(self, key_id: str, revoked_at: datetime) -> bool:
+        """Revoke a key. False when it does not exist or was already revoked."""
+        with self._conn() as conn:
+            cursor = conn.execute(
+                "UPDATE api_keys SET revoked_at = ? WHERE key_id = ? AND revoked_at IS NULL",
+                (revoked_at.isoformat(), key_id),
+            )
+            return cursor.rowcount > 0

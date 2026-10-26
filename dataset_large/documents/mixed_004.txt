@@ -1,26 +1,27 @@
 SERVICE ORDER WITH INVOICE DETAILS
 
-Service Order #: SO-71293
-Date: 2025-12-21
-Customer: Meridian Industries
-Provider: Apex Consulting Group
+Service Order #: SO-67981
+Date: 2023-09-24
+Customer: Horizon Enterprises
+Provider: Nexus Digital Services
 
 SERVICE DESCRIPTION
 Professional services engagement with deliverables.
 
 SCHEDULE
-Start: 2025-12-21
-End: 2026-03-21
+Start: 2023-09-24
+End: 2023-12-23
 Milestones: M1: Design (Week 2), M2: Development (Week 6), M3: Testing (Week 10), M4: Deploy (Week 12)
 
 PRICING
-  Service 1: 13 hours @ $145/hr = $1885
-  Service 2: 17 hours @ $396/hr = $6732
-  Service 3: 3 hours @ $1215/hr = $3645
-  Service 4: 18 hours @ $1531/hr = $27558
-Subtotal: $39,820.00
-Tax: $3,982.00
-Total: $43,802.00
+  Service 1: 20 hours @ $698/hr = $13960
+  Service 2: 17 hours @ $1830/hr = $31110
+  Service 3: 18 hours @ $112/hr = $2016
+  Service 4: 5 hours @ $1045/hr = $5225
+  Service 5: 10 hours @ $567/hr = $5670
+Subtotal: $57,981.00
+Tax: $5,798.10
+Total: $63,779.10
 
 BILLING
 Frequency: Monthly

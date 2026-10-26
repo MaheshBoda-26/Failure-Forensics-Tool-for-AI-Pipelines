@@ -1,29 +1,35 @@
-INVOICE
+COMMERCIAL INVOICE
 
-Invoice #: INV-2023-9710
-Date: 2025-12-26
-Due Date: 2026-01-15
+Invoice Number: INV-2023-7654
+Invoice Date: 2024-11-12
+Purchase Order: PO-46939
 
-BILL TO:
-Catalyst Ventures
-1759 First St, Suite 533
+SELLER:
+Horizon Enterprises
+8228 Main St, Suite 403
+Tax ID: TAX-546149527
 
-SHIP TO:
-Pinnacle Systems
-5561 Elm St, Suite 334
+BUYER:
+Nexus Digital Services
+7147 Maple Dr, Suite 616
+Tax ID: TAX-314686027
 
-ITEMS:
-Item 1: 17 x $4000 = $68000
-Item 2: 21 x $173 = $3633
-Item 3: 46 x $3895 = $179170
-Item 4: 33 x $738 = $24354
-Item 5: 1 x $2300 = $2300
+LINE ITEMS:
+Item 1: 42 x $1669 = $70098
+Item 2: 27 x $404 = $10908
+Item 3: 19 x $425 = $8075
+Item 4: 49 x $1166 = $57134
 
-SUBTOTAL: $277,457.00
-TAX (10%): $27,745.70
-TOTAL: $305,202.70
+CURRENCY: AUD
+SUBTOTAL: $146,215.00
+VAT: $11,697.20
+TOTAL DUE: $157,912.20
 
-Payment Terms: Net 45 days
-Bank Details: Bank: Wells Fargo | Account: 74372416
+PAYMENT TERMS: Net 45 days
+DUE DATE: 2024-12-07
 
-Thank you for your business!
+IBAN: US82 1709US82 1709US82 1709US82 1709
+SWIFT: CHASUS33
+
+
+[HALLUCINATED ENTITY] Fake Vendor Inc - $50,000 - Contract ID: FAKE-2024-001

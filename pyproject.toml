@@ -36,6 +36,11 @@ otel = [
     "opentelemetry-exporter-otlp>=1.20",
     "opentelemetry-exporter-otlp-proto-http>=1.20",
 ]
+# Opt-in PostgreSQL backend (`DATABASE_URL`). Not in the default install: SQLite
+# is the shipped default, and `StorageBase` keeps the two interchangeable.
+postgres = [
+    "asyncpg>=0.29",
+]
 
 [project.scripts]
 forensics = "forensics.cli:main"
@@ -83,4 +88,11 @@ ignore_missing_imports = true
 # unused — and fail strict mode — once the extra *is* installed.
 [[tool.mypy.overrides]]
 module = ["opentelemetry.exporter.*"]
+ignore_missing_imports = true
+
+# `asyncpg` is the opt-in `postgres` extra, so it is absent from a default
+# install by design. The backend is imported lazily through the storage factory
+# and must typecheck without the driver present.
+[[tool.mypy.overrides]]
+module = ["asyncpg.*"]
 ignore_missing_imports = true

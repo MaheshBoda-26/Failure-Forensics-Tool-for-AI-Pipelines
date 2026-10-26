@@ -1,14 +1,14 @@
 PROPOSAL WITH CONTRACT TERMS
 
-PROPOSAL #PROP-2023-975
-Date: 2024-01-03
-Valid Until: 2024-02-02
+PROPOSAL #PROP-2025-911
+Date: 2023-01-12
+Valid Until: 2023-02-11
 
 PREPARED FOR:
-Catalyst Ventures
+BlueSky Innovations
 
 PREPARED BY:
-Pinnacle Systems
+IronClad Security
 
 EXECUTIVE SUMMARY
 Incident involving contractual service levels.
@@ -17,7 +17,7 @@ SCOPE OF WORK
 Full lifecycle services including design, implementation, and support.
 
 PRICING
-Total estimated investment: $82,181.00
+Total estimated investment: $41,019.00
 
 TERMS AND CONDITIONS
 1. This proposal constitutes an offer valid for 30 days.
@@ -27,7 +27,7 @@ TERMS AND CONDITIONS
 5. Confidentiality survives termination.
 
 ACCEPTANCE
-Catalyst Ventures                              Pinnacle Systems
+BlueSky Innovations                              IronClad Security
 _________________________              _________________________
-James Anderson                          Amanda Wilson
-Date: 2024-01-03                           Date: 2024-01-03
+David Chen                          Maria Rodriguez
+Date: 2023-01-12                           Date: 2023-01-12

@@ -62,7 +62,9 @@ def check_pii_in_summary(span: Span, trace: Trace, document_text: str) -> list[C
                 CheckResult(
                     check_name="pii_in_summary",
                     passed=False,
-                    evidence=f"PII detected in summary: {pii_type} found ({len(matches)} occurrence(s))",
+                    evidence=(
+                        f"PII detected in summary: {pii_type} found ({len(matches)} occurrence(s))"
+                    ),
                     step_name=span.step_name,
                 )
             )
@@ -124,7 +126,10 @@ def check_pii_in_extraction(span: Span, trace: Trace, document_text: str) -> lis
                 CheckResult(
                     check_name="pii_in_extraction",
                     passed=False,
-                    evidence=f"Sensitive entity type extracted: '{entity_type}' = '{entity_value[:20]}...'",
+                    evidence=(
+                        f"Sensitive entity type extracted: '{entity_type}' = "
+                        f"'{entity_value[:20]}...'"
+                    ),
                     step_name=span.step_name,
                 )
             )
@@ -222,7 +227,10 @@ def check_financial_amounts(span: Span, trace: Trace, document_text: str) -> lis
                     CheckResult(
                         check_name="financial_amounts",
                         passed=False,
-                        evidence=f"Unparseable financial amount: '{value}' (type: {entity.get('entity_type')})",
+                        evidence=(
+                            f"Unparseable financial amount: '{value}' "
+                            f"(type: {entity.get('entity_type')})"
+                        ),
                         step_name=span.step_name,
                     )
                 )
@@ -242,7 +250,10 @@ def check_financial_amounts(span: Span, trace: Trace, document_text: str) -> lis
                     CheckResult(
                         check_name="financial_amounts",
                         passed=False,
-                        evidence=f"Financial inconsistency: subtotal+tax ({expected_total}) != total ({actual_total})",
+                        evidence=(
+                            f"Financial inconsistency: subtotal+tax "
+                            f"({expected_total}) != total ({actual_total})"
+                        ),
                         step_name=span.step_name,
                     )
                 )
@@ -251,7 +262,9 @@ def check_financial_amounts(span: Span, trace: Trace, document_text: str) -> lis
                     CheckResult(
                         check_name="financial_amounts",
                         passed=True,
-                        evidence=f"Financial amounts consistent: subtotal+tax = total ({actual_total})",
+                        evidence=(
+                            f"Financial amounts consistent: subtotal+tax = total ({actual_total})"
+                        ),
                         step_name=span.step_name,
                     )
                 )
@@ -265,7 +278,10 @@ def check_financial_amounts(span: Span, trace: Trace, document_text: str) -> lis
                     CheckResult(
                         check_name="financial_amounts",
                         passed=False,
-                        evidence=f"Duplicate amount with same label: {amount} ({etype}) appears multiple times",
+                        evidence=(
+                            f"Duplicate amount with same label: {amount} "
+                            f"({etype}) appears multiple times"
+                        ),
                         step_name=span.step_name,
                     )
                 )
@@ -353,7 +369,10 @@ def check_invoice_totals(span: Span, trace: Trace, document_text: str) -> list[C
             CheckResult(
                 check_name="invoice_totals",
                 passed=False,
-                evidence=f"Invoice total ${total_amount} NOT found in summary (possible omission or misreporting)",
+                evidence=(
+                    f"Invoice total ${total_amount} NOT found in summary "
+                    "(possible omission or misreporting)"
+                ),
                 step_name=span.step_name,
             )
         )
@@ -416,7 +435,10 @@ def check_contract_parties(span: Span, trace: Trace, document_text: str) -> list
             CheckResult(
                 check_name="contract_parties",
                 passed=True,
-                evidence=f"Contract identifies {len(unique_parties)} parties: {', '.join(list(unique_parties)[:3])}",
+                evidence=(
+                    f"Contract identifies {len(unique_parties)} parties: "
+                    f"{', '.join(list(unique_parties)[:3])}"
+                ),
                 step_name=span.step_name,
             )
         )
@@ -425,7 +447,10 @@ def check_contract_parties(span: Span, trace: Trace, document_text: str) -> list
             CheckResult(
                 check_name="contract_parties",
                 passed=False,
-                evidence=f"Contract identifies only 1 party: {list(unique_parties)[0]} (contracts typically need 2+)",
+                evidence=(
+                    f"Contract identifies only 1 party: "
+                    f"{next(iter(unique_parties))} (contracts typically need 2+)"
+                ),
                 step_name=span.step_name,
             )
         )
@@ -491,7 +516,10 @@ def check_contract_dates(span: Span, trace: Trace, document_text: str) -> list[C
             CheckResult(
                 check_name="contract_dates",
                 passed=True,
-                evidence=f"Contract has both effective ({dates['effective']}) and expiration ({dates['expiration']}) dates",
+                evidence=(
+                    f"Contract has both effective ({dates['effective']}) and "
+                    f"expiration ({dates['expiration']}) dates"
+                ),
                 step_name=span.step_name,
             )
         )
@@ -526,7 +554,9 @@ def check_contract_dates(span: Span, trace: Trace, document_text: str) -> list[C
 @check_plugin(
     "check_report_structure",
     step="summarization",
-    description="Verify report summary includes required sections (findings, recommendations, methodology)",
+    description=(
+        "Verify report summary includes required sections (findings, recommendations, methodology)"
+    ),
 )
 def check_report_structure(span: Span, trace: Trace, document_text: str) -> list[CheckResult]:
     """Check that report summary includes expected structural elements."""
@@ -569,7 +599,9 @@ def check_report_structure(span: Span, trace: Trace, document_text: str) -> list
         CheckResult(
             check_name="report_structure",
             passed=has_exec_summary,
-            evidence=f"Report {'has' if has_exec_summary else 'missing'} executive summary/overview",
+            evidence=(
+                f"Report {'has' if has_exec_summary else 'missing'} executive summary/overview"
+            ),
             step_name=span.step_name,
         )
     )
@@ -645,7 +677,10 @@ def check_correspondence_metadata(
             CheckResult(
                 check_name="correspondence_metadata",
                 passed=False,
-                evidence=f"Missing correspondence metadata: {', '.join(missing)} (present: {', '.join(present)})",
+                evidence=(
+                    f"Missing correspondence metadata: {', '.join(missing)} "
+                    f"(present: {', '.join(present)})"
+                ),
                 step_name=span.step_name,
             )
         )
@@ -723,7 +758,10 @@ def check_mixed_consistency(span: Span, trace: Trace, document_text: str) -> lis
             CheckResult(
                 check_name="mixed_consistency",
                 passed=True,
-                evidence=f"Mixed classification consistent with content: detected {', '.join(sorted(detected_types))}",
+                evidence=(
+                    "Mixed classification consistent with content: detected "
+                    f"{', '.join(sorted(detected_types))}"
+                ),
                 step_name=span.step_name,
             )
         )
@@ -732,7 +770,10 @@ def check_mixed_consistency(span: Span, trace: Trace, document_text: str) -> lis
             CheckResult(
                 check_name="mixed_consistency",
                 passed=False,
-                evidence=f"Mixed classification but content suggests single type: {', '.join(sorted(detected_types)) or 'none'}",
+                evidence=(
+                    "Mixed classification but content suggests single type: "
+                    f"{', '.join(sorted(detected_types)) or 'none'}"
+                ),
                 step_name=span.step_name,
             )
         )
@@ -746,7 +787,10 @@ def check_mixed_consistency(span: Span, trace: Trace, document_text: str) -> lis
 
 
 def register_custom_checks() -> None:
-    """Register all custom checks. Called by CHECK_PLUGINS=forensics.custom_checks:register_custom_checks"""
+    """Register all custom checks.
+
+    Called by ``CHECK_PLUGINS=forensics.custom_checks:register_custom_checks``.
+    """
     # The decorators above already register the checks when this module is imported.
     # This function exists for explicit registration if needed.
     pass
@@ -765,4 +809,4 @@ CUSTOM_CHECK_NAMES = [
     "check_mixed_consistency",
 ]
 
-__all__ = ["register_custom_checks"] + CUSTOM_CHECK_NAMES
+__all__ = ["register_custom_checks", *CUSTOM_CHECK_NAMES]

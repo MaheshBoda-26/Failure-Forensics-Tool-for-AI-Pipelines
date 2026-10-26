@@ -1,30 +1,32 @@
-TAX INVOICE
+COMMERCIAL INVOICE
 
-ABN: 38 692 979 679
-Invoice #: INV-2025-6080
-Date: 2023-08-27
+Invoice Number: INV-2023-7031
+Invoice Date: 2023-09-06
+Purchase Order: PO-80763
 
-FROM:
-Horizon Enterprises
-8639 Main St, Suite 339
+SELLER:
+Acme Corporation
+3706 Elm St, Suite 543
+Tax ID: TAX-652987411
 
-TO:
-Nexus Digital Services
-6031 First St, Suite 553
+BUYER:
+GlobalTech Solutions
+4736 First St, Suite 290
+Tax ID: TAX-901538431
 
-DESCRIPTION                                         QTY    UNIT PRICE    GST    TOTAL
-Item 1: 5 x $4517 = $22585
-Item 2: 32 x $3308 = $105856
-Item 3: 42 x $3836 = $161112
-Item 4: 31 x $4664 = $144584
-Item 5: 34 x $366 = $12444
-Item 6: 26 x $1265 = $32890
+LINE ITEMS:
+Item 1: 30 x $4508 = $135240
+Item 2: 46 x $1564 = $71944
+Item 3: 10 x $2352 = $23520
+Item 4: 21 x $1190 = $24990
 
-GST-FREE AMOUNT: $143,841.30
-GST AMOUNT: $0.00
-TOTAL INC GST: $479,471.00
+CURRENCY: EUR
+SUBTOTAL: $255,694.00
+VAT: $0.00
+TOTAL DUE: $255,694.00
 
-PAYMENT DUE: 2023-09-29
-BANK: ANZ
-BSB: 876-589
-ACCOUNT: 24630496
+PAYMENT TERMS: Net 15 days
+DUE DATE: 2023-10-02
+
+IBAN: US86 3052US86 3052US86 3052US86 3052
+SWIFT: CITIUS33

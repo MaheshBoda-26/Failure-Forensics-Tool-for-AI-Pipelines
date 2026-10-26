@@ -1,31 +1,27 @@
-COMMERCIAL INVOICE
+INVOICE
 
-Invoice Number: INV-2025-6560
-Invoice Date: 2024-05-26
-Purchase Order: PO-46042
+Invoice #: INV-2023-7975
+Date: 2025-07-07
+Due Date: 2025-08-20
 
-SELLER:
+BILL TO:
 Catalyst Ventures
-8042 Main St, Suite 798
-Tax ID: TAX-619314922
+8575 Maple Dr, Suite 116
 
-BUYER:
+SHIP TO:
 Pinnacle Systems
-5228 First St, Suite 363
-Tax ID: TAX-216792320
+9737 Main St, Suite 668
 
-LINE ITEMS:
-Item 1: 16 x $3439 = $55024
-Item 2: 12 x $4491 = $53892
-Item 3: 38 x $4245 = $161310
+ITEMS:
+Item 1: 3 x $4293 = $12879
+Item 2: 5 x $4659 = $23295
+Item 3: 37 x $805 = $29785
 
-CURRENCY: GBP
-SUBTOTAL: $270,226.00
-VAT: $0.00
-TOTAL DUE: $270,226.00
+SUBTOTAL: $65,959.00
+TAX (8%): $5,276.72
+TOTAL: $71,235.72
 
-PAYMENT TERMS: Net 45 days
-DUE DATE: 2024-07-07
+Payment Terms: Net 30 days
+Bank Details: Bank: Wells Fargo | Account: 66431525
 
-IBAN: US99 1120 1148 7128 3202
-SWIFT: WFBIUS6S
+Thank you for your business!

@@ -2,14 +2,14 @@ MEMO
 
 MEMORANDUM
 
-TO: James Anderson <james.anderson@company.com>
-FROM: Maria Rodriguez <maria.rodriguez@company.com>
-DATE: 2024-05-25
-SUBJECT: Status Report
+TO: William Davis <william.davis@company.com>
+FROM: James Anderson <james.anderson@company.com>
+DATE: 2024-03-20
+SUBJECT: Project Update
 
 This is a sample correspondence body with relevant business content.
 
 ACTION REQUIRED: Please review and respond by end of week.
-DEADLINE: 2023-12-20
+DEADLINE: 2024-06-30
 
-cc: Michelle Martin <james.anderson@company.com>
+cc: James Anderson <william.davis@company.com>

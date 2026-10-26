@@ -23,7 +23,6 @@ Design notes:
 import contextlib
 import secrets
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 import bcrypt
 
@@ -93,11 +92,7 @@ class AuthManager:
         if not name.strip():
             raise ValueError("Tenant name must be non-empty")
         tenant = Tenant(name=name.strip())
-        with self.storage._conn() as conn:
-            conn.execute(
-                "INSERT INTO tenants (tenant_id, name, created_at, active) VALUES (?, ?, ?, 1)",
-                (tenant.tenant_id, tenant.name, tenant.created_at.isoformat()),
-            )
+        self.storage.create_tenant(tenant)
         return tenant
 
     def ensure_default_tenant(self) -> Tenant:
@@ -112,35 +107,16 @@ class AuthManager:
             return existing
         tenant = Tenant(name="default")
         tenant.tenant_id = DEFAULT_TENANT_ID
-        with self.storage._conn() as conn:
-            conn.execute(
-                "INSERT OR IGNORE INTO tenants (tenant_id, name, created_at, active) "
-                "VALUES (?, ?, ?, 1)",
-                (tenant.tenant_id, tenant.name, tenant.created_at.isoformat()),
-            )
+        self.storage.create_tenant(tenant, ignore_existing=True)
         return tenant
 
     def get_tenant(self, tenant_id: str, active_only: bool = True) -> Tenant | None:
         """Get a tenant. Inactive tenants are hidden unless `active_only=False`."""
-        sql = "SELECT * FROM tenants WHERE tenant_id = ?"
-        params: list[object] = [tenant_id]
-        if active_only:
-            sql += " AND active = 1"
-        with self.storage._conn() as conn:
-            cursor = conn.execute(sql, params)
-            row = cursor.fetchone()
-            if not row:
-                return None
-            cols = [d[0] for d in cursor.description]
-            return Tenant.model_validate(dict(zip(cols, row, strict=False)))
+        return self.storage.get_tenant(tenant_id, active_only=active_only)
 
     def list_tenants(self) -> list[Tenant]:
         """List every tenant, active or not."""
-        with self.storage._conn() as conn:
-            cursor = conn.execute("SELECT * FROM tenants ORDER BY created_at")
-            rows = cursor.fetchall()
-            cols = [d[0] for d in cursor.description]
-            return [Tenant.model_validate(dict(zip(cols, r, strict=False))) for r in rows]
+        return self.storage.list_tenants()
 
     def set_tenant_active(self, tenant_id: str, active: bool) -> bool:
         """Activate or deactivate a tenant. Returns False if it does not exist.
@@ -149,12 +125,7 @@ class AuthManager:
         hides it, so `GET`/`POST` on its data answer 403 without touching a
         single trace row.
         """
-        with self.storage._conn() as conn:
-            cursor = conn.execute(
-                "UPDATE tenants SET active = ? WHERE tenant_id = ?",
-                (int(active), tenant_id),
-            )
-            return cursor.rowcount > 0
+        return self.storage.set_tenant_active(tenant_id, active)
 
     # --- API keys ---
 
@@ -181,24 +152,7 @@ class AuthManager:
             name=name,
             expires_at=expires_at,
         )
-        with self.storage._conn() as conn:
-            conn.execute(
-                """
-                INSERT INTO api_keys (
-                    key_id, tenant_id, key_hash, prefix, name, created_at, expires_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    api_key.key_id,
-                    api_key.tenant_id,
-                    api_key.key_hash,
-                    api_key.prefix,
-                    api_key.name,
-                    api_key.created_at.isoformat(),
-                    api_key.expires_at.isoformat() if api_key.expires_at else None,
-                ),
-            )
+        self.storage.create_api_key(api_key)
         return api_key, raw_key
 
     def validate_api_key(self, raw_key: str) -> APIKey | None:
@@ -213,89 +167,55 @@ class AuthManager:
         if len(raw_key.encode()) > _MAX_KEY_BYTES:
             return None
 
-        with self.storage._conn() as conn:
-            cursor = conn.execute(
-                "SELECT * FROM api_keys WHERE prefix = ? AND revoked_at IS NULL",
-                (_key_prefix(raw_key, self.prefix),),
-            )
-            rows = cursor.fetchall()
-            if not rows:
+        candidates = self.storage.list_api_keys_by_prefix(_key_prefix(raw_key, self.prefix))
+        if not candidates:
+            _spend_bcrypt(raw_key)
+            return None
+
+        # More than one candidate is not expected with the entropy-bearing
+        # prefix above, but a database written by an older build can still hold
+        # keys that share one. Checking every candidate is what makes those
+        # keys keep working instead of silently 401ing.
+        matched: APIKey | None = None
+        for candidate in candidates:
+            try:
+                if bcrypt.checkpw(raw_key.encode(), candidate.key_hash.encode()):
+                    matched = candidate
+                    break
+            except ValueError:
+                # A malformed stored hash is a data problem, not a valid key.
+                continue
+        if matched is None:
+            _spend_bcrypt(raw_key)
+            return None
+
+        if matched.expires_at is not None:
+            expires_at = matched.expires_at
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=UTC)
+            if expires_at < datetime.now(UTC):
                 _spend_bcrypt(raw_key)
                 return None
-            cols = [d[0] for d in cursor.description]
 
-            # More than one row is not expected with the entropy-bearing prefix
-            # above, but a database written by an older build can still hold
-            # keys that share one. Checking every candidate is what makes those
-            # keys keep working instead of silently 401ing.
-            matched_row: tuple[Any, ...] | None = None
-            for row in rows:
-                candidate = dict(zip(cols, row, strict=False))
-                try:
-                    if bcrypt.checkpw(raw_key.encode(), str(candidate["key_hash"]).encode()):
-                        matched_row = row
-                        break
-                except ValueError:
-                    # A malformed stored hash is a data problem, not a valid key.
-                    continue
-            if matched_row is None:
-                _spend_bcrypt(raw_key)
-                return None
-
-            data = dict(zip(cols, matched_row, strict=False))
-
-            # Check expiration
-            expires_at = data.get("expires_at")
-            if expires_at:
-                try:
-                    if datetime.fromisoformat(expires_at.replace("Z", "+00:00")) < datetime.now(
-                        UTC
-                    ):
-                        _spend_bcrypt(raw_key)
-                        return None
-                except ValueError:
-                    # Malformed date, treat as not expired
-                    pass
-
-            used_at = datetime.now(UTC).isoformat()
-            conn.execute(
-                "UPDATE api_keys SET last_used_at = ? WHERE key_id = ?",
-                (used_at, data["key_id"]),
-            )
-            data["last_used_at"] = used_at
-            return APIKey.model_validate(data)
+        used_at = datetime.now(UTC)
+        self.storage.touch_api_key(matched.key_id, used_at)
+        matched.last_used_at = used_at
+        return matched
 
     def list_keys(self, tenant_id: str) -> list[APIKey]:
         """List a tenant's keys, including revoked ones.
 
         The caller (the CLI) is responsible for not printing `key_hash`.
         """
-        with self.storage._conn() as conn:
-            cursor = conn.execute(
-                "SELECT * FROM api_keys WHERE tenant_id = ? ORDER BY created_at", (tenant_id,)
-            )
-            rows = cursor.fetchall()
-            cols = [d[0] for d in cursor.description]
-            return [APIKey.model_validate(dict(zip(cols, r, strict=False))) for r in rows]
+        return self.storage.list_api_keys(tenant_id)
 
     def get_key(self, key_id: str) -> APIKey | None:
         """Get a single key record by ID."""
-        with self.storage._conn() as conn:
-            cursor = conn.execute("SELECT * FROM api_keys WHERE key_id = ?", (key_id,))
-            row = cursor.fetchone()
-            if not row:
-                return None
-            cols = [d[0] for d in cursor.description]
-            return APIKey.model_validate(dict(zip(cols, row, strict=False)))
+        return self.storage.get_api_key(key_id)
 
     def revoke_key(self, key_id: str) -> bool:
         """Revoke a key. Returns False if it does not exist or was already revoked."""
-        with self.storage._conn() as conn:
-            cursor = conn.execute(
-                "UPDATE api_keys SET revoked_at = ? WHERE key_id = ? AND revoked_at IS NULL",
-                (datetime.now(UTC).isoformat(), key_id),
-            )
-            return cursor.rowcount > 0
+        return self.storage.revoke_api_key(key_id, datetime.now(UTC))
 
 
 __all__ = ["AuthManager"]

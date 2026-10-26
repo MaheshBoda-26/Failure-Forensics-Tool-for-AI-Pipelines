@@ -1,36 +1,27 @@
-COMMERCIAL INVOICE
+INVOICE
 
-Invoice Number: INV-2025-8831
-Invoice Date: 2024-11-02
-Purchase Order: PO-58228
+Invoice #: INV-2025-3354
+Date: 2024-09-25
+Due Date: 2024-11-07
 
-SELLER:
-Apex Dynamics
-2062 Second Ave, Suite 379
-Tax ID: TAX-128257561
+BILL TO:
+Meridian Industries
+8677 First St, Suite 973
 
-BUYER:
-Vertex Solutions
-1343 Second Ave, Suite 307
-Tax ID: TAX-211705058
+SHIP TO:
+Apex Consulting Group
+4171 First St, Suite 975
 
-LINE ITEMS:
-Item 1: 43 x $1227 = $52761
-Item 2: 41 x $4338 = $177858
-Item 3: 25 x $2085 = $52125
-Item 4: 27 x $1230 = $33210
-Item 5: 28 x $2975 = $83300
-Item 6: 46 x $1895 = $87170
-Item 7: 25 x $163 = $4075
-Item 8: 30 x $2866 = $85980
+ITEMS:
+Item 1: 5 x $3192 = $15960
+Item 2: 10 x $3746 = $37460
+Item 3: 21 x $3896 = $81816
 
-CURRENCY: AUD
-SUBTOTAL: $576,479.00
-VAT: $0.00
-TOTAL DUE: $576,479.00
+SUBTOTAL: $135,236.00
+TAX (20%): $27,047.20
+TOTAL: $162,283.20
 
-PAYMENT TERMS: Net 45 days
-DUE DATE: 2024-12-17
+Payment Terms: Net 30 days
+Bank Details: Bank: Citi | Account: 11858701
 
-IBAN: US33 4931 5393 8005 1402
-SWIFT: WFBIUS6S
+Thank you for your business!

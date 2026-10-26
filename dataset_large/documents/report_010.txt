@@ -1,10 +1,10 @@
 TECHNICAL ANALYSIS REPORT
 
-Document ID: DOC-48649
-Title: Risk Assessment Summary
-Version: 1.2
-Date: 2024-06-15
-Author: Robert Taylor
+Document ID: DOC-35932
+Title: Market Analysis Report
+Version: 1.0
+Date: 2023-05-13
+Author: William Davis
 Reviewed By: Maria Rodriguez
 
 1. INTRODUCTION

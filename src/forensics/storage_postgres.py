@@ -6,6 +6,7 @@ Uses the same schema as SQLite but with PostgreSQL-specific types and features.
 
 import json
 import os
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,11 +15,13 @@ from typing import Any
 import asyncpg
 
 from forensics.models import (
+    APIKey,
     Diagnosis,
     EvalCase,
     EvalResult,
     EvalRun,
     Flag,
+    Tenant,
     Trace,
     TraceStatus,
 )
@@ -60,7 +63,7 @@ class PostgresStorage(StorageBase):
         self,
         traces_dir: Path | None = None,
         db_path: Path | None = None,  # Ignored for PostgreSQL, kept for interface compatibility
-    ):
+    ) -> None:
         self.traces_dir = traces_dir or _default_traces_dir()
         self.db_path = db_path  # Not used, but kept for interface
         self.traces_dir.mkdir(parents=True, exist_ok=True)
@@ -78,14 +81,20 @@ class PostgresStorage(StorageBase):
             )
         return self._pool
 
-    async def close(self) -> None:
+    async def _aclose(self) -> None:
         """Close the connection pool."""
         if self._pool:
             await self._pool.close()
             self._pool = None
 
+    def close(self) -> None:
+        """Close the connection pool (sync wrapper, matching StorageBase)."""
+        import asyncio
+
+        asyncio.run(self._aclose())
+
     @asynccontextmanager
-    async def _conn(self):
+    async def _conn(self) -> AsyncIterator[asyncpg.Connection]:
         """Get a database connection from the pool."""
         pool = await self._get_pool()
         async with pool.acquire() as conn:
@@ -1017,6 +1026,149 @@ class PostgresStorage(StorageBase):
         import asyncio
 
         return asyncio.run(self._async_get_eval_results_for_run(run_id, tenant_id))
+
+    # --- Tenant operations ---
+
+    async def _async_create_tenant(self, tenant: Tenant, ignore_existing: bool) -> None:
+        conflict = "ON CONFLICT (tenant_id) DO NOTHING" if ignore_existing else ""
+        async with self._conn() as conn:
+            await conn.execute(
+                f"""
+                INSERT INTO tenants (tenant_id, name, created_at, active)
+                VALUES ($1, $2, $3, $4)
+                {conflict}
+                """,
+                tenant.tenant_id,
+                tenant.name,
+                tenant.created_at,
+                tenant.active,
+            )
+
+    async def _async_get_tenant(self, tenant_id: str, active_only: bool) -> Tenant | None:
+        sql = "SELECT * FROM tenants WHERE tenant_id = $1"
+        if active_only:
+            sql += " AND active = TRUE"
+        async with self._conn() as conn:
+            row = await conn.fetchrow(sql, tenant_id)
+        return Tenant.model_validate(dict(row)) if row else None
+
+    async def _async_list_tenants(self) -> list[Tenant]:
+        async with self._conn() as conn:
+            rows = await conn.fetch("SELECT * FROM tenants ORDER BY created_at")
+        return [Tenant.model_validate(dict(r)) for r in rows]
+
+    async def _async_set_tenant_active(self, tenant_id: str, active: bool) -> bool:
+        async with self._conn() as conn:
+            status = await conn.execute(
+                "UPDATE tenants SET active = $1 WHERE tenant_id = $2", active, tenant_id
+            )
+        return str(status).endswith(" 1")
+
+    # --- API key operations ---
+
+    async def _async_create_api_key(self, key: APIKey) -> None:
+        async with self._conn() as conn:
+            await conn.execute(
+                """
+                INSERT INTO api_keys (
+                    key_id, tenant_id, key_hash, prefix, name, created_at, expires_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                """,
+                key.key_id,
+                key.tenant_id,
+                key.key_hash,
+                key.prefix,
+                key.name,
+                key.created_at,
+                key.expires_at,
+            )
+
+    async def _async_list_api_keys_by_prefix(self, prefix: str) -> list[APIKey]:
+        async with self._conn() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM api_keys WHERE prefix = $1 AND revoked_at IS NULL", prefix
+            )
+        return [APIKey.model_validate(dict(r)) for r in rows]
+
+    async def _async_touch_api_key(self, key_id: str, used_at: datetime) -> None:
+        async with self._conn() as conn:
+            await conn.execute(
+                "UPDATE api_keys SET last_used_at = $1 WHERE key_id = $2", used_at, key_id
+            )
+
+    async def _async_list_api_keys(self, tenant_id: str) -> list[APIKey]:
+        async with self._conn() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM api_keys WHERE tenant_id = $1 ORDER BY created_at", tenant_id
+            )
+        return [APIKey.model_validate(dict(r)) for r in rows]
+
+    async def _async_get_api_key(self, key_id: str) -> APIKey | None:
+        async with self._conn() as conn:
+            row = await conn.fetchrow("SELECT * FROM api_keys WHERE key_id = $1", key_id)
+        return APIKey.model_validate(dict(row)) if row else None
+
+    async def _async_revoke_api_key(self, key_id: str, revoked_at: datetime) -> bool:
+        async with self._conn() as conn:
+            status = await conn.execute(
+                "UPDATE api_keys SET revoked_at = $1 WHERE key_id = $2 AND revoked_at IS NULL",
+                revoked_at,
+                key_id,
+            )
+        return str(status).endswith(" 1")
+
+    # Sync wrappers for the tenant / API-key contract.
+
+    def create_tenant(self, tenant: Tenant, *, ignore_existing: bool = False) -> None:
+        import asyncio
+
+        asyncio.run(self._async_create_tenant(tenant, ignore_existing))
+
+    def get_tenant(self, tenant_id: str, *, active_only: bool = True) -> Tenant | None:
+        import asyncio
+
+        return asyncio.run(self._async_get_tenant(tenant_id, active_only))
+
+    def list_tenants(self) -> list[Tenant]:
+        import asyncio
+
+        return asyncio.run(self._async_list_tenants())
+
+    def set_tenant_active(self, tenant_id: str, active: bool) -> bool:
+        import asyncio
+
+        return asyncio.run(self._async_set_tenant_active(tenant_id, active))
+
+    def create_api_key(self, key: APIKey) -> None:
+        import asyncio
+
+        asyncio.run(self._async_create_api_key(key))
+
+    def list_api_keys_by_prefix(self, prefix: str) -> list[APIKey]:
+        import asyncio
+
+        return asyncio.run(self._async_list_api_keys_by_prefix(prefix))
+
+    def touch_api_key(self, key_id: str, used_at: datetime) -> None:
+        import asyncio
+
+        asyncio.run(self._async_touch_api_key(key_id, used_at))
+
+    def list_api_keys(self, tenant_id: str) -> list[APIKey]:
+        import asyncio
+
+        return asyncio.run(self._async_list_api_keys(tenant_id))
+
+    def get_api_key(self, key_id: str) -> APIKey | None:
+        import asyncio
+
+        return asyncio.run(self._async_get_api_key(key_id))
+
+    def revoke_api_key(self, key_id: str, revoked_at: datetime) -> bool:
+        import asyncio
+
+        return asyncio.run(self._async_revoke_api_key(key_id, revoked_at))
 
 
 __all__ = ["PostgresStorage"]

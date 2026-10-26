@@ -1,31 +1,33 @@
-INVOICE
+TAX INVOICE
 
-Invoice #: INV-2025-9933
-Date: 2025-10-25
-Due Date: 2025-11-30
+ABN: 56 55356 55356 553
+Invoice #: INV-2025-7681
+Date: 2024-10-24
 
-BILL TO:
+FROM:
 Quantum Leap Labs
-1803 Maple Dr, Suite 879
+310 Oak Ave, Suite 702
 
-SHIP TO:
+TO:
 Stellar Communications
-8585 First St, Suite 544
+7421 First St, Suite 614
 
-ITEMS:
-Item 1: 25 x $3492 = $87300
-Item 2: 18 x $3393 = $61074
-Item 3: 4 x $1563 = $6252
-Item 4: 42 x $844 = $35448
-Item 5: 24 x $3679 = $88296
-Item 6: 1 x $2569 = $2569
-Item 7: 50 x $450 = $22500
+DESCRIPTION                                         QTY    UNIT PRICE    GST    TOTAL
+Item 1: 42 x $1543 = $64806
+Item 2: 16 x $2246 = $35936
+Item 3: 28 x $251 = $7028
+Item 4: 10 x $1046 = $10460
+Item 5: 11 x $3174 = $34914
+Item 6: 15 x $942 = $14130
 
-SUBTOTAL: $303,439.00
-TAX (10%): $30,343.90
-TOTAL: $333,782.90
+GST-FREE AMOUNT: $50,182.20
+GST AMOUNT: $8,363.70
+TOTAL INC GST: $175,637.70
 
-Payment Terms: Net 15 days
-Bank Details: Bank: Wells Fargo | Account: 30758892
+PAYMENT DUE: 2024-12-13
+BANK: Commonwealth Bank
+BSB: 414-887
+ACCOUNT: 16555584
 
-Thank you for your business!
+
+[HALLUCINATED ENTITY] Fake Vendor Inc - $50,000 - Contract ID: FAKE-2024-001

@@ -1,33 +1,28 @@
-COMMERCIAL INVOICE
+TAX INVOICE
 
-Invoice Number: INV-2023-7882
-Invoice Date: 2024-07-01
-Purchase Order: PO-15673
+ABN: 72 48172 48172 481
+Invoice #: INV-2025-8806
+Date: 2025-01-16
 
-SELLER:
-BlueSky Innovations
-4745 Main St, Suite 871
-Tax ID: TAX-282920698
+FROM:
+Summit Partners
+6040 Oak Ave, Suite 183
 
-BUYER:
-IronClad Security
-2332 Park Blvd, Suite 980
-Tax ID: TAX-536078892
+TO:
+Vanguard Analytics
+4058 Oak Ave, Suite 851
 
-LINE ITEMS:
-Item 1: 15 x $3031 = $45465
-Item 2: 32 x $1629 = $52128
-Item 3: 29 x $908 = $26332
-Item 4: 10 x $2775 = $27750
-Item 5: 11 x $1913 = $21043
+DESCRIPTION                                         QTY    UNIT PRICE    GST    TOTAL
+Item 1: 47 x $3273 = $153831
+Item 2: 9 x $710 = $6390
+Item 3: 41 x $4088 = $167608
+Item 4: 23 x $2886 = $66378
 
-CURRENCY: GBP
-SUBTOTAL: $172,718.00
-VAT: $34,543.60
-TOTAL DUE: $207,261.60
+GST-FREE AMOUNT: $118,262.10
+GST AMOUNT: $39,420.70
+TOTAL INC GST: $433,627.70
 
-PAYMENT TERMS: Net 60 days
-DUE DATE: 2024-07-26
-
-IBAN: US95 8047 9271 7807 4275
-SWIFT: CITIUS33
+PAYMENT DUE: 2025-02-05
+BANK: Commonwealth Bank
+BSB: 907-657
+ACCOUNT: 82880310

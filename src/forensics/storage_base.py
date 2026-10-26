@@ -8,11 +8,13 @@ from datetime import datetime
 from pathlib import Path
 
 from forensics.models import (
+    APIKey,
     Diagnosis,
     EvalCase,
     EvalResult,
     EvalRun,
     Flag,
+    Tenant,
     Trace,
     TraceStatus,
 )
@@ -188,6 +190,69 @@ class StorageBase(ABC):
         self, run_id: str, tenant_id: str | None = None
     ) -> list[EvalResult]:
         """Get all eval results for a run."""
+        ...
+
+    # --- Tenant operations ---
+    #
+    # Auth state lives behind the same interface as trace state: `AuthManager`
+    # owns hashing and policy, the backend owns SQL. Reaching into a private
+    # `_conn()` from `AuthManager` meant the PostgreSQL backend could not
+    # authenticate at all, and the abstraction was a fiction.
+
+    @abstractmethod
+    def create_tenant(self, tenant: Tenant, *, ignore_existing: bool = False) -> None:
+        """Insert a tenant.
+
+        With ``ignore_existing=True`` an existing `tenant_id` is left untouched
+        instead of raising, which is what `ensure_default_tenant` needs.
+        """
+        ...
+
+    @abstractmethod
+    def get_tenant(self, tenant_id: str, *, active_only: bool = True) -> Tenant | None:
+        """Fetch one tenant, hiding inactive ones unless `active_only=False`."""
+        ...
+
+    @abstractmethod
+    def list_tenants(self) -> list[Tenant]:
+        """List every tenant, active or not, oldest first."""
+        ...
+
+    @abstractmethod
+    def set_tenant_active(self, tenant_id: str, active: bool) -> bool:
+        """Activate or deactivate a tenant. False when it does not exist."""
+        ...
+
+    # --- API key operations ---
+
+    @abstractmethod
+    def create_api_key(self, key: APIKey) -> None:
+        """Store a key record. Only the hash is persisted, never the plaintext."""
+        ...
+
+    @abstractmethod
+    def list_api_keys_by_prefix(self, prefix: str) -> list[APIKey]:
+        """Every un-revoked key sharing `prefix`, for verification candidates."""
+        ...
+
+    @abstractmethod
+    def touch_api_key(self, key_id: str, used_at: datetime) -> None:
+        """Record a successful authentication."""
+        ...
+
+    @abstractmethod
+    def list_api_keys(self, tenant_id: str) -> list[APIKey]:
+        """List a tenant's keys, revoked ones included, oldest first."""
+        ...
+
+    @abstractmethod
+    def get_api_key(self, key_id: str) -> APIKey | None:
+        """Fetch one key record by ID."""
+        ...
+
+    @abstractmethod
+    def revoke_api_key(self, key_id: str, revoked_at: datetime) -> bool:
+        """Revoke a key. False when it does not exist or was already revoked."""
         ...
 
 

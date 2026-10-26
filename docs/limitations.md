@@ -4,17 +4,17 @@ This document enumerates what the tool does **not** do, as shipped. Every entry
 is a scope decision or a known gap with its impact and mitigation stated. Nothing
 here is presented as a bug.
 
-Last verified against the working tree at commit `cb373e9` (specs 01–07 complete,
-`make check` green with 344 tests). Later revisions added the deploy and
-multi-tenancy fixes (PR #1) and the tracing/scheduler fixes, bringing the suite
-to 352.
+Last verified against the working tree with `make check` (ruff, mypy strict, and
+the test suite: 465 passing, `-m "not live"`). The count is stated as the current
+suite size rather than a commit-pinned one, because the previous revision's
+"344 tests at `cb373e9`" drifted two layers behind the code it described.
 
 ---
 
 ## Resolved in this revision
 
-The previous revision of this file listed shipped work as missing. These ten are
-implemented, tested, and reachable by configuration:
+The previous revision of this file listed shipped work as missing. These eleven
+are implemented, tested, and reachable by configuration:
 
 | Previously listed as missing | Now |
 |---|---|
@@ -28,6 +28,7 @@ implemented, tested, and reachable by configuration:
 | "No Rate Limiting" | Per-tenant token bucket in SQLite with `RATE_LIMIT_ENABLED`, `RATE_LIMIT_REQUESTS_PER_MINUTE`, `RATE_LIMIT_BURST`; FastAPI middleware with 429 + `Retry-After` headers. |
 | "No API Key Expiry" | `AUTH_KEY_TTL_DAYS` + `--ttl` CLI option + expiration check in `validate_api_key`. |
 | "No Advanced Analytics" | Cost/token tracking, model performance comparison, failure correlation heatmap, cost trend charts, latency analysis (see `AnalyticsView.tsx`). |
+| "The bundled UI cannot authenticate" | `frontend/` takes an API key from the settings panel, keeps it in `localStorage`, and sends `Authorization: Bearer` on every request (`api/client.ts`); a 401 surfaces as an error toast instead of silently empty views. |
 | "No Custom Domain Checks" | 9 built-in custom checks: PII detection, financial validation, contract/legal, report structure, correspondence metadata, mixed document consistency (see `src/forensics/custom_checks.py`). |
 
 Two further configuration gaps were closed at the same time, because a setting
@@ -44,22 +45,21 @@ that silently does nothing is worse than a missing one:
 
 ---
 
-## 1. The bundled UI cannot authenticate
+## 1. ~~The bundled UI cannot authenticate~~ — **RESOLVED**
 
 **Limitation**: with `AUTH_ENABLED=true`, every data route requires
-`Authorization: Bearer ffk_…`, and the React client
-(`frontend/src/api/client.ts`) sends no such header. There is no key-entry UI.
+`Authorization: Bearer ffk_…`, and the React client sent no such header. There
+was no key-entry UI, so the bundled UI showed empty views.
 
-**Impact**: the bundled UI shows empty views against an authenticated API. The
-API itself is fully usable with `curl`, `scripts/smoke.sh`, or any client that
-sets the header.
+**Resolution**: `frontend/src/components/Header.tsx` has a settings panel that
+stores the key with `setApiKey` (persisted in `localStorage`, cleared by
+`clearApiKey`), and `frontend/src/api/client.ts` attaches
+`Authorization: Bearer <key>` to every request. A rejected key surfaces as a
+401 the UI reports, rather than as an empty dashboard that looks like "no data".
 
-**Mitigation**: `render.yaml` deploys with `AUTH_ENABLED=false` for the public
-demo, which is the configuration the UI is built for. For a locked-down
-deployment, use the API directly or add a key field to the client's fetch
-wrapper (one header, one input).
-
----
+**Impact**: the demo deployment still runs `AUTH_ENABLED=false`
+(`render.yaml`), so the public instance needs no key; a locked-down deployment
+can now use the bundled UI with a key instead of falling back to `curl`.
 
 ## 2. ~~A worker that dies mid-job leaves the job `running` forever~~ — **RESOLVED**
 
@@ -150,9 +150,17 @@ document but one (the seeded `invoice_001`).
 `forensics benchmark-analyzer` reports 85.7% step/category accuracy in that
 configuration; the remaining miss is this fault, not a detector failure.
 
+The scorecard also picks its baseline as *whatever trace the store returns
+first*, which is the most recently written one. On a store that has accumulated
+several runs, the reported figure therefore moves between 5/7 and 6/7
+(71.4%–85.7%) without any analyzer change: it is measuring the baseline, not the
+detector. Fixing the baseline (or scoring every trace and averaging) is the
+honest version and is not yet done.
+
 **Mitigation**: score against a real (non-dry-run) baseline trace, which has
-entities to lose. The injector's own no-op class of bug — choosing a label equal
-to the correct one — was fixed and is regression-tested.
+entities to lose, and read the score next to the baseline trace ID the scorecard
+prints. The injector's own no-op class of bug — choosing a label equal to the
+correct one — was fixed and is regression-tested.
 
 ---
 
@@ -266,37 +274,50 @@ slot. Throughput is bounded by write frequency, not by CPU. Not horizontally
 scalable beyond one file.
 
 **Mitigation**: traces are written once and read many times, which is the shape
-WAL handles best. `Storage`, `JobQueue`, and `AuthManager` all take a `db_path`,
-so a PostgreSQL backend is a substitution rather than a rewrite.
+WAL handles best. `storage_postgres.PostgresStorage` implements the same
+`StorageBase` contract, so switching backends is configuration
+(`DATABASE_URL`) rather than a rewrite — though that backend is unproven in
+practice; see item 18.
 
 ---
 
-## 13. API keys never expire
+## 13. API keys have no scopes (expiry is ~~resolved~~)
 
-**Limitation**: keys are bcrypt-hashed, prefixed for identification, and
-revocable — but there is no expiry, no automatic rotation, and no scopes. Every
-key of a tenant has that tenant's full access.
+**Limitation**: keys are bcrypt-hashed, prefixed for identification, revocable,
+and now expirable — `AUTH_KEY_TTL_DAYS` sets a default lifetime and
+`forensics auth create-key --ttl N` overrides it per key; an expired key fails
+validation and is indistinguishable from a revoked one (both 401). What remains
+missing is **scopes**: every key of a tenant still has that tenant's full read
+and write access.
 
-**Impact**: a leaked key is valid until someone notices and revokes it. There is
-no read-only key for dashboards or CI that should not write.
+**Impact**: a leaked key is bounded by its TTL rather than being valid forever,
+but a dashboard or CI key that should only read can still submit traces and
+confirm diagnoses.
 
-**Mitigation**: `revoke-key` takes effect immediately (the key stops validating
-on the next request) and revoked rows are kept for audit. Rotation means minting
-a new key and revoking the old one — two commands.
+**Mitigation**: mint short-TTL keys for machine callers
+(`--ttl 7`), keep `--ttl 0` for nothing, and revoke on suspicion —
+`revoke-key` takes effect on the next request and revoked rows stay for audit.
+Scoped keys would mean an `scopes` column plus a per-route check; that is a
+deliberate omission, not an oversight.
 
 ---
 
-## 14. No rate limiting
+## 14. ~~No rate limiting~~ — **RESOLVED**
 
-**Limitation**: the API authenticates but does not throttle. Nothing stops a
-tenant from issuing requests as fast as the process can serve them.
+**Limitation**: the API authenticated but did not throttle, so one tenant could
+issue requests as fast as the process could serve them and consume the whole
+instance's capacity.
 
-**Impact**: one tenant can consume the whole instance's capacity, including the
-inference spend caps, which are per-process rather than per-tenant.
+**Resolution**: `rate_limit.py` implements a per-tenant token bucket persisted in
+SQLite (so limits survive a restart and apply across workers):
+`RATE_LIMIT_ENABLED`, `RATE_LIMIT_REQUESTS_PER_MINUTE`, `RATE_LIMIT_BURST`. A
+FastAPI middleware rejects over-limit requests with `429` and a `Retry-After`
+header, deriving the tenant from the same API key the endpoint will use.
 
-**Mitigation**: the demo is single-tenant and bounded by model latency. Per-tenant
-caps would belong next to the spend tracker, which already attributes cost per
-step.
+**Impact**: the limiter is process-local in its accounting only in the sense
+that the bucket rows live in the shared database; the demo stays
+`RATE_LIMIT_ENABLED=false`. The spend caps remain per-process, which is a
+separate limitation (item 8).
 
 ---
 
@@ -304,13 +325,15 @@ step.
 
 **Limitation**: 15 documents, 5 seeded failures (one per type, plus a mixed one).
 
-**Impact**: analytics are illustrative, not statistically meaningful; failure-rate
-trends have too few points to be read as a trend. `seed` is not implemented — the
-dataset is checked in.
+**Impact**: the committed 15-document corpus is illustrative, not statistically
+meaningful; failure-rate trends have too few points to be read as a trend.
 
-**Mitigation**: the schema takes any document count, `labels.json` is the only
-input to ground-truth checks, and the fault injector produces arbitrarily many
-labelled failures from a single clean trace.
+**Mitigation**: `forensics generate-dataset generate` builds a larger corpus. It
+is seeded and clock-free — the same `--seed` reproduces the output byte-for-byte,
+which is pinned by `tests/test_generate_dataset.py` — and `dataset_large/`
+ships 150 documents (30 per type) with 43 seeded failures at seed 12345.
+`labels.json` remains the only input to ground-truth checks, and the fault
+injector derives arbitrarily many labelled failures from a single clean trace.
 
 ---
 
@@ -342,6 +365,26 @@ enqueues 10,000 jobs at priority 10 delays everyone else.
 **Mitigation**: `QUEUE_WORKER_CONCURRENCY`, `QUEUE_JOB_TTL` and the `priority`
 column are the levers available today, and `forensics queue list --status pending`
 is the queue-depth view.
+
+---
+
+## 18. The PostgreSQL backend is typechecked but not exercised
+
+**Limitation**: `storage_postgres.PostgresStorage` implements the full
+`StorageBase` contract — traces, flags, diagnoses, eval data, tenants and API
+keys — but no test in the suite ever connects to a PostgreSQL server. `asyncpg`
+is an opt-in extra (`pip install -e ".[postgres]"`), so CI never installs it,
+and the backend is covered by mypy strict and the import path only.
+
+**Impact**: the first real deployment is the first real execution. Schema
+drift between `migrations.py` (SQLite) and `_init_schema` (PostgreSQL) would
+surface there rather than in CI.
+
+**Mitigation**: the two backends share `StorageBase`, `AuthManager` no longer
+reaches into SQLite internals, and the SQLite implementation is the tested
+reference for every method. Adding a `pytest.mark.postgres` job against a
+throwaway container is the next step; until then, treat `DATABASE_URL` as
+unproven in production.
 
 ---
 

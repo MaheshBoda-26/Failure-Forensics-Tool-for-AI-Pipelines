@@ -9,9 +9,14 @@ All potential next steps from B to F have been successfully implemented.
 ### Document Generator (`src/forensics/generate_dataset.py`)
 - **150 documents** generated (30 per type × 5 types: contract, invoice, report, correspondence, mixed)
 - **5 templates per type** with realistic variable substitution
-- **25% failure rate** (configurable) with 7 fault injection types
+- **25% target failure rate** (configurable) with 7 fault injection types; the
+  committed corpus lands on 43 seeded failures in 150 documents
+- **Seed-reproducible**: the same `--seed` reproduces the corpus byte-for-byte
+  (pinned by `tests/test_generate_dataset.py`); the generator no longer reads
+  the wall clock
 - **7 fault types**: hallucinated_entity, malformed_date, invalid_label, wrong_label, schema_violation, context_loss, propagation_error
-- CLI: `forensics generate-dataset generate --output dataset_large --per-type 30 --failure-rate 0.25`
+- CLI: `forensics generate-dataset generate --output dataset_large --per-type 30 --failure-rate 0.25 --seed 12345`
+  (mounted on the main CLI; it previously existed only as a detached Typer app)
 
 ### Extended Eval Suite
 - Fault injection harness works with custom checks
@@ -34,7 +39,6 @@ All potential next steps from B to F have been successfully implemented.
 - **Failure Correlation Heatmap**: Step × category co-occurrence matrix
 - **Cost Trend Chart**: SVG-based daily spend trend with area chart
 - **Latency Analysis**: Per-model and per-stage latency with visual bars
-- **Cost Trend Chart**: Daily spend trend over time
 
 ---
 
@@ -109,8 +113,7 @@ New visualization sections added:
 ## Test Results
 
 ```
-460 tests passing
-All phases integrated and working
+make check: ruff (check + format), mypy strict, 465 tests passing
 ```
 
 ### Demo Verification
@@ -149,7 +152,7 @@ RATE_LIMIT_BURST=10
 AUTH_KEY_TTL_DAYS=90
 
 # PostgreSQL Backend
-DATABASE_URL=postgresql://user:pass@host:port/dbname
+DATABASE_URL=postgresql://user:pass@host:port/dbname  # pragma: allowlist secret
 
 # Custom Checks
 CHECK_PLUGINS=forensics.custom_checks:register_custom_checks

@@ -1,29 +1,30 @@
-INVOICE
+TAX INVOICE
 
-Invoice #: INV-2024-9623
-Date: 2023-06-19
-Due Date: 2023-08-01
+ABN: 50 65550 65550 655
+Invoice #: INV-2023-2083
+Date: 2024-05-03
 
-BILL TO:
-Acme Corporation
-4147 Park Blvd, Suite 307
+FROM:
 
-SHIP TO:
-GlobalTech Solutions
-7498 Maple Dr, Suite 598
+9594 Park Blvd, Suite 466
 
-ITEMS:
-Item 1: 14 x $533 = $7462
-Item 2: 7 x $1621 = $11347
-Item 3: 44 x $4126 = $181544
-Item 4: 36 x $4810 = $173160
-Item 5: 26 x $3984 = $103584
+TO:
 
-SUBTOTAL: $477,097.00
-TAX (0%): $0.00
-TOTAL: $477,097.00
+3083 Oak Ave, Suite 692
 
-Payment Terms: Net 60 days
-Bank Details: Bank: Chase | Account: 48029789
+DESCRIPTION                                         QTY    UNIT PRICE    GST    TOTAL
+Item 1: 48 x $1274 = $61152
+Item 2: 13 x $1946 = $25298
+Item 3: 41 x $1877 = $76957
+Item 4: 36 x $364 = $13104
+Item 5: 27 x $1992 = $53784
+Item 6: 25 x $1212 = $30300
 
-Thank you for your business!
+GST-FREE AMOUNT: $78,178.50
+GST AMOUNT: $13,029.75
+TOTAL INC GST: $273,624.75
+
+PAYMENT DUE: 2024-06-25
+BANK: Westpac
+BSB: 266-375
+ACCOUNT: 40253881

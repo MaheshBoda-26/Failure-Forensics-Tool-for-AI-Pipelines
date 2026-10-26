@@ -1,32 +1,27 @@
 INVOICE
 
-Invoice #: INV-2023-4311
-Date: 2024-01-30
-Due Date: 2024-03-27
+Invoice #: INV-2025-1925
+Date: 2024-03-08
+Due Date: 2024-03-25
 
 BILL TO:
-Summit Partners
-3892 Elm St, Suite 888
+Acme Corporation
+9281 First St, Suite 771
 
 SHIP TO:
-Vanguard Analytics
-3755 Maple Dr, Suite 674
+GlobalTech Solutions
+377 First St, Suite 421
 
 ITEMS:
-Item 1: 20 x $2007 = $40140
-Item 2: 41 x $3730 = $152930
-Item 3: 1 x $4515 = $4515
-Item 4: 27 x $1298 = $35046
-Item 5: 36 x $1353 = $48708
-Item 6: 24 x $4856 = $116544
-Item 7: 1 x $2004 = $2004
-Item 8: 39 x $3500 = $136500
+Item 1: 33 x $3212 = $105996
+Item 2: 44 x $3468 = $152592
+Item 3: 43 x $1457 = $62651
 
-SUBTOTAL: $536,387.00
-TAX (20%): $107,277.40
-TOTAL: $643,664.40
+SUBTOTAL: $321,239.00
+TAX (0%): $0.00
+TOTAL: $321,239.00
 
 Payment Terms: Net 30 days
-Bank Details: Bank: Citi | Account: 29048307
+Bank Details: Bank: Chase | Account: 76148964
 
 Thank you for your business!

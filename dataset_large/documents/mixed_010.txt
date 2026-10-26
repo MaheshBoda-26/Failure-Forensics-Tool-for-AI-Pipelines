@@ -1,33 +1,33 @@
-SERVICE ORDER WITH INVOICE DETAILS
+PROPOSAL WITH CONTRACT TERMS
 
-Service Order #: SO-24715
-Date: 2023-10-18
-Customer: Catalyst Ventures
-Provider: Pinnacle Systems
+PROPOSAL #PROP-2023-705
+Date: 2025-06-01
+Valid Until: 2025-07-01
 
-SERVICE DESCRIPTION
-Professional services engagement with deliverables.
+PREPARED FOR:
+BlueSky Innovations
 
-SCHEDULE
-Start: 2023-10-18
-End: 2024-01-16
-Milestones: M1: Design (Week 2), M2: Development (Week 6), M3: Testing (Week 10), M4: Deploy (Week 12)
+PREPARED BY:
+IronClad Security
+
+EXECUTIVE SUMMARY
+Incident involving contractual service levels.
+
+SCOPE OF WORK
+Full lifecycle services including design, implementation, and support.
 
 PRICING
-  Service 1: 6 hours @ $803/hr = $4818
-  Service 2: 9 hours @ $959/hr = $8631
-  Service 3: 7 hours @ $411/hr = $2877
-  Service 4: 18 hours @ $1295/hr = $23310
-  Service 5: 10 hours @ $894/hr = $8940
-Subtotal: $48,576.00
-Tax: $4,857.60
-Total: $53,433.60
+Total estimated investment: $48,679.40
 
-BILLING
-Frequency: Monthly
-Method: Wire Transfer
-Terms: 50% upfront, 25% at milestone, 25% on completion
+TERMS AND CONDITIONS
+1. This proposal constitutes an offer valid for 30 days.
+2. Acceptance creates a binding agreement.
+3. Payment terms: 50% upfront, 25% at milestone, 25% on completion.
+4. Intellectual property transfers upon full payment.
+5. Confidentiality survives termination.
 
-AUTHORIZATION
-Customer: _________________ Date: ________
-Provider: _________________ Date: ________
+ACCEPTANCE
+BlueSky Innovations                              IronClad Security
+_________________________              _________________________
+Robert Taylor                          Amanda Wilson
+Date: 2025-06-01                           Date: 2025-06-01

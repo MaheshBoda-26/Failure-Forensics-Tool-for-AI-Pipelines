@@ -1,36 +1,30 @@
-EXECUTIVE SUMMARY REPORT
+INCIDENT REPORT
 
-Report Title: Risk Assessment Summary
-Report Number: RPT-2023-661
-Date: 2024-09-27
-Prepared By: Maria Rodriguez
-Department: Operations
+Incident ID: INC-2023-8378
+Date/Time: 2023-06-22 13:44:33
+Severity: High
+Status: Open
+Reported By: Michael Brown
+Assigned To: Michael Brown
 
-EXECUTIVE SUMMARY
-This report presents key findings and recommendations based on comprehensive analysis.
+DESCRIPTION
+Detailed incident description with timeline.
 
-BACKGROUND
-Background information and context for the analysis performed.
+ROOT CAUSE
+Root cause analysis identified configuration drift.
 
-METHODOLOGY
-Mixed-methods approach combining quantitative metrics with qualitative assessment.
+IMPACT ASSESSMENT
+Limited to non-customer-facing systems.
 
-KEY FINDINGS
-• Finding 1: Significant improvement opportunity identified
-• Finding 2: Risk mitigation required
-• Finding 3: Cost optimization potential
+RESOLUTION
+Applied configuration patch and verified.
 
-RECOMMENDATIONS
-1. Immediate action on critical findings
-2. Strategic improvements for Q3
-3. Long-term architectural changes
+PREVENTIVE ACTIONS
+Implemented automated drift detection.
 
-CONCLUSION
-The analysis reveals substantial opportunities for improvement.
+TIMELINE
+Detected: 10:00 | Diagnosed: 10:30 | Resolved: 12:00
 
-APPENDICES
-Appendix A: Raw Data
-Appendix B: Methodology Details
-
-DISTRIBUTION: Executive Team, Department Heads
-CLASSIFICATION: Confidential
+APPROVALS
+Manager: _________________ Date: ________
+Director: _________________ Date: ________

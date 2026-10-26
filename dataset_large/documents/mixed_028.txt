@@ -1,14 +1,14 @@
 PROPOSAL WITH CONTRACT TERMS
 
-PROPOSAL #PROP-2023-542
-Date: 2025-12-18
-Valid Until: 2026-01-17
+PROPOSAL #PROP-2024-705
+Date: 2025-05-03
+Valid Until: 2025-06-02
 
 PREPARED FOR:
-Quantum Leap Labs
+Summit Partners
 
 PREPARED BY:
-Stellar Communications
+Vanguard Analytics
 
 EXECUTIVE SUMMARY
 Incident involving contractual service levels.
@@ -17,7 +17,7 @@ SCOPE OF WORK
 Full lifecycle services including design, implementation, and support.
 
 PRICING
-Total estimated investment: $29,819.90
+Total estimated investment: $57,500.30
 
 TERMS AND CONDITIONS
 1. This proposal constitutes an offer valid for 30 days.
@@ -27,7 +27,7 @@ TERMS AND CONDITIONS
 5. Confidentiality survives termination.
 
 ACCEPTANCE
-Quantum Leap Labs                              Stellar Communications
+Summit Partners                              Vanguard Analytics
 _________________________              _________________________
-Michelle Martin                          Maria Rodriguez
-Date: 2025-12-18                           Date: 2025-12-18
+William Davis                          Jennifer Lee
+Date: 2025-05-03                           Date: 2025-05-03

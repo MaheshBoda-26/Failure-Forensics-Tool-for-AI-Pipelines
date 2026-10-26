@@ -359,7 +359,7 @@ class AnalyticsSnapshot(BaseModel):
         default_factory=dict
     )  # model -> {pass_rate, avg_latency, avg_cost}
     failure_correlation: list[dict[str, Any]] = Field(
-        default_factory=dict
+        default_factory=list
     )  # step x category heatmap
     cost_trend: list[dict[str, Any]] = Field(default_factory=list)  # daily cost trend
 

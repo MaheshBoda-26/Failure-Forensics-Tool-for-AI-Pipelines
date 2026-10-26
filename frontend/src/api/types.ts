@@ -123,6 +123,26 @@ export interface Diagnosis {
   analyzer_fallback: boolean;
 }
 
+/** Per-model rollup produced by `get_analytics`. */
+export interface ModelPerformance {
+  pass_rate: number;
+  avg_latency_ms: number;
+  avg_cost_usd: number;
+}
+
+/** One cell of the step × failure-category co-occurrence matrix. */
+export interface FailureCorrelationEntry {
+  step: string;
+  category: string;
+  count: number;
+}
+
+/** One point of the daily spend trend. */
+export interface CostTrendPoint {
+  timestamp: string;
+  cost_usd: number;
+}
+
 export interface AnalyticsSnapshot {
   total_traces: number;
   failure_rate: number;
@@ -131,6 +151,19 @@ export interface AnalyticsSnapshot {
   failure_rate_over_time: Array<{ timestamp: string; failure_rate: number }>;
   avg_time_to_root_cause_seconds: number | null;
   generated_at?: string;
+
+  // Enhanced metrics (cost, tokens, latency, model comparison).
+  total_cost_usd: number;
+  cost_by_model: Record<string, number>;
+  cost_by_step: Record<string, number>;
+  tokens_by_model: Record<string, number>;
+  tokens_by_step: Record<string, number>;
+  avg_latency_ms: number;
+  latency_by_model: Record<string, number>;
+  latency_by_step: Record<string, number>;
+  model_performance: Record<string, ModelPerformance>;
+  failure_correlation: FailureCorrelationEntry[];
+  cost_trend: CostTrendPoint[];
 }
 
 export interface EvalRun {

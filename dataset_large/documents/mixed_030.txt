@@ -1,28 +1,25 @@
 SERVICE ORDER WITH INVOICE DETAILS
 
-Service Order #: SO-15863
-Date: 2025-12-19
-Customer: Acme Corporation
-Provider: GlobalTech Solutions
+Service Order #: SO-72590
+Date: 2024-09-21
+Customer: Quantum Leap Labs
+Provider: Stellar Communications
 
 SERVICE DESCRIPTION
 Professional services engagement with deliverables.
 
 SCHEDULE
-Start: 2025-12-19
-End: 2026-03-19
+Start: 2024-09-21
+End: 2024-12-20
 Milestones: M1: Design (Week 2), M2: Development (Week 6), M3: Testing (Week 10), M4: Deploy (Week 12)
 
 PRICING
-  Service 1: 6 hours @ $256/hr = $1536
-  Service 2: 2 hours @ $747/hr = $1494
-  Service 3: 1 hours @ $703/hr = $703
-  Service 4: 14 hours @ $250/hr = $3500
-  Service 5: 19 hours @ $395/hr = $7505
-  Service 6: 7 hours @ $1653/hr = $11571
-Subtotal: $26,309.00
-Tax: $2,630.90
-Total: $28,939.90
+  Service 1: 11 hours @ $693/hr = $7623
+  Service 2: 4 hours @ $1803/hr = $7212
+  Service 3: 19 hours @ $1374/hr = $26106
+Subtotal: $40,941.00
+Tax: $4,094.10
+Total: $45,035.10
 
 BILLING
 Frequency: Monthly

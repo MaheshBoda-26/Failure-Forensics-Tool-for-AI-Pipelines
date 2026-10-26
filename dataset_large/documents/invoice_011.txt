@@ -1,35 +1,32 @@
-TAX INVOICE
+COMMERCIAL INVOICE
 
-ABN: 66 699 418 575
-Invoice #: INV-2025-4032
-Date: 2025-12-04
+Invoice Number: INV-2024-9414
+Invoice Date: 2024-09-20
+Purchase Order: PO-73487
 
-FROM:
-Summit Partners
-5331 Main St, Suite 343
+SELLER:
+Meridian Industries
+295 Second Ave, Suite 217
+Tax ID: TAX-916524475
 
-TO:
-Vanguard Analytics
-439 Maple Dr, Suite 491
+BUYER:
+Apex Consulting Group
+1259 Second Ave, Suite 678
+Tax ID: TAX-201699339
 
-DESCRIPTION                                         QTY    UNIT PRICE    GST    TOTAL
-Item 1: 26 x $139 = $3614
-Item 2: 25 x $4162 = $104050
-Item 3: 49 x $3222 = $157878
-Item 4: 19 x $654 = $12426
-Item 5: 4 x $822 = $3288
-Item 6: 8 x $740 = $5920
-Item 7: 15 x $1287 = $19305
-Item 8: 1 x $2076 = $2076
+LINE ITEMS:
+Item 1: 18 x $3119 = $56142
+Item 2: 48 x $294 = $14112
+Item 3: 18 x $3016 = $54288
+Item 4: 41 x $101 = $4141
 
-GST-FREE AMOUNT: $92,567.10
-GST AMOUNT: $15,427.85
-TOTAL INC GST: $323,984.85
+CURRENCY: AUD
+SUBTOTAL: $128,683.00
+VAT: $12,868.30
+TOTAL DUE: $141,551.30
 
-PAYMENT DUE: 2026-01-05
-BANK: ANZ
-BSB: 514-982
-ACCOUNT: 59161939
+PAYMENT TERMS: Net 45 days
+DUE DATE: 2024-10-05
 
-
-[HALLUCINATED ENTITY] Fake Vendor Inc - $50,000 - Contract ID: FAKE-2024-001
+IBAN: US57 8135US57 8135US57 8135US57 8135
+SWIFT: CHASUS33

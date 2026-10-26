@@ -203,12 +203,18 @@ def run(doc_path: Path) -> None:
 
 
 @app.command(name="validate-dataset")
-def validate_dataset() -> None:
+def validate_dataset(
+    dataset_dir: Annotated[
+        Path | None,
+        typer.Option("--dir", "-d", help="Dataset directory (defaults to DATASET_DIR)"),
+    ] = None,
+) -> None:
     """Validate the dataset against labels.json."""
     _setup()
     from forensics.analyzer_simple import reachable_failure_pairs
 
-    labels_path = get_settings().dataset_dir / "labels.json"
+    root = dataset_dir if dataset_dir is not None else get_settings().dataset_dir
+    labels_path = root / "labels.json"
     if not labels_path.exists():
         typer.secho("labels.json not found", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
@@ -226,7 +232,7 @@ def validate_dataset() -> None:
 
     for doc_info in labels.get("documents", []):
         doc_id = doc_info["doc_id"]
-        doc_path = get_settings().dataset_dir / "documents" / f"{doc_id}.txt"
+        doc_path = root / "documents" / f"{doc_id}.txt"
 
         if not doc_path.exists():
             errors.append(f"Missing document file: {doc_path}")
@@ -815,6 +821,13 @@ worker_app = typer.Typer(help="Pipeline worker (spec 07)", no_args_is_help=True)
 app.add_typer(worker_app, name="worker")
 queue_app = typer.Typer(help="Enqueue and inspect pipeline jobs (spec 07)", no_args_is_help=True)
 app.add_typer(queue_app, name="queue")
+
+# `forensics generate-dataset ...`: the synthetic corpus generator lives in its
+# own module so the fixtures stay out of the operational CLI, but it is mounted
+# here so the documented command actually resolves.
+from forensics.generate_dataset import app as _dataset_app  # noqa: E402
+
+app.add_typer(_dataset_app, name="generate-dataset")
 
 
 @worker_app.command("start")

@@ -295,9 +295,15 @@ forensics eval                    # replay accumulated eval cases
 forensics eval-cases              # turn confirmed flags into eval cases
 forensics analytics               # print the analytics snapshot
 forensics validate-config         # validate settings without running
-forensics validate-dataset        # check all 15 docs and labels
+forensics validate-dataset        # check all 15 docs and labels (--dir for another corpus)
 forensics benchmark-analyzer      # fault-injection scorecard for the analyzer
+forensics generate-dataset generate --output dataset_large --per-type 30 --seed 12345
+forensics generate-dataset validate --dir dataset_large
 ```
+
+The generator is seeded and clock-free: the same `--seed` reproduces the corpus
+byte-for-byte, which is what makes `dataset_large/` (150 docs, 43 seeded
+failures) auditable against the code that produced it.
 
 Operational subcommands:
 
@@ -356,7 +362,7 @@ fails immediately instead of at the first request.
 | Job Reaper | `QUEUE_STALL_TIMEOUT=300` | Auto-reclaim stalled jobs from crashed workers |
 | Rate Limiting | `RATE_LIMIT_ENABLED=true` | Per-tenant token bucket with 429 + `Retry-After` |
 | API Key Expiry | `AUTH_KEY_TTL_DAYS=90` | Keys auto-expire after configured days |
-| PostgreSQL Backend | `DATABASE_URL=postgresql://...` | Horizontal scaling with asyncpg |
+| PostgreSQL Backend | `DATABASE_URL=postgresql://...` (+ `pip install -e ".[postgres]"`) | Horizontal scaling with asyncpg |
 
 All are off by default, so the base system needs no broker, collector, or
 scheduler service — only the model API.

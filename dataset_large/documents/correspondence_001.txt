@@ -2,14 +2,17 @@ MEMO
 
 MEMORANDUM
 
-TO: James Anderson <james.anderson@company.com>
-FROM: Amanda Wilson <amanda.wilson@company.com>
-DATE: 2023-12-18
-SUBJECT: Status Report
+TO: Robert Taylor <robert.taylor@company.com>
+FROM: Michael Brown <michael.brown@company.com>
+DATE: 2023-02-25
+SUBJECT: Contract Review
 
 This is a sample correspondence body with relevant business content.
 
 ACTION REQUIRED: Please review and respond by end of week.
-DEADLINE: 2025-07-30
+DEADLINE: 2023-11-18
 
-cc: Jennifer Lee <david.chen@company.com>
+cc: Robert Taylor <maria.rodriguez@company.com>
+
+
+[PROMPT FAILURE] Summary output is completely malformed and missing required fields.

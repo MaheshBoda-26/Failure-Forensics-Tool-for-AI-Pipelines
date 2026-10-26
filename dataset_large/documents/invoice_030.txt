@@ -1,35 +1,30 @@
-COMMERCIAL INVOICE
+TAX INVOICE
 
-Invoice Number: INV-2024-7567
-Invoice Date: 2024-04-10
-Purchase Order: PO-17001
+ABN: 53 71753 71753 717
+Invoice #: INV-2023-6643
+Date: 2023-06-14
 
-SELLER:
-Horizon Enterprises
-6479 Elm St, Suite 604
-Tax ID: TAX-749704425
+FROM:
+Acme Corporation
+3851 Elm St, Suite 423
 
-BUYER:
-Nexus Digital Services
-5247 Park Blvd, Suite 236
-Tax ID: TAX-477172406
+TO:
+GlobalTech Solutions
+211 Oak Ave, Suite 408
 
-LINE ITEMS:
-Item 1: 38 x $3754 = $142652
-Item 2: 18 x $1590 = $28620
-Item 3: 4 x $2760 = $11040
-Item 4: 20 x $1668 = $33360
-Item 5: 37 x $607 = $22459
-Item 6: 40 x $3866 = $154640
-Item 7: 6 x $4273 = $25638
+DESCRIPTION                                         QTY    UNIT PRICE    GST    TOTAL
+Item 1: 46 x $2765 = $127190
+Item 2: 45 x $1625 = $73125
+Item 3: 32 x $2750 = $88000
+Item 4: 37 x $4225 = $156325
+Item 5: 37 x $4595 = $170015
+Item 6: 14 x $2207 = $30898
 
-CURRENCY: GBP
-SUBTOTAL: $418,409.00
-VAT: $62,761.35
-TOTAL DUE: $481,170.35
+GST-FREE AMOUNT: $193,665.90
+GST AMOUNT: $64,555.30
+TOTAL INC GST: $710,108.30
 
-PAYMENT TERMS: Net 45 days
-DUE DATE: 2024-05-13
-
-IBAN: US67 3470 9681 9852 2702
-SWIFT: CITIUS33
+PAYMENT DUE: 2023-07-17
+BANK: Commonwealth Bank
+BSB: 959-123
+ACCOUNT: 91420662

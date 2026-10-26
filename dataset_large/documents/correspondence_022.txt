@@ -1,23 +1,17 @@
-FORMAL LETTER
+EMAIL
 
-2024-12-24
+From: Sarah Johnson <sarah.johnson@company.com>
+To: Maria Rodriguez <maria.rodriguez@company.com>
+CC: David Chen <sarah.johnson@company.com>
+Date: 2025-09-01
+Subject: Project Update
 
-Michelle Martin
-General Counsel
-Apex Consulting Group
-8346 Oak Ave, Suite 294
+Dear Maria Rodriguez,
 
-Re: Proposal Follow-up
+This is a sample correspondence body with relevant business content.
 
-Dear Michelle Martin,
-
-This is a sample contract body with relevant business content.
-
-We look forward to your response.
-
-Sincerely,
-
-James Anderson
-General Counsel
-Horizon Enterprises
-james.anderson@company.com | +1-555-845-5716
+Best regards,
+Sarah Johnson
+VP Engineering
+Quantum Leap Labs
+sarah.johnson@company.com | +1-555-938-3064
