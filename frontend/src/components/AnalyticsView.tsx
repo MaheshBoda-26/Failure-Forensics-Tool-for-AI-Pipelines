@@ -1,7 +1,18 @@
-import React, { useState, useMemo, useEffect } from "react";
-import { AnalyticsSnapshot, EvalRun, EvalResult } from "../api/types";
+import React, { useEffect, useMemo, useState } from "react";
+import { Play } from "lucide-react";
 import { api } from "../api/client";
-import { Play, TrendingUp, AlertTriangle, ShieldCheck, Clock, DollarSign, BarChart2, Zap, Cpu, GitBranch, PieChart } from "lucide-react";
+import type { AnalyticsSnapshot, EvalResult, EvalRun } from "../api/types";
+import {
+  STEP_LABEL,
+  STEP_ORDER,
+  formatCost,
+  formatMs,
+  formatPct,
+  humanize,
+  shortId,
+  stepLabel,
+} from "../lib/trace";
+import { Empty, Metric, SectionHead, StatusPill } from "./ui";
 
 interface AnalyticsViewProps {
   analytics: AnalyticsSnapshot | null;
@@ -9,848 +20,503 @@ interface AnalyticsViewProps {
   onRefreshAnalytics: () => Promise<void>;
 }
 
+const CATEGORIES = [
+  { id: "extraction_hallucination", label: "Hallucination" },
+  { id: "misclassification", label: "Misclass." },
+  { id: "prompt_failure", label: "Prompt" },
+  { id: "propagation_error", label: "Propagation" },
+  { id: "context_loss", label: "Context" },
+  { id: "unknown", label: "Unknown" },
+];
+
+function titleCase(value: string): string {
+  return value.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   analytics,
   evalRuns,
   onRefreshAnalytics,
 }) => {
-  const [isRunningEval, setIsRunningEval] = useState<boolean>(false);
+  const [isRunningEval, setIsRunningEval] = useState(false);
   const [evalNotice, setEvalNotice] = useState<string | null>(null);
   const [evalResults, setEvalResults] = useState<EvalResult[]>([]);
 
   const handleRunEval = async () => {
     try {
       setIsRunningEval(true);
-      const res = await api.triggerEvalRun();
-      if (!res.run_id) {
-        setEvalNotice("No eval cases yet — confirm a diagnosis to create one.");
+      const result = await api.triggerEvalRun();
+      if (!result.run_id) {
+        setEvalNotice("No eval cases yet. Confirm a diagnosis to create one.");
         setEvalResults([]);
         await onRefreshAnalytics();
         return;
       }
-      setEvalNotice(`✓ Eval run ${res.run_id} completed: ${res.passed_count}/${res.total_cases} cases passed`);
+      setEvalNotice(
+        `Eval run completed: ${result.passed_count}/${result.total_cases} cases passed.`,
+      );
       await onRefreshAnalytics();
-      // Only fetch results for a run that exists: the empty-suite response has
-      // no run id, and following an invented one surfaced a 404 as an error.
-      const results = await api.getEvalResults(res.run_id);
-      setEvalResults(results);
+      setEvalResults(await api.getEvalResults(result.run_id));
     } catch (err: unknown) {
-      setEvalNotice(`Error running eval: ${(err as Error).message}`);
+      setEvalNotice(`Could not run eval: ${(err as Error).message}`);
     } finally {
       setIsRunningEval(false);
-      setTimeout(() => setEvalNotice(null), 5000);
+      window.setTimeout(() => setEvalNotice(null), 6000);
     }
   };
 
-  // Fetch eval results for latest run on mount and when evalRuns change
   useEffect(() => {
     const latestRun = evalRuns[0];
-    if (latestRun) {
-      api.getEvalResults(latestRun.run_id).then(setEvalResults).catch(() => setEvalResults([]));
-    } else {
+    if (!latestRun) {
       setEvalResults([]);
+      return;
     }
+    api
+      .getEvalResults(latestRun.run_id)
+      .then(setEvalResults)
+      .catch(() => setEvalResults([]));
   }, [evalRuns]);
 
-  // Derived strictly from the response. The previous `analytics ? ... : 84`
-  // fallbacks rendered a healthy-looking dashboard (84% pass rate, 15 traces,
-  // 180ms) before any data had loaded, which is indistinguishable from a real
-  // measurement. `null` renders as an em dash instead.
-  const passRate = analytics ? Math.round((1 - analytics.failure_rate) * 100) : null;
   const totalTraces = analytics?.total_traces ?? 0;
+  const passRate = analytics ? 1 - analytics.failure_rate : null;
+
   const categoryCounts = analytics?.failures_by_category ?? {};
-  const totalCategoryFailures = Object.values(categoryCounts).reduce((a, b) => a + b, 0);
+  const totalCategoryFailures = Object.values(categoryCounts).reduce((sum, n) => sum + n, 0);
   const topCategoryEntry = Object.entries(categoryCounts).sort((a, b) => b[1] - a[1])[0];
   const topCategory = topCategoryEntry?.[0] ?? null;
   const topCategoryShare =
     topCategoryEntry && totalCategoryFailures > 0
-      ? Math.round((topCategoryEntry[1] / totalCategoryFailures) * 100)
+      ? topCategoryEntry[1] / totalCategoryFailures
       : null;
 
-  // Enhanced metrics
   const totalCost = analytics?.total_cost_usd ?? 0;
   const costByModel = analytics?.cost_by_model ?? {};
-  const costByStep = analytics?.cost_by_step ?? {};
   const tokensByModel = analytics?.tokens_by_model ?? {};
-  const latencyByModel = analytics?.latency_by_model ?? {};
   const latencyByStep = analytics?.latency_by_step ?? {};
   const modelPerformance = analytics?.model_performance ?? {};
   const failureCorrelation = analytics?.failure_correlation ?? [];
   const costTrend = analytics?.cost_trend ?? [];
   const avgLatencyMs = analytics?.avg_latency_ms ?? 0;
 
-  // Top model by cost
-  const topModelEntry = Object.entries(costByModel).sort((a, b) => b[1] - a[1])[0];
-  const topModel = topModelEntry?.[0] ?? null;
-  const topModelCost = topModelEntry?.[1] ?? 0;
-
-  // Compute stage vulnerability percentages from real data
-  const stageVulnerability = useMemo(() => {
-    const steps = ["intake", "extraction", "classification", "summarization"];
-    const failuresByStep = analytics?.failures_by_step || {};
-    const totalFailures = Object.values(failuresByStep).reduce((a, b) => a + b, 0);
-    return steps.map((step, idx) => {
-      const count = failuresByStep[step] || 0;
-      const pct = totalFailures > 0 ? (count / totalFailures) * 100 : 0;
-      const colors = ["var(--color-copper)", "var(--color-ochre)", "var(--color-cinnabar)", "var(--color-ink-3)"];
-      return {
-        stage: `${String(idx + 1).padStart(2, "0")} ${step}`,
-        pct,
-        color: colors[idx],
-        label: `${pct.toFixed(1)}%`,
-      };
-    });
+  const stageRows = useMemo(() => {
+    const failuresByStep = analytics?.failures_by_step ?? {};
+    const total = STEP_ORDER.reduce((sum, step) => sum + (failuresByStep[step] ?? 0), 0);
+    const max = Math.max(...STEP_ORDER.map((step) => failuresByStep[step] ?? 0), 0);
+    return STEP_ORDER.map((step) => ({
+      step,
+      count: failuresByStep[step] ?? 0,
+      share: total > 0 ? (failuresByStep[step] ?? 0) / total : 0,
+      max,
+    }));
   }, [analytics]);
 
-  // Failure correlation heatmap data
-  const correlationMatrix = useMemo(() => {
-    const steps = ["intake", "extraction", "classification", "summarization"];
-    const categories = [
-      "extraction_hallucination",
-      "misclassification",
-      "prompt_failure",
-      "propagation_error",
-      "context_loss",
-      "unknown"
-    ];
-    return steps.map(step =>
-      categories.map(cat => {
-        const entry = failureCorrelation.find(f => f.step === step && f.category === cat);
-        return { step, category: cat, count: entry?.count ?? 0 };
-      })
-    );
-  }, [failureCorrelation]);
+  const totalStageFailures = stageRows.reduce((sum, row) => sum + row.count, 0);
+  const maxStageFailures = Math.max(...stageRows.map((row) => row.count), 0);
 
-  // Get latest eval run for regression table
-  const latestRun = evalRuns[0];
-  const hasEvalData = latestRun && latestRun.total_cases > 0;
+  const maxCorrelation = Math.max(...failureCorrelation.map((item) => item.count), 0);
+
+  const latestRun = evalRuns[0] ?? null;
+  const regressions = latestRun ? latestRun.failed_count : "—";
+
+  const trendMax = Math.max(...costTrend.map((point) => point.cost_usd), 0.0001);
+  const trendWidth = 560;
+  const trendHeight = 140;
+  const trendPadX = 6;
+  const trendPadY = 10;
+  const trendY = (value: number) =>
+    trendHeight - trendPadY - (value / trendMax) * (trendHeight - 2 * trendPadY);
+  const trendPoints =
+    costTrend.length === 1
+      ? `${trendWidth * 0.1},${trendY(costTrend[0].cost_usd)} ${trendWidth * 0.9},${trendY(
+          costTrend[0].cost_usd,
+        )}`
+      : costTrend
+          .map((point, index) => {
+            const x =
+              trendPadX +
+              (index / Math.max(costTrend.length - 1, 1)) * (trendWidth - 2 * trendPadX);
+            return `${x},${trendY(point.cost_usd)}`;
+          })
+          .join(" ");
 
   return (
-    <div
-      style={{
-        flex: 1,
-        padding: "32px",
-        overflowY: "auto",
-        display: "flex",
-        flexDirection: "column",
-        gap: "28px",
-        backgroundColor: "var(--color-ground)",
-      }}
-    >
-      {/* Top Banner */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+    <div className="page">
+      <div className="page-head">
         <div>
-          <h2
-            style={{
-              fontFamily: "var(--font-display)",
-              fontSize: "28px",
-              fontWeight: 800,
-              color: "var(--color-ink)",
-              margin: 0,
-            }}
-          >
-            Reliability and failure analytics
-          </h2>
-          <p style={{ margin: "4px 0 0 0", color: "var(--color-ink-2)", fontSize: "14px" }}>
-            Aggregate fault isolation, stage vulnerability distribution, and regression trends.
-          </p>
+          <h1 className="page-title">Analytics</h1>
+          <p className="page-sub">Failure isolation, regressions and spend.</p>
         </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          {evalNotice && (
-            <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-copper)", fontWeight: 600 }}>
+        <div className="page-actions">
+          {evalNotice ? (
+            <span className="notice" role="status">
               {evalNotice}
             </span>
-          )}
+          ) : null}
           <button
+            className="btn btn--primary"
             onClick={handleRunEval}
             disabled={isRunningEval}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-              fontFamily: "var(--font-mono)",
-              fontSize: "12px",
-              fontWeight: 600,
-              color: "var(--color-ground)",
-              backgroundColor: "var(--color-copper)",
-              border: "1px solid var(--color-copper)",
-              borderRadius: "var(--radius-1)",
-              padding: "8px 16px",
-            }}
           >
-            <Play size={12} fill="currentColor" />
-            <span>{isRunningEval ? "Running eval suite..." : "Run eval suite"}</span>
+            <Play size={13} fill="currentColor" />
+            {isRunningEval ? "Running eval" : "Run eval suite"}
           </button>
         </div>
       </div>
 
-      {/* KPI Metric Strip */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "18px" }}>
-        <div
-          style={{
-            padding: "20px",
-            backgroundColor: "var(--color-chalk)",
-            border: "1px solid var(--color-rule)",
-            borderRadius: "var(--radius-1)",
-          }}
-        >
-          <div
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: "11px",
-              color: "var(--color-ink-3)",
-              letterSpacing: "var(--tracking-label)",
-              textTransform: "uppercase",
-            }}
-          >
-            Pipeline pass rate
-          </div>
-          <div
-            style={{
-              fontFamily: "var(--font-display)",
-              fontSize: "36px",
-              fontWeight: 800,
-              color: "var(--color-ink)",
-              marginTop: "6px",
-            }}
-          >
-            {passRate === null ? "—" : `${passRate}%`}
-          </div>
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-copper)", marginTop: "6px" }}>
-            {totalTraces} traces tracked
-          </div>
-        </div>
-
-        <div
-          style={{
-            padding: "20px",
-            backgroundColor: "var(--color-chalk)",
-            border: "1px solid var(--color-rule)",
-            borderRadius: "var(--radius-1)",
-          }}
-        >
-          <div
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: "11px",
-              color: "var(--color-ink-3)",
-              letterSpacing: "var(--tracking-label)",
-              textTransform: "uppercase",
-            }}
-          >
-            Top root cause
-          </div>
-          <div
-            style={{
-              fontFamily: "var(--font-display)",
-              fontSize: "24px",
-              fontWeight: 800,
-              color: "var(--color-cinnabar)",
-              marginTop: "10px",
-              textTransform: "capitalize",
-            }}
-          >
-            {topCategory ? topCategory.replace(/_/g, " ") : "—"}
-          </div>
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-2)", marginTop: "6px" }}>
-            {topCategoryShare === null
-              ? "No classified failures yet"
-              : `${topCategoryShare}% of classified failures`}
-          </div>
-        </div>
-
-        <div
-          style={{
-            padding: "20px",
-            backgroundColor: "var(--color-chalk)",
-            border: "1px solid var(--color-rule)",
-            borderRadius: "var(--radius-1)",
-          }}
-        >
-          <div
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: "11px",
-              color: "var(--color-ink-3)",
-              letterSpacing: "var(--tracking-label)",
-              textTransform: "uppercase",
-            }}
-          >
-            Mean time to root cause
-          </div>
-          <div
-            style={{
-              fontFamily: "var(--font-display)",
-              fontSize: "36px",
-              fontWeight: 800,
-              color: "var(--color-ink)",
-              marginTop: "6px",
-            }}
-          >
-            {analytics?.avg_time_to_root_cause_seconds != null
-              ? `${Math.round(analytics.avg_time_to_root_cause_seconds * 1000)}ms`
-              : "—"}
-          </div>
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-copper)", marginTop: "6px" }}>
-            Deterministic backward trace analyzer
-          </div>
-        </div>
-
-        <div
-          style={{
-            padding: "20px",
-            backgroundColor: "var(--color-chalk)",
-            border: "1px solid var(--color-rule)",
-            borderRadius: "var(--radius-1)",
-          }}
-        >
-          <div
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: "11px",
-              color: "var(--color-ink-3)",
-              letterSpacing: "var(--tracking-label)",
-              textTransform: "uppercase",
-            }}
-          >
-            Golden regressions
-          </div>
-          <div
-            style={{
-              fontFamily: "var(--font-display)",
-              fontSize: "36px",
-              fontWeight: 800,
-              color: "var(--color-cinnabar)",
-              marginTop: "6px",
-            }}
-          >
-            {evalRuns[0]?.failed_count ?? evalResults.filter((r) => !r.fixed).length} Traces
-          </div>
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-cinnabar)", marginTop: "6px" }}>
-            ⚠ Blocked by evaluation gate
-          </div>
-        </div>
+      <div className="metrics">
+        <Metric
+          label="Pass rate"
+          value={passRate == null ? "—" : formatPct(passRate)}
+          hint={`${totalTraces} traces`}
+        />
+        <Metric
+          label="Top root cause"
+          value={topCategory ? titleCase(humanize(topCategory)) : "—"}
+          hint={
+            topCategoryShare == null
+              ? "No classified failures"
+              : `${formatPct(topCategoryShare)} of classified failures`
+          }
+          negative={!!topCategory}
+        />
+        <Metric
+          label="Mean time to root cause"
+          value={
+            analytics?.avg_time_to_root_cause_seconds != null
+              ? formatMs(analytics.avg_time_to_root_cause_seconds * 1000)
+              : "—"
+          }
+          hint="deterministic analyzer"
+        />
+        <Metric
+          label="Open regressions"
+          value={regressions}
+          hint={latestRun ? `run ${shortId(latestRun.run_id)}` : "no eval run yet"}
+          negative={!!latestRun && latestRun.failed_count > 0}
+        />
       </div>
 
-      {/* Stage Vulnerability Map */}
-      <div
-        style={{
-          border: "1px solid var(--color-rule)",
-          borderRadius: "var(--radius-1)",
-          backgroundColor: "var(--color-ground)",
-          padding: "24px",
-        }}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
-          <div>
-            <div style={{ fontFamily: "var(--font-display)", fontSize: "18px", fontWeight: 700, color: "var(--color-ink)" }}>
-              Pipeline stage vulnerability map
-            </div>
-            <div style={{ fontSize: "13px", color: "var(--color-ink-2)", marginTop: "2px" }}>
-              Originating fault step versus downstream manifestation point
-            </div>
-          </div>
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)" }}>
-            N={totalTraces} EXECUTED RUNS
-          </div>
-        </div>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-          {stageVulnerability.map((item) => (
-            <div key={item.stage} style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-              <span
-                style={{
-                  width: "140px",
-                  fontFamily: "var(--font-mono)",
-                  fontSize: "12px",
-                  fontWeight: 600,
-                  color: item.pct > 50 ? "var(--color-cinnabar)" : "var(--color-ink)",
-                }}
-              >
-                {item.stage}
-              </span>
-              <div
-                style={{
-                  flex: 1,
-                  height: "22px",
-                  backgroundColor: "var(--color-chalk)",
-                  borderRadius: "var(--radius-0)",
-                  overflow: "hidden",
-                  border: "1px solid var(--color-rule)",
-                  position: "relative",
-                }}
-              >
-                <div
-                  style={{
-                    width: `${Math.max(1, item.pct)}%`,
-                    height: "100%",
-                    backgroundColor: item.color,
-                    transition: "width 0.4s ease",
-                  }}
-                />
-              </div>
-              <span
-                style={{
-                  width: "60px",
-                  textAlign: "right",
-                  fontFamily: "var(--font-mono)",
-                  fontSize: "12px",
-                  fontWeight: item.pct > 50 ? 700 : 500,
-                  color: item.pct > 50 ? "var(--color-cinnabar)" : "var(--color-ink-2)",
-                }}
-              >
-                {item.label}
-              </span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Golden Eval Benchmark Results */}
-      <div
-        style={{
-          border: "1px solid var(--color-rule)",
-          borderRadius: "var(--radius-1)",
-          backgroundColor: "var(--color-ground)",
-          overflow: "hidden",
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            padding: "16px 20px",
-            borderBottom: "1px solid var(--color-rule)",
-            backgroundColor: "var(--color-chalk)",
-          }}
-        >
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: "12px", fontWeight: 700, color: "var(--color-ink)" }}>
-            Golden eval benchmark regression table
-          </div>
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-cinnabar)", fontWeight: 700 }}>
-            {evalResults.filter(r => !r.fixed).length} Regressions flagged
-          </span>
-        </div>
-
-        <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "var(--font-mono)", fontSize: "12px", textAlign: "left" }}>
-          <thead>
-            <tr style={{ borderBottom: "1px solid var(--color-rule)", color: "var(--color-ink-3)", fontSize: "11px" }}>
-              <th style={{ padding: "12px 20px" }}>Benchmark suite</th>
-              <th style={{ padding: "12px 20px" }}>Failure mode</th>
-              <th style={{ padding: "12px 20px" }}>Isolated step</th>
-              <th style={{ padding: "12px 20px" }}>BASELINE</th>
-              <th style={{ padding: "12px 20px" }}>CURRENT</th>
-              <th style={{ padding: "12px 20px" }}>DELTA</th>
-              <th style={{ padding: "12px 20px" }}>STATUS</th>
-            </tr>
-          </thead>
-          <tbody>
-            {evalResults.length > 0 ? (
-              evalResults.map((result) => {
-                const category = result.details?.category || "unknown";
-                const isFixed = result.fixed;
-                return (
-                  <tr key={result.result_id} style={{ borderBottom: "1px solid var(--color-rule)", backgroundColor: isFixed ? "transparent" : "var(--color-cinnabar-tint)" }}>
-                    <td style={{ padding: "12px 20px", fontWeight: 600, color: "var(--color-ink)" }}>{result.case_id.slice(0, 14)}</td>
-                    <td style={{ padding: "12px 20px", color: isFixed ? "var(--color-ink-2)" : "var(--color-cinnabar)" }}><span>{String(category)}</span></td>
-                    <td style={{ padding: "12px 20px" }}>{result.step_name}</td>
-                    {/* No baseline is persisted per case, so these cells show
-                        the measured score rather than an invented delta. */}
-                    <td style={{ padding: "12px 20px" }}>—</td>
-                    <td style={{ padding: "12px 20px", fontWeight: 700, color: isFixed ? "var(--color-copper)" : "var(--color-cinnabar)" }}>
-                      {(result.score * 100).toFixed(0)}%
-                    </td>
-                    <td style={{ padding: "12px 20px" }}>—</td>
-                    <td style={{ padding: "12px 20px", color: isFixed ? "var(--color-copper)" : "var(--color-cinnabar)", fontWeight: 700 }}>
-                      {isFixed ? "FIXED" : "REGRESSION"}
-                    </td>
-                  </tr>
-                );
-              })
+      <section className="section">
+        <SectionHead
+          title="Where failures start"
+          hint="Root-cause stage across classified failures."
+        />
+        <div className="panel">
+          <div className="panel__body">
+            {totalStageFailures === 0 ? (
+              <Empty>No classified failures yet.</Empty>
             ) : (
-              <tr style={{ borderBottom: "1px solid var(--color-rule)" }}>
-                <td colSpan={7} style={{ padding: "20px", textAlign: "center", color: "var(--color-ink-2)" }}>
-                  No eval results available. Run eval suite to populate.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-      {/* Cost & Token Analytics */}
-      <div
-        style={{
-          border: "1px solid var(--color-rule)",
-          borderRadius: "var(--radius-1)",
-          backgroundColor: "var(--color-ground)",
-          padding: "24px",
-        }}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
-          <div>
-            <div style={{ fontFamily: "var(--font-display)", fontSize: "18px", fontWeight: 700, color: "var(--color-ink)" }}>
-              Cost and token analytics
-            </div>
-            <div style={{ fontSize: "13px", color: "var(--color-ink-2)", marginTop: "2px" }}>
-              Spend breakdown by model and pipeline stage
-            </div>
-          </div>
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)" }}>
-            TOTAL SPEND: ${totalCost.toFixed(4)}
-          </div>
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "16px" }}>
-          {/* Cost by Model */}
-          <div style={{ border: "1px solid var(--color-rule)", borderRadius: "var(--radius-1)", backgroundColor: "var(--color-chalk)", padding: "20px" }}>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)", textTransform: "uppercase", marginBottom: "12px" }}>
-              Cost by model
-            </div>
-            {Object.entries(costByModel).length > 0 ? (
-              Object.entries(costByModel)
-                .sort((a, b) => b[1] - a[1])
-                .map(([model, cost]) => (
-                  <div key={model} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid var(--color-rule)" }}>
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--color-ink)" }}>{model}</span>
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "12px", fontWeight: 700, color: "var(--color-ochre)" }}>${cost.toFixed(4)}</span>
+              <div className="bars">
+                {stageRows.map((row) => (
+                  <div className="bar" key={row.step}>
+                    <span className="bar__label">{STEP_LABEL[row.step]}</span>
+                    <span className="bar__track">
+                      <span
+                        className={`bar__fill${
+                          row.count === maxStageFailures && row.count > 0 ? " is-hot" : ""
+                        }`}
+                        style={{
+                          width: `${maxStageFailures > 0 ? (row.count / maxStageFailures) * 100 : 0}%`,
+                        }}
+                      />
+                    </span>
+                    <span className="bar__value">
+                      <strong>{row.count}</strong> {formatPct(row.share)}
+                    </span>
                   </div>
-                ))
-            ) : (
-              <div style={{ color: "var(--color-ink-2)", fontSize: "12px", textAlign: "center", padding: "20px" }}>
-                No cost data available
-              </div>
-            )}
-          </div>
-
-          {/* Tokens by Model */}
-          <div style={{ border: "1px solid var(--color-rule)", borderRadius: "var(--radius-1)", backgroundColor: "var(--color-chalk)", padding: "20px" }}>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)", textTransform: "uppercase", marginBottom: "12px" }}>
-              Tokens by model
-            </div>
-            {Object.entries(tokensByModel).length > 0 ? (
-              Object.entries(tokensByModel)
-                .sort((a, b) => b[1] - a[1])
-                .map(([model, tokens]) => (
-                  <div key={model} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid var(--color-rule)" }}>
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--color-ink)" }}>{model}</span>
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "12px", fontWeight: 700, color: "var(--color-copper)" }}>{tokens.toLocaleString()}</span>
-                  </div>
-                ))
-            ) : (
-              <div style={{ color: "var(--color-ink-2)", fontSize: "12px", textAlign: "center", padding: "20px" }}>
-                No token data available
-              </div>
-            )}
-          </div>
-
-          {/* Cost by Step */}
-          <div style={{ border: "1px solid var(--color-rule)", borderRadius: "var(--radius-1)", backgroundColor: "var(--color-chalk)", padding: "20px" }}>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)", textTransform: "uppercase", marginBottom: "12px" }}>
-              Cost by pipeline stage
-            </div>
-            {Object.entries(costByStep).length > 0 ? (
-              Object.entries(costByStep)
-                .sort((a, b) => b[1] - a[1])
-                .map(([step, cost]) => (
-                  <div key={step} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid var(--color-rule)" }}>
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--color-ink)", textTransform: "capitalize" }}>{step}</span>
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "12px", fontWeight: 700, color: "var(--color-ochre)" }}>${cost.toFixed(4)}</span>
-                  </div>
-                ))
-            ) : (
-              <div style={{ color: "var(--color-ink-2)", fontSize: "12px", textAlign: "center", padding: "20px" }}>
-                No step cost data available
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Model Performance Comparison */}
-      <div
-        style={{
-          border: "1px solid var(--color-rule)",
-          borderRadius: "var(--radius-1)",
-          backgroundColor: "var(--color-ground)",
-          padding: "24px",
-        }}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
-          <div>
-            <div style={{ fontFamily: "var(--font-display)", fontSize: "18px", fontWeight: 700, color: "var(--color-ink)" }}>
-              Model performance comparison
-            </div>
-            <div style={{ fontSize: "13px", color: "var(--color-ink-2)", marginTop: "2px" }}>
-              Share of each model's spans not blamed, plus latency and cost
-            </div>
-          </div>
-          <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)" }}>
-            AVG LATENCY: {Math.round(avgLatencyMs)}ms
-          </div>
-        </div>
-
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "var(--font-mono)", fontSize: "12px", textAlign: "left" }}>
-            <thead>
-              <tr style={{ borderBottom: "1px solid var(--color-rule)", color: "var(--color-ink-3)", fontSize: "11px" }}>
-                <th style={{ padding: "12px 20px" }}>MODEL</th>
-                <th style={{ padding: "12px 20px" }}>SPAN PASS RATE</th>
-                <th style={{ padding: "12px 20px" }}>AVG LATENCY</th>
-                <th style={{ padding: "12px 20px" }}>AVG COST</th>
-                <th style={{ padding: "12px 20px" }}>TOTAL COST</th>
-                <th style={{ padding: "12px 20px" }}>TOTAL TOKENS</th>
-              </tr>
-            </thead>
-            <tbody>
-              {Object.entries(modelPerformance).length > 0 ? (
-                Object.entries(modelPerformance)
-                  .sort((a, b) => b[1].span_pass_rate - a[1].span_pass_rate)
-                  .map(([model, perf]) => (
-                    <tr key={model} style={{ borderBottom: "1px solid var(--color-rule)" }}>
-                      <td style={{ padding: "12px 20px", fontWeight: 600, color: "var(--color-ink)" }}>{model}</td>
-                      <td style={{ padding: "12px 20px", fontWeight: 700, color: perf.span_pass_rate >= 0.9 ? "var(--color-copper)" : perf.span_pass_rate >= 0.7 ? "var(--color-ochre)" : "var(--color-cinnabar)" }}>
-                        {(perf.span_pass_rate * 100).toFixed(1)}%
-                      </td>
-                      <td style={{ padding: "12px 20px", color: perf.avg_latency_ms > 5000 ? "var(--color-cinnabar)" : "var(--color-ink)" }}>
-                        {Math.round(perf.avg_latency_ms)}ms
-                      </td>
-                      <td style={{ padding: "12px 20px" }}>${perf.avg_cost_usd.toFixed(6)}</td>
-                      <td style={{ padding: "12px 20px" }}>${costByModel[model]?.toFixed(4) ?? "0.0000"}</td>
-                      <td style={{ padding: "12px 20px", color: "var(--color-ink-2)" }}>{tokensByModel[model]?.toLocaleString() ?? "0"}</td>
-                    </tr>
-                  ))
-              ) : (
-                <tr>
-                  <td colSpan={6} style={{ padding: "20px", textAlign: "center", color: "var(--color-ink-2)" }}>
-                    No model performance data available
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Failure Correlation Heatmap */}
-      <div
-        style={{
-          border: "1px solid var(--color-rule)",
-          borderRadius: "var(--radius-1)",
-          backgroundColor: "var(--color-ground)",
-          padding: "24px",
-        }}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
-          <div>
-            <div style={{ fontFamily: "var(--font-display)", fontSize: "18px", fontWeight: 700, color: "var(--color-ink)" }}>
-              Failure correlation heatmap
-            </div>
-            <div style={{ fontSize: "13px", color: "var(--color-ink-2)", marginTop: "2px" }}>
-              Pipeline step and failure category co-occurrence
-            </div>
-          </div>
-        </div>
-
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "var(--font-mono)", fontSize: "11px", textAlign: "center" }}>
-            <thead>
-              <tr style={{ borderBottom: "1px solid var(--color-rule)", color: "var(--color-ink-3)" }}>
-                <th style={{ padding: "10px 14px", textAlign: "left" }}>STEP \ CATEGORY</th>
-                {["extraction_hallucination", "misclassification", "prompt_failure", "propagation_error", "context_loss", "unknown"].map(cat => (
-                  <th key={cat} style={{ padding: "10px 14px", fontSize: "10px", writingMode: "vertical-rl", textOrientation: "mixed", transform: "rotate(180deg)", whiteSpace: "nowrap" }}>
-                    {cat.replace(/_/g, " ")}
-                  </th>
                 ))}
-              </tr>
-            </thead>
-            <tbody>
-              {["intake", "extraction", "classification", "summarization"].map(step => (
-                <tr key={step} style={{ borderBottom: "1px solid var(--color-rule)" }}>
-                  <td style={{ padding: "10px 14px", textAlign: "left", fontFamily: "var(--font-mono)", fontSize: "11px", fontWeight: 600, color: "var(--color-ink)" }}>
-                    {step}
-                  </td>
-                  {["extraction_hallucination", "misclassification", "prompt_failure", "propagation_error", "context_loss", "unknown"].map(cat => {
-                    const entry = failureCorrelation.find(f => f.step === step && f.category === cat);
-                    const count = entry?.count ?? 0;
-                    const maxCount = Math.max(...failureCorrelation.map(f => f.count), 1);
-                    const intensity = count / maxCount;
-                    const bgColor = count > 0
-                      ? `rgba(200, 40, 40, ${0.2 + intensity * 0.6})`
-                      : "transparent";
-                    return (
-                      <td key={cat} style={{ padding: "8px 14px", backgroundColor: bgColor, border: "1px solid var(--color-rule)" }}>
-                        {count > 0 ? <span style={{ fontWeight: 700, color: "var(--color-cinnabar)" }}>{count}</span> : "—"}
-                      </td>
-                    );
-                  })}
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section className="section">
+        <SectionHead
+          title="Failure correlation"
+          hint="Step and category co-occurrence. Darker means more failures."
+        />
+        <div className="panel">
+          <div className="panel__body matrix-wrap">
+            <table className="matrix">
+              <caption className="sr-only">Failure correlation by stage and category</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Stage</th>
+                  {CATEGORIES.map((category) => (
+                    <th scope="col" key={category.id}>
+                      {category.label}
+                    </th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Cost Trend Chart */}
-      {(costTrend || []).length > 0 && (
-        <div
-          style={{
-            border: "1px solid var(--color-rule)",
-            borderRadius: "var(--radius-1)",
-            backgroundColor: "var(--color-ground)",
-            padding: "24px",
-          }}
-        >
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
-            <div>
-              <div style={{ fontFamily: "var(--font-display)", fontSize: "18px", fontWeight: 700, color: "var(--color-ink)" }}>
-                Cost trend over time
-              </div>
-              <div style={{ fontSize: "13px", color: "var(--color-ink-2)", marginTop: "2px" }}>
-                Daily spend trend
-              </div>
-            </div>
+              </thead>
+              <tbody>
+                {STEP_ORDER.map((step) => (
+                  <tr key={step}>
+                    <td>{STEP_LABEL[step]}</td>
+                    {CATEGORIES.map((category) => {
+                      const entry = failureCorrelation.find(
+                        (item) => item.step === step && item.category === category.id,
+                      );
+                      const count = entry?.count ?? 0;
+                      const intensity = maxCorrelation > 0 ? count / maxCorrelation : 0;
+                      return (
+                        <td
+                          key={category.id}
+                          className={count > 0 ? "is-hot" : undefined}
+                          style={
+                            count > 0
+                              ? {
+                                  backgroundColor: `color-mix(in srgb, var(--cinnabar) ${Math.round(
+                                    10 + intensity * 45,
+                                  )}%, var(--surface))`,
+                                }
+                              : undefined
+                          }
+                        >
+                          {count}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
+        </div>
+      </section>
 
-          <div style={{ height: "200px", position: "relative" }}>
-            <svg width="100%" height="100%" viewBox="0 0 800 200" preserveAspectRatio="none">
-              <defs>
-                <linearGradient id="costGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-                  <stop offset="0%" stopColor="var(--color-copper)" stopOpacity="0.3" />
-                  <stop offset="100%" stopColor="var(--color-copper)" stopOpacity="0" />
-                </linearGradient>
-              </defs>
-              {(() => {
-                const maxCost = Math.max(...costTrend.map(c => c.cost_usd), 1);
-                const points = costTrend.map((c, i) => {
-                  const x = (i / Math.max(costTrend.length - 1, 1)) * 780 + 10;
-                  const y = 180 - (c.cost_usd / maxCost) * 160;
-                  return `${x},${y}`;
-                }).join(" ");
-                const areaPoints = costTrend.map((c, i) => {
-                  const x = (i / Math.max(costTrend.length - 1, 1)) * 780 + 10;
-                  const y = 180 - (c.cost_usd / maxCost) * 160;
-                  return `${x},${y}`;
-                }).join(" ") + " 790,190 10,190";
-                return (
-                  <>
-                    <polygon points={areaPoints} fill="url(#costGradient)" />
-                    <polyline points={points} fill="none" stroke="var(--color-copper)" strokeWidth="2" />
-                    {costTrend.map((c, i) => (
-                      <circle key={i} cx={(i / Math.max(costTrend.length - 1, 1)) * 780 + 10} cy={180 - (c.cost_usd / maxCost) * 160} r="4" fill="var(--color-copper)" />
+      <section className="section">
+        <SectionHead
+          title="Eval regressions"
+          hint="Golden suite results for the latest run."
+        />
+        <div className="panel">
+          {evalResults.length === 0 ? (
+            <div className="panel__body">
+              <Empty
+                action={
+                  <button
+                    className="btn btn--sm"
+                    onClick={handleRunEval}
+                    disabled={isRunningEval}
+                  >
+                    {isRunningEval ? "Running eval" : "Run eval suite"}
+                  </button>
+                }
+              >
+                No eval results yet. Confirm a diagnosis to create a case.
+              </Empty>
+            </div>
+          ) : (
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th scope="col">Suite</th>
+                    <th scope="col">Failure mode</th>
+                    <th scope="col">Stage</th>
+                    <th scope="col" className="num">
+                      Score
+                    </th>
+                    <th scope="col">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {evalResults.map((result) => (
+                    <tr key={result.result_id}>
+                      <td className="mono">{shortId(result.case_id, 14)}</td>
+                      <td>{humanize(String(result.details?.category ?? "unknown"))}</td>
+                      <td>{stepLabel(result.step_name)}</td>
+                      <td className="num">{formatPct(result.score)}</td>
+                      <td>
+                        <StatusPill tone={result.fixed ? "pass" : "fail"}>
+                          {result.fixed ? "Fixed" : "Regression"}
+                        </StatusPill>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="section">
+        <SectionHead
+          title="Models"
+          hint={`Share of spans not blamed, average latency ${formatMs(avgLatencyMs)}.`}
+        />
+        <div className="panel">
+          {Object.keys(modelPerformance).length === 0 ? (
+            <div className="panel__body">
+              <Empty>No model performance data yet.</Empty>
+            </div>
+          ) : (
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th scope="col">Model</th>
+                    <th scope="col" className="num">
+                      Span pass rate
+                    </th>
+                    <th scope="col" className="num">
+                      Avg latency
+                    </th>
+                    <th scope="col" className="num">
+                      Avg cost
+                    </th>
+                    <th scope="col" className="num">
+                      Total cost
+                    </th>
+                    <th scope="col" className="num">
+                      Tokens
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(modelPerformance)
+                    .sort((a, b) => b[1].span_pass_rate - a[1].span_pass_rate)
+                    .map(([model, performance]) => (
+                      <tr key={model}>
+                        <td className="mono">{model}</td>
+                        <td className="num">{formatPct(performance.span_pass_rate, 1)}</td>
+                        <td className="num">{formatMs(performance.avg_latency_ms)}</td>
+                        <td className="num">{formatCost(performance.avg_cost_usd)}</td>
+                        <td className="num">{formatCost(costByModel[model])}</td>
+                        <td className="num">
+                          {(tokensByModel[model] ?? 0).toLocaleString()}
+                        </td>
+                      </tr>
                     ))}
-                  </>
-                );
-              })()}
-            </svg>
-          </div>
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
-      )}
+      </section>
 
-      {/* Latency Analysis */}
-      <div
-        style={{
-          border: "1px solid var(--color-rule)",
-          borderRadius: "var(--radius-1)",
-          backgroundColor: "var(--color-ground)",
-          padding: "24px",
-        }}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
-          <div>
-            <div style={{ fontFamily: "var(--font-display)", fontSize: "18px", fontWeight: 700, color: "var(--color-ink)" }}>
-              Latency analysis
-            </div>
-            <div style={{ fontSize: "13px", color: "var(--color-ink-2)", marginTop: "2px" }}>
-              Per-model and per-stage latency breakdown
-            </div>
-          </div>
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px" }}>
-          {/* Latency by Model */}
-          <div style={{ border: "1px solid var(--color-rule)", borderRadius: "var(--radius-1)", backgroundColor: "var(--color-chalk)", padding: "20px" }}>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)", textTransform: "uppercase", marginBottom: "12px" }}>
-              Latency by model (avg ms)
-            </div>
-            {Object.entries(latencyByModel || {}).length > 0 ? (
-              Object.entries(latencyByModel)
-                .sort((a, b) => b[1] - a[1])
-                .map(([model, latency]) => (
-                  <div key={model} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid var(--color-rule)" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                      <div style={{ width: "10px", height: "10px", borderRadius: "2px", backgroundColor: "var(--color-copper)" }} />
-                      <span style={{ fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--color-ink)" }}>{model}</span>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                      <div style={{
-                        width: "120px",
-                        height: "8px",
-                        backgroundColor: "var(--color-rule)",
-                        borderRadius: "4px",
-                        overflow: "hidden"
-                      }}>
-                        <div style={{
-                          width: `${Math.min(latency / 5000, 1) * 100}%`,
-                          height: "100%",
-                          backgroundColor: latency > 3000 ? "var(--color-cinnabar)" : latency > 1000 ? "var(--color-ochre)" : "var(--color-copper)",
-                          transition: "width 0.3s ease"
-                        }} />
-                      </div>
-                      <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", fontWeight: 600, color: latency > 3000 ? "var(--color-cinnabar)" : "var(--color-ink)", minWidth: "60px" }}>
-                        {Math.round(latency)}ms
-                      </span>
-                    </div>
+      <section className="section">
+        <SectionHead
+          title="Spend and latency"
+          hint={`Total spend ${formatCost(totalCost)} across every recorded run.`}
+        />
+        <div className="panel">
+          <div className="panel__body">
+            <div className="analytics-grid">
+              <div>
+                <p className="scores__label">Spend by model</p>
+                {Object.keys(costByModel).length === 0 ? (
+                  <Empty>No spend recorded yet.</Empty>
+                ) : (
+                  <div className="bars">
+                    {Object.entries(costByModel)
+                      .sort((a, b) => b[1] - a[1])
+                      .map(([model, cost]) => {
+                        const max = Math.max(...Object.values(costByModel), 0.0001);
+                        return (
+                          <div className="bar" key={model}>
+                            <span className="bar__label mono">{model}</span>
+                            <span className="bar__track">
+                              <span
+                                className="bar__fill"
+                                style={{ width: `${(cost / max) * 100}%` }}
+                              />
+                            </span>
+                            <span className="bar__value">{formatCost(cost)}</span>
+                          </div>
+                        );
+                      })}
                   </div>
-                ))
-            ) : (
-              <div style={{ color: "var(--color-ink-2)", fontSize: "12px", textAlign: "center", padding: "20px" }}>
-                No latency data available
+                )}
               </div>
-            )}
-          </div>
 
-          {/* Latency by Step */}
-          <div style={{ border: "1px solid var(--color-rule)", borderRadius: "var(--radius-1)", backgroundColor: "var(--color-chalk)", padding: "20px" }}>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)", textTransform: "uppercase", marginBottom: "12px" }}>
-              Latency by pipeline stage (avg ms)
-            </div>
-            {Object.entries(latencyByStep || {}).length > 0 ? (
-              Object.entries(latencyByStep)
-                .sort((a, b) => ["intake", "extraction", "classification", "summarization"].indexOf(a[0]) - ["intake", "extraction", "classification", "summarization"].indexOf(b[0]))
-                .map(([step, latency]) => (
-                  <div key={step} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid var(--color-rule)" }}>
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--color-ink)", textTransform: "capitalize" }}>{step}</span>
-                    <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                      <div style={{
-                        width: "120px",
-                        height: "8px",
-                        backgroundColor: "var(--color-rule)",
-                        borderRadius: "4px",
-                        overflow: "hidden"
-                      }}>
-                        <div style={{
-                          width: `${Math.min(latency / 3000, 1) * 100}%`,
-                          height: "100%",
-                          backgroundColor: latency > 2000 ? "var(--color-cinnabar)" : latency > 1000 ? "var(--color-ochre)" : "var(--color-copper)",
-                          transition: "width 0.3s ease"
-                        }} />
-                      </div>
-                      <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", fontWeight: 600, color: latency > 2000 ? "var(--color-cinnabar)" : "var(--color-ink)", minWidth: "60px" }}>
-                        {Math.round(latency)}ms
-                      </span>
-                    </div>
+              <div>
+                <p className="scores__label">Latency by stage</p>
+                {Object.keys(latencyByStep).length === 0 ? (
+                  <Empty>No latency recorded yet.</Empty>
+                ) : (
+                  <div className="bars">
+                    {STEP_ORDER.filter((step) => latencyByStep[step] != null).map((step) => {
+                      const latency = latencyByStep[step] ?? 0;
+                      const max = Math.max(...Object.values(latencyByStep), 1);
+                      return (
+                        <div className="bar" key={step}>
+                          <span className="bar__label">{STEP_LABEL[step]}</span>
+                          <span className="bar__track">
+                            <span
+                              className={`bar__fill${latency > 3000 ? " is-hot" : ""}`}
+                              style={{ width: `${(latency / max) * 100}%` }}
+                            />
+                          </span>
+                          <span className="bar__value">{formatMs(latency)}</span>
+                        </div>
+                      );
+                    })}
                   </div>
-                ))
-            ) : (
-              <div style={{ color: "var(--color-ink-2)", fontSize: "12px", textAlign: "center", padding: "20px" }}>
-                No step latency data available
+                )}
               </div>
-            )}
+            </div>
+
+            {costTrend.length > 0 ? (
+              <div style={{ marginTop: 20 }}>
+                <p className="scores__label">Daily spend</p>
+                <div className="spark-wrap">
+                  <div className="spark-scale">
+                    <span>{formatCost(trendMax)}</span>
+                    <span>$0</span>
+                  </div>
+                  <svg
+                    className="spark"
+                    viewBox={`0 0 ${trendWidth} ${trendHeight}`}
+                    preserveAspectRatio="none"
+                    role="img"
+                    aria-label="Daily spend trend"
+                  >
+                    {[0.25, 0.5, 0.75].map((fraction) => (
+                      <line
+                        key={fraction}
+                        x1={trendPadX}
+                        x2={trendWidth - trendPadX}
+                        y1={trendPadY + fraction * (trendHeight - 2 * trendPadY)}
+                        y2={trendPadY + fraction * (trendHeight - 2 * trendPadY)}
+                        stroke="var(--grid)"
+                        strokeWidth="1"
+                      />
+                    ))}
+                    <polyline
+                      points={trendPoints}
+                      fill="none"
+                      stroke="var(--copper)"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </div>
+                <div className="spark-axis">
+                  <span />
+                  <span className="spark-axis__labels">
+                    <span>
+                      {new Date(costTrend[0].timestamp).toLocaleDateString(undefined, {
+                        month: "short",
+                        day: "numeric",
+                      })}
+                    </span>
+                    <span>
+                      {new Date(
+                        costTrend[costTrend.length - 1].timestamp,
+                      ).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                    </span>
+                  </span>
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
-      </div>
+      </section>
     </div>
   );
 };

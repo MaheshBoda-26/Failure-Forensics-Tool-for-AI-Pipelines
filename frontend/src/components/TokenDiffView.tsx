@@ -1,213 +1,110 @@
 import React from "react";
-import { Trace, Diagnosis, Span } from "../api/types";
-import { GitCompare, Plus, Minus } from "lucide-react";
+import type { Diagnosis, Trace } from "../api/types";
+import { humanize, stepLabel } from "../lib/trace";
 
 interface TokenDiffViewProps {
   trace: Trace;
   diagnosis: Diagnosis | null;
 }
 
+function parseJson(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { raw };
+  }
+}
+
 export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }) => {
-  // The failure verdict, taken from the diagnosis rather than from the mere
-  // existence of a Diagnosis object (a passing trace has one too).
   const rootCauseStep = diagnosis?.root_cause_step;
   const hasRootCause = !!rootCauseStep && rootCauseStep !== "none";
 
-  // Find the root cause span; fall back to the last non-intake step (or the
-  // first span) when the analyzer reported no failure. `rootCauseStep` used to
-  // be checked for truthiness only, and `"none"` is truthy — so on every clean
-  // trace this looked up a step literally named "none" and resolved to
-  // `undefined`.
-  const fallbackSpan = trace.spans[2] || trace.spans[0];
-  const rootCauseSpan = hasRootCause
-    ? trace.spans.find((s) => s.step_name === rootCauseStep) || fallbackSpan
+  const fallbackSpan = trace.spans?.[2] ?? trace.spans?.[0];
+  const rootSpan = hasRootCause
+    ? trace.spans?.find((span) => span.step_name === rootCauseStep) ?? fallbackSpan
     : fallbackSpan;
 
-  // NOTE: the backend does not expose a ground-truth document type yet; the API
-  // is written so this can be wired to a real `expected_type` field later.
-  // Reporting "UNKNOWN" is honest; the previous banner claimed a diff count.
-  const groundTruthType = "UNKNOWN";
+  const inputJson = rootSpan ? parseJson(rootSpan.input_json) : {};
+  const outputJson = rootSpan ? parseJson(rootSpan.output_json) : {};
 
-  const parseJson = (jsonStr: string) => {
-    try {
-      return JSON.parse(jsonStr);
-    } catch {
-      return { raw: jsonStr };
-    }
-  };
-
-  const inputJson = rootCauseSpan ? parseJson(rootCauseSpan.input_json) : {};
-  const outputJson = rootCauseSpan ? parseJson(rootCauseSpan.output_json) : {};
-
-  const checks = diagnosis?.step_scores?.flatMap((step) =>
-    Object.values(step.deterministic_checks)
+  const checks = diagnosis?.step_scores?.flatMap((score) =>
+    Object.values(score.deterministic_checks),
   ) ?? [];
   const failedChecks = checks.filter((passed) => !passed).length;
   const passedChecks = checks.length - failedChecks;
 
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        height: "100%",
-        backgroundColor: "var(--color-ground)",
-      }}
-    >
-      {/* Diff Header */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          padding: "14px 28px",
-          borderBottom: "1px solid var(--color-rule)",
-          backgroundColor: "var(--color-chalk)",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          <GitCompare size={16} color="var(--color-ink)" />
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: "13px", fontWeight: 700, color: "var(--color-ink)" }}>
-            Structured token diff · {trace.document_id}
-          </span>
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)" }}>
-            Comparing golden ground truth vs actual LLM response
-          </span>
-        </div>
+  const rootScore = diagnosis?.step_scores?.find(
+    (score) => score.step_name === rootCauseStep,
+  );
+  const criteria = {
+    document_id: trace.document_id,
+    step: rootCauseStep && rootCauseStep !== "none" ? rootCauseStep : null,
+    checks: Object.keys(rootScore?.deterministic_checks ?? {}),
+    ground_truth: "not exposed",
+  };
 
-        <div style={{ display: "flex", gap: "16px", fontFamily: "var(--font-mono)", fontSize: "11px" }}>
-          <span style={{ color: "var(--color-copper)", display: "flex", alignItems: "center", gap: "4px" }}>
-            <Plus size={12} /> {passedChecks} CHECK{passedChecks === 1 ? "" : "S"} PASSED
-          </span>
-          <span style={{ color: "var(--color-cinnabar)", display: "flex", alignItems: "center", gap: "4px" }}>
-            <Minus size={12} /> {failedChecks} FAILED
-          </span>
-        </div>
-      </div>
-
-      {/* Side-by-Side Diff Panes */}
-      <div
-        style={{
-          flex: 1,
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          overflowY: "auto",
-        }}
-      >
-        {/* Left Pane: Expected Ground Truth */}
-        <div style={{ padding: "24px 28px", borderRight: "1px solid var(--color-rule)", display: "flex", flexDirection: "column", gap: "12px" }}>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              fontFamily: "var(--font-mono)",
-              fontSize: "11px",
-              fontWeight: 700,
-              color: "var(--color-copper)",
-              letterSpacing: "var(--tracking-label)",
-              textTransform: "uppercase",
-            }}
-          >
-            <span>Expected ground truth (golden case)</span>
-            <span style={{ backgroundColor: "var(--color-copper-tint)", padding: "2px 6px", borderRadius: "2px" }}>
-              Pass criteria
-            </span>
-          </div>
-
-          <pre
-            style={{
-              margin: 0,
-              padding: "18px",
-              backgroundColor: "var(--color-chalk)",
-              border: "1px solid var(--color-rule)",
-              borderRadius: "var(--radius-1)",
-              fontFamily: "var(--font-mono)",
-              fontSize: "12px",
-              lineHeight: 1.6,
-              color: "var(--color-ink)",
-              overflowX: "auto",
-            }}
-          >
-{JSON.stringify({
-  trace_id: `golden_${trace.document_id}`,
-  document_type: groundTruthType,
-  confidence_threshold: 0.70,
-  expected_input_shape: Object.keys(inputJson as Record<string, unknown>),
-  validation_status: "VALID"
-}, null, 2)}
-          </pre>
-          <div style={{ fontSize: "12px", color: "var(--color-ink-3)", lineHeight: 1.5 }}>
-            The API does not expose a labelled ground truth for this document, so this
-            pane shows the pass criteria only. The actual classification and confidence
-            the pipeline produced are on the right.
-          </div>
-        </div>
-
-        {/* Right Pane: Actual Execution Output */}
-        <div style={{ padding: "24px 28px", display: "flex", flexDirection: "column", gap: "12px" }}>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              fontFamily: "var(--font-mono)",
-              fontSize: "11px",
-              fontWeight: 700,
-              color: "var(--color-cinnabar)",
-              letterSpacing: "var(--tracking-label)",
-              textTransform: "uppercase",
-            }}
-          >
-            <span>Actual execution (trace {trace.trace_id})</span>
-            <span style={{ backgroundColor: "var(--color-cinnabar-tint)", padding: "2px 6px", borderRadius: "2px" }}>
-              {hasRootCause ? "Root cause" : "No failure"}
-            </span>
-          </div>
-
-          <pre
-            style={{
-              margin: 0,
-              padding: "18px",
-              backgroundColor: "var(--color-cinnabar-tint)",
-              border: "1px solid var(--color-cinnabar)",
-              borderRadius: "var(--radius-1)",
-              fontFamily: "var(--font-mono)",
-              fontSize: "12px",
-              lineHeight: 1.6,
-              color: "var(--color-ink)",
-              overflowX: "auto",
-            }}
-          >
-{JSON.stringify(
-  hasRootCause
+  const observed = hasRootCause
     ? {
         trace_id: trace.trace_id,
         step: rootCauseStep,
         category: diagnosis?.category,
-        // Render the failing span's own output rather than assuming every
-        // failure is a schema violation on an extraction/classification shape.
+        confidence: diagnosis?.confidence,
         input: inputJson,
         output: outputJson,
         validation_status: "VIOLATED",
       }
     : {
         trace_id: trace.trace_id,
-        step: rootCauseSpan?.step_name ?? null,
+        step: rootSpan?.step_name ?? null,
         output: outputJson,
         validation_status: "VALID",
-      },
-  null,
-  2
-)}
-          </pre>
-          <div style={{ fontSize: "12px", color: "var(--color-cinnabar)", lineHeight: 1.5, fontWeight: 500 }}>
-            {hasRootCause
-              ? `Root cause: ${diagnosis?.category} at ${rootCauseStep} (${((diagnosis?.confidence ?? 0) * 100).toFixed(1)}% confidence)`
-              : "No deterministic failure detected."}
-          </div>
+      };
+
+  return (
+    <section className="panel">
+      <div className="panel__head">
+        <div>
+          <h2 className="panel__title">Output comparison</h2>
+          <p className="panel__hint">
+            {trace.document_id}, pass criteria against the observed output
+          </p>
+        </div>
+        <div className="diff__counts">
+          {checks.length === 0 ? (
+            <span className="faint">No checks recorded</span>
+          ) : (
+            <>
+              <span className="is-pass">{passedChecks} passed</span>
+              <span className="is-fail">{failedChecks} failed</span>
+            </>
+          )}
         </div>
       </div>
-    </div>
+
+      <div className="diff__grid">
+        <div className="diff__pane">
+          <p className="diff__label">Pass criteria</p>
+          <pre className="code">{JSON.stringify(criteria, null, 2)}</pre>
+          <p className="diff__note">
+            The API does not expose a labelled ground truth for this document, so only the
+            stored checks are shown.
+          </p>
+        </div>
+
+        <div className="diff__pane">
+          <p className={`diff__label${hasRootCause ? " is-fail" : ""}`}>Observed output</p>
+          <pre className={`code${hasRootCause ? " is-fail" : ""}`}>
+            {JSON.stringify(observed, null, 2)}
+          </pre>
+          <p className={`diff__note${hasRootCause ? " is-fail" : ""}`}>
+            {hasRootCause
+              ? `${humanize(diagnosis?.category)} at ${stepLabel(rootCauseStep)}, ${(
+                  (diagnosis?.confidence ?? 0) * 100
+                ).toFixed(1)}% confidence.`
+              : "No deterministic failure detected."}
+          </p>
+        </div>
+      </div>
+    </section>
   );
 };

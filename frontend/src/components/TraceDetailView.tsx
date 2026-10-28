@@ -1,24 +1,51 @@
-import React, { useState } from "react";
-import { Trace, Diagnosis, Span, FailureCategory, StepScore } from "../api/types";
-import { TraceSpine } from "./TraceSpine";
+import React, { useEffect, useMemo, useState } from "react";
 import {
+  Activity,
+  ArrowLeft,
+  Check,
+  ChevronDown,
   Download,
   Flag,
+  X,
 } from "lucide-react";
 import { api } from "../api/client";
+import type { Diagnosis, FailureCategory, StepScore, Trace } from "../api/types";
+import {
+  STEP_ORDER,
+  findSpan,
+  formatCost,
+  formatMs,
+  formatPct,
+  humanize,
+  relativeTime,
+  shortId,
+  stepIndex,
+  stepLabel,
+  totalTokens,
+} from "../lib/trace";
+import { TraceSpine } from "./TraceSpine";
+import { Empty, StatusPill } from "./ui";
 
 interface TraceDetailViewProps {
   trace: Trace;
   diagnosis: Diagnosis | null;
   onRefreshTrace: () => Promise<void>;
+  onBack?: () => void;
 }
+
+const CATEGORIES: FailureCategory[] = [
+  "extraction_hallucination",
+  "misclassification",
+  "propagation_error",
+  "prompt_failure",
+  "context_loss",
+  "unknown",
+];
 
 /**
  * Parse a span payload for display without ever throwing during render.
- *
  * `input_json`/`output_json` are model-controlled text, and a span from a
- * `prompt_schema` failure is not JSON at all. A bare `JSON.parse` in JSX threw
- * `SyntaxError` and unmounted the whole app.
+ * `prompt_schema` failure is not JSON at all.
  */
 function parseSpanJson(raw: string | undefined): { ok: true; value: unknown } | { ok: false; raw: string } {
   const text = raw ?? "";
@@ -41,734 +68,444 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
   trace,
   diagnosis,
   onRefreshTrace,
+  onBack,
 }) => {
-  const [selectedStep, setSelectedStep] = useState<string>("classification");
-  const [isConfirming, setIsConfirming] = useState<boolean>(false);
-  const [showOverrideMenu, setShowOverrideMenu] = useState<boolean>(false);
-  const [overrideCategory, setOverrideCategory] = useState<FailureCategory>("extraction_hallucination");
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [selectedStep, setSelectedStep] = useState<string>("intake");
+  const [isConfirming, setIsConfirming] = useState(false);
+  const [isDiagnosing, setIsDiagnosing] = useState(false);
+  const [showOverrideMenu, setShowOverrideMenu] = useState(false);
+  const [overrideCategory, setOverrideCategory] =
+    useState<FailureCategory>("extraction_hallucination");
+  const [message, setMessage] = useState<string | null>(null);
+  const [messageError, setMessageError] = useState(false);
 
-  // Calculate telemetry
-  const totalTokens = trace.total_tokens || trace.spans.reduce(
-    (acc, s) => acc + (s.prompt_tokens + s.completion_tokens + s.reasoning_tokens),
-    0
-  );
-  const totalCost = trace.total_cost_usd;
-  const allChecks: Array<{ check: string; passed: boolean }> = (diagnosis?.step_scores || []).flatMap(
-    (stepScore: StepScore) =>
-      Object.entries(stepScore.deterministic_checks).map(([check, passed]) => ({ check, passed }))
-  );
-  const passedChecks = allChecks.filter((c) => c.passed).length;
+  const steps = useMemo(() => {
+    const names = new Set<string>(STEP_ORDER);
+    (trace.spans ?? []).forEach((span) => names.add(span.step_name.toLowerCase()));
+    return Array.from(names);
+  }, [trace]);
 
-  const currentSpan = trace.spans.find(
-    (s) => s.step_name.toLowerCase() === selectedStep.toLowerCase()
+  useEffect(() => {
+    const root = diagnosis?.root_cause_step;
+    if (root && root !== "none") {
+      setSelectedStep(root.toLowerCase());
+      return;
+    }
+    setSelectedStep((trace.spans?.[0]?.step_name ?? "intake").toLowerCase());
+  }, [trace.trace_id, diagnosis?.root_cause_step, trace.spans]);
+
+  const notify = (text: string, error = false) => {
+    setMessage(text);
+    setMessageError(error);
+    window.setTimeout(() => setMessage(null), 4500);
+  };
+
+  const tokens = totalTokens(trace);
+  const allChecks: Array<{ check: string; passed: boolean }> = (
+    diagnosis?.step_scores ?? []
+  ).flatMap((score: StepScore) =>
+    Object.entries(score.deterministic_checks).map(([check, passed]) => ({ check, passed })),
   );
-  const currentStepScore = diagnosis?.step_scores?.find((s) => s.step_name === selectedStep);
-  const currentStepChecks = currentStepScore
-    ? Object.keys(currentStepScore.deterministic_checks).length
-    : 0;
+  const passedChecks = allChecks.filter((item) => item.passed).length;
+
+  const currentSpan = findSpan(trace, selectedStep);
+  const currentScore = diagnosis?.step_scores?.find(
+    (score) => score.step_name.toLowerCase() === selectedStep,
+  );
+  const currentChecks = currentScore ? Object.keys(currentScore.deterministic_checks).length : 0;
   const isFailingStep =
-    currentSpan?.status === "failure" || diagnosis?.root_cause_step === selectedStep;
-  // `"none"` is the analyzer's "everything passed" marker; a missing diagnosis
-  // is "not diagnosed yet". Neither is a failure.
-  const hasRootCause =
-    !!diagnosis?.root_cause_step && diagnosis.root_cause_step !== "none";
-  const rootCauseStageIndex = diagnosis
-    ? ["intake", "extraction", "classification", "summarization"].indexOf(diagnosis.root_cause_step) + 1
-    : -1;
+    currentSpan?.status === "failure" ||
+    (diagnosis?.root_cause_step ?? "").toLowerCase() === selectedStep;
+
+  const rootStep =
+    diagnosis?.root_cause_step && diagnosis.root_cause_step !== "none"
+      ? diagnosis.root_cause_step
+      : null;
+  const hasRootCause = !!rootStep;
+  const rootStage = stepIndex(rootStep);
+  const category = diagnosis?.override_category || diagnosis?.category;
+  const analyzer = diagnosis
+    ? diagnosis.analyzer_fallback
+      ? "Judge fallback"
+      : diagnosis.judge_analysis
+        ? "Deterministic and judge"
+        : "Deterministic"
+    : "Not run";
+
+  const statusTone = hasRootCause
+    ? "fail"
+    : diagnosis
+      ? "pass"
+      : trace.status === "failure"
+        ? "fail"
+        : "neutral";
+  const statusLabel = hasRootCause
+    ? "Failure"
+    : diagnosis
+      ? "No failure"
+      : trace.status === "failure"
+        ? "Failure"
+        : "Undiagnosed";
 
   const handleConfirm = async () => {
     if (!diagnosis) return;
     try {
       setIsConfirming(true);
       await api.confirmDiagnosis(diagnosis.diagnosis_id, true);
-      setActionMessage("✓ Diagnosis confirmed and saved to eval cases!");
+      notify("Diagnosis confirmed.");
       await onRefreshTrace();
     } catch (err: unknown) {
-      setActionMessage(`Error: ${(err as Error).message}`);
+      notify(`Could not confirm: ${(err as Error).message}`, true);
     } finally {
       setIsConfirming(false);
-      setTimeout(() => setActionMessage(null), 4000);
     }
   };
 
-  const handleOverride = async (cat?: FailureCategory) => {
+  const handleOverride = async (next: FailureCategory) => {
     if (!diagnosis) return;
-    const category = cat || overrideCategory;
     try {
       setIsConfirming(true);
       await api.confirmDiagnosis(
         diagnosis.diagnosis_id,
-        // An override is an engineer confirming a *different* category, not a
-        // rejection. Sending `false` stored confirmed=0, and the eval sweep
-        // only promotes confirmed diagnoses, so overridden cases from this view
-        // were silently excluded from the regression suite.
         true,
-        category,
-        "Engineer manual override from trace inspector"
+        next,
+        "Manual override from the trace inspector",
       );
       setShowOverrideMenu(false);
-      setActionMessage(`✓ Overridden to ${category}!`);
+      notify(`Override saved: ${humanize(next)}.`);
       await onRefreshTrace();
     } catch (err: unknown) {
-      setActionMessage(`Error: ${(err as Error).message}`);
+      notify(`Could not override: ${(err as Error).message}`, true);
     } finally {
       setIsConfirming(false);
-      setTimeout(() => setActionMessage(null), 4000);
+    }
+  };
+
+  const handleDiagnose = async () => {
+    try {
+      setIsDiagnosing(true);
+      await api.runDiagnosis(trace.trace_id);
+      notify("Diagnosis complete.");
+      await onRefreshTrace();
+    } catch (err: unknown) {
+      notify(`Could not run diagnosis: ${(err as Error).message}`, true);
+    } finally {
+      setIsDiagnosing(false);
     }
   };
 
   const handleFlag = async () => {
     try {
       await api.flagTrace(trace.trace_id, "Flagged for manual review");
-      setActionMessage("✓ Trace flagged for engineering review.");
+      notify("Trace flagged for review.");
     } catch (err: unknown) {
-      setActionMessage(`Error: ${(err as Error).message}`);
-    } finally {
-      setTimeout(() => setActionMessage(null), 4000);
+      notify(`Could not flag trace: ${(err as Error).message}`, true);
     }
   };
 
-  const handleExportJson = () => {
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(trace, null, 2));
-    const dlAnchor = document.createElement("a");
-    dlAnchor.setAttribute("href", dataStr);
-    dlAnchor.setAttribute("download", `trace-${trace.trace_id}.json`);
-    dlAnchor.click();
+  const handleExport = () => {
+    const data =
+      "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(trace, null, 2));
+    const link = document.createElement("a");
+    link.setAttribute("href", data);
+    link.setAttribute("download", `trace-${trace.trace_id}.json`);
+    link.click();
   };
 
+  const messageNode = message ? (
+    <span className={`notice${messageError ? " is-error" : ""}`} role="status">
+      {message}
+    </span>
+  ) : null;
+
   return (
-    <div
-      style={{
-        flex: 1,
-        display: "flex",
-        flexDirection: "column",
-        backgroundColor: "var(--color-ground)",
-        height: "100%",
-        overflow: "hidden",
-      }}
-    >
-      {/* Top Header */}
-      <header
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          padding: "16px 28px",
-          borderBottom: "1px solid var(--color-rule)",
-          backgroundColor: "var(--color-ground)",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <span
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: "13px",
-                fontWeight: 700,
-                color: "var(--color-ink)",
-              }}
-            >
-              trace_{trace.trace_id}
-            </span>
-            <span style={{ color: "var(--color-ink-3)" }}>/</span>
-            <span style={{ fontSize: "13px", color: "var(--color-ink-2)" }}>{trace.document_id}.txt</span>
+    <div className="detail">
+      <div className="detail__head">
+        <div>
+          {onBack ? (
+            <button className="btn btn--ghost btn--sm detail__back" onClick={onBack}>
+              <ArrowLeft size={14} /> All traces
+            </button>
+          ) : null}
+          <h2 className="detail__title">
+            Trace
+            <StatusPill tone={statusTone}>{statusLabel}</StatusPill>
+          </h2>
+          <div className="detail__meta">
+            <span className="mono">{shortId(trace.trace_id, 12)}</span>
+            <span>{trace.document_id}</span>
+            <span>{relativeTime(trace.created_at)}</span>
+            <span>{trace.spans?.length ?? 0} spans</span>
           </div>
-
-          {diagnosis && diagnosis.root_cause_step && diagnosis.root_cause_step !== "none" && (
-            <span
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "6px",
-                padding: "3px 8px",
-                backgroundColor: "var(--color-cinnabar-tint)",
-                border: "1px solid var(--color-cinnabar)",
-                borderRadius: "var(--radius-1)",
-                fontFamily: "var(--font-mono)",
-                fontSize: "11px",
-                fontWeight: 700,
-                color: "var(--color-cinnabar)",
-                letterSpacing: "var(--tracking-label)",
-                textTransform: "uppercase",
-              }}
-            >
-              <span
-                style={{
-                  width: "6px",
-                  height: "6px",
-                  borderRadius: "50%",
-                  backgroundColor: "var(--color-cinnabar)",
-                }}
-              />
-              Root cause: {diagnosis.category} (Stage {diagnosis.root_cause_step})
-            </span>
-          )}
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          {actionMessage && (
-            <span
-              style={{
-                fontFamily: "var(--font-mono)",
-                fontSize: "11px",
-                color: "var(--color-copper)",
-                fontWeight: 600,
-                marginRight: "8px",
-              }}
-            >
-              {actionMessage}
-            </span>
-          )}
-          <button
-            onClick={handleFlag}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-              fontFamily: "var(--font-mono)",
-              fontSize: "12px",
-              color: "var(--color-ink-2)",
-              backgroundColor: "var(--color-ground)",
-              border: "1px solid var(--color-rule)",
-              borderRadius: "var(--radius-1)",
-              padding: "6px 12px",
-            }}
-          >
-            <Flag size={13} />
-            <span>Flag</span>
+        <div className="detail__actions">
+          <button className="btn btn--sm" onClick={handleFlag}>
+            <Flag size={13} /> Flag
           </button>
-          <button
-            onClick={handleExportJson}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-              fontFamily: "var(--font-mono)",
-              fontSize: "12px",
-              color: "var(--color-ink-2)",
-              backgroundColor: "var(--color-ground)",
-              border: "1px solid var(--color-rule)",
-              borderRadius: "var(--radius-1)",
-              padding: "6px 12px",
-            }}
-          >
-            <Download size={13} />
-            <span>Export JSON</span>
+          <button className="btn btn--sm" onClick={handleExport}>
+            <Download size={13} /> Export
           </button>
-        </div>
-      </header>
-
-      {/* Telemetry Strip */}
-      <div
-        style={{
-          display: "flex",
-          gap: "28px",
-          alignItems: "center",
-          padding: "10px 28px",
-          backgroundColor: "var(--color-chalk)",
-          borderBottom: "1px solid var(--color-rule)",
-          fontFamily: "var(--font-mono)",
-          fontSize: "12px",
-          color: "var(--color-ink-2)",
-        }}
-      >
-        <div>
-          <span>DURATION: </span>
-          <span style={{ color: "var(--color-ink)", fontWeight: 600 }}>
-            {trace.total_latency_ms != null ? `${Math.round(trace.total_latency_ms)}ms` : "—"}
-          </span>
-        </div>
-        <div>
-          <span>TOTAL TOKENS: </span>
-          <span style={{ color: "var(--color-ink)", fontWeight: 600 }}>
-            {totalTokens.toLocaleString()}
-          </span>
-        </div>
-        <div>
-          <span>EST. COST: </span>
-          <span style={{ color: "var(--color-ink)", fontWeight: 600 }}>
-            ${totalCost.toFixed(4)}
-          </span>
-        </div>
-        <div>
-          <span>CHECKS EVALUATED: </span>
-          <span style={{ color: "var(--color-ink)", fontWeight: 600 }}>
-            {allChecks.length ? `${passedChecks} / ${allChecks.length} PASS` : "—"}
-          </span>
-        </div>
-        <div>
-          <span>VERSION: </span>
-          <span style={{ color: "var(--color-ink)" }}>
-            {trace.pipeline_version || "0.1.0"}
-          </span>
         </div>
       </div>
 
-      {/* Main Forensic Workspace */}
-      <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
-        {/* Left Spine Gutter (320px) */}
-        <div
-          style={{
-            width: "320px",
-            borderRight: "1px solid var(--color-rule)",
-            backgroundColor: "var(--color-ground)",
-            padding: "24px 20px",
-            overflowY: "auto",
-          }}
-        >
-          <TraceSpine
-            trace={trace}
-            diagnosis={diagnosis}
-            selectedStep={selectedStep}
-            onSelectStep={setSelectedStep}
-          />
+      <div className="telemetry">
+        <div className="telemetry__cell">
+          <div className="telemetry__label">Duration</div>
+          <div className="telemetry__value">{formatMs(trace.total_latency_ms)}</div>
         </div>
+        <div className="telemetry__cell">
+          <div className="telemetry__label">Tokens</div>
+          <div className="telemetry__value">{tokens.toLocaleString()}</div>
+        </div>
+        <div className="telemetry__cell">
+          <div className="telemetry__label">Cost</div>
+          <div className="telemetry__value">{formatCost(trace.total_cost_usd)}</div>
+        </div>
+        <div className="telemetry__cell">
+          <div className="telemetry__label">Checks</div>
+          <div className="telemetry__value">
+            {allChecks.length > 0 ? `${passedChecks}/${allChecks.length}` : "—"}
+          </div>
+        </div>
+        <div className="telemetry__cell">
+          <div className="telemetry__label">Pipeline</div>
+          <div className="telemetry__value">{trace.pipeline_version || "0.1.0"}</div>
+        </div>
+      </div>
 
-        {/* Right Detail Pane */}
-        <div
-          style={{
-            flex: 1,
-            backgroundColor: "var(--color-ground)",
-            padding: "24px 28px",
-            overflowY: "auto",
-            display: "flex",
-            flexDirection: "column",
-            gap: "24px",
-          }}
-        >
-          {/* Diagnostic Card */}
-          {diagnosis && (
-            <div
-              style={{
-                border: "1px solid var(--color-rule)",
-                borderRadius: "var(--radius-1)",
-                backgroundColor: "var(--color-ground)",
-                boxShadow: "0 1px 3px rgba(0,0,0,0.02)",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  padding: "12px 18px",
-                  borderBottom: "1px solid var(--color-rule)",
-                  backgroundColor: "var(--color-chalk)",
-                }}
-              >
-                <div
-                  style={{
-                    fontFamily: "var(--font-mono)",
-                    fontSize: "12px",
-                    fontWeight: 700,
-                    color: "var(--color-ink)",
-                  }}
-                >
-                  Root cause forensic diagnosis
-                </div>
-                <div
-                  style={{
-                    fontFamily: "var(--font-mono)",
-                    fontSize: "11px",
-                    color: "var(--color-ink-3)",
-                  }}
-                >
-                  Analyzer: {diagnosis.analyzer_version || "BackwardTrace_v2"}
-                </div>
+      <div className="detail__body">
+        <TraceSpine
+          trace={trace}
+          diagnosis={diagnosis}
+          selectedStep={selectedStep}
+          onSelectStep={setSelectedStep}
+        />
+
+        <div className="stack">
+          <section className="panel">
+            <div className="panel__head">
+              <div>
+                <h2 className="panel__title">Diagnosis</h2>
+                <p className="panel__hint">{diagnosis ? analyzer : "Not run"}</p>
               </div>
-
-              <div style={{ padding: "18px", display: "flex", flexDirection: "column", gap: "16px" }}>
-                {/* 3 Metric Grid */}
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr 1fr 1fr",
-                    gap: "16px",
-                    backgroundColor: "var(--color-chalk)",
-                    padding: "14px",
-                    borderRadius: "var(--radius-1)",
-                    border: "1px solid var(--color-rule)",
-                  }}
+              {diagnosis ? (
+                <StatusPill
+                  tone={
+                    diagnosis.overridden ? "warn" : diagnosis.confirmed ? "pass" : "neutral"
+                  }
                 >
+                  {diagnosis.overridden
+                    ? "Overridden"
+                    : diagnosis.confirmed
+                      ? "Confirmed"
+                      : "Unconfirmed"}
+                </StatusPill>
+              ) : null}
+            </div>
+
+            {diagnosis ? (
+              <div className="panel__body">
+                <div className="verdict">
                   <div>
-                    <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)" }}>
-                      FAILURE CATEGORY
-                    </div>
-                    <div
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        fontSize: "13px",
-                        fontWeight: 700,
-                        color: "var(--color-cinnabar)",
-                        marginTop: "4px",
-                      }}
-                    >
-                      {diagnosis.override_category || diagnosis.category}
-                    </div>
+                    <p className="verdict__label">
+                      {hasRootCause ? "Root cause" : "Result"}
+                    </p>
+                    <p className={`verdict__value${hasRootCause ? " is-fail" : ""}`}>
+                      {hasRootCause
+                        ? `${humanize(category)} at ${stepLabel(rootStep)}`
+                        : "No deterministic failure"}
+                    </p>
                   </div>
-                  <div>
-                    <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)" }}>
-                      ISOLATED STAGE
+                  <dl className="verdict__facts">
+                    <div>
+                      <dt>Confidence</dt>
+                      <dd>{formatPct(diagnosis.confidence, 1)}</dd>
                     </div>
-                    <div
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        fontSize: "13px",
-                        fontWeight: 700,
-                        color: "var(--color-cinnabar)",
-                        marginTop: "4px",
-                      }}
-                    >
-                      {rootCauseStageIndex >= 1
-                        ? `Stage 0${rootCauseStageIndex} (${diagnosis.root_cause_step})`
-                        : diagnosis.root_cause_step}
+                    <div>
+                      <dt>Stage</dt>
+                      <dd>{rootStage >= 0 ? `${rootStage + 1} of 4` : "—"}</dd>
                     </div>
-                  </div>
-                  <div>
-                    <div style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)" }}>
-                      CONFIDENCE SCORE
+                    <div>
+                      <dt>Analyzer</dt>
+                      <dd>{diagnosis.analyzer_version || "deterministic"}</dd>
                     </div>
-                    <div
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        fontSize: "13px",
-                        fontWeight: 700,
-                        color: "var(--color-ink)",
-                        marginTop: "4px",
-                      }}
-                    >
-                      {(diagnosis.confidence * 100).toFixed(1)}%{" "}
-                      {diagnosis.analyzer_fallback
-                        ? `(Judge: ${diagnosis.judge_analysis?.model_id ?? diagnosis.model_id})`
-                        : diagnosis.judge_analysis
-                          ? `(Judge: ${diagnosis.judge_analysis.model_id}, agrees)`
-                          : "(Deterministic)"}
-                    </div>
-                  </div>
+                  </dl>
                 </div>
 
-                {/* Evidence Chain */}
-                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                  <div
-                    style={{
-                      fontFamily: "var(--font-mono)",
-                      fontSize: "11px",
-                      fontWeight: 600,
-                      letterSpacing: "var(--tracking-label)",
-                      color: "var(--color-ink-3)",
-                      textTransform: "uppercase",
-                    }}
-                  >
-                    {hasRootCause ? "Failed checks evidence chain" : "Evidence chain"} (
-                    {diagnosis.evidence_chain?.length || 0})
+                {diagnosis.evidence_chain?.length ? (
+                  <div className={`evidence${hasRootCause ? " is-fail" : ""}`}>
+                    <p className="evidence__label">
+                      {hasRootCause ? "Evidence from the failing stage" : "Evidence"}
+                    </p>
+                    {diagnosis.evidence_chain.map((item, index) => (
+                      <p className="evidence__item" key={`${item}-${index}`}>
+                        {item}
+                      </p>
+                    ))}
                   </div>
+                ) : null}
 
-                  {diagnosis.evidence_chain && diagnosis.evidence_chain.length > 0 ? (
-                    diagnosis.evidence_chain.map((item, idx) => (
-                      <div
-                        key={idx}
-                        style={{
-                          border: `1px solid ${
-                            hasRootCause ? "var(--color-cinnabar)" : "var(--color-rule)"
-                          }`,
-                          backgroundColor: hasRootCause
-                            ? "var(--color-cinnabar-tint)"
-                            : "var(--color-chalk)",
-                          padding: "10px 14px",
-                          borderRadius: "var(--radius-1)",
-                          fontFamily: "var(--font-mono)",
-                          fontSize: "12px",
-                          color: hasRootCause ? "var(--color-cinnabar)" : "var(--color-ink-2)",
-                        }}
-                      >
-                        <div style={{ fontWeight: 600 }}>
-                          [{hasRootCause ? "FAIL" : "PASS"}] {item}
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div
-                      style={{
-                        border: "1px solid var(--color-rule)",
-                        backgroundColor: "var(--color-chalk)",
-                        padding: "10px 14px",
-                        borderRadius: "var(--radius-1)",
-                        fontFamily: "var(--font-mono)",
-                        fontSize: "12px",
-                        color: "var(--color-ink-2)",
-                      }}
-                    >
-                      No evidence recorded for this diagnosis.
-                    </div>
-                  )}
-
-                  {/* Per-Step Scores */}
-                  {diagnosis.step_scores && diagnosis.step_scores.length > 0 && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "8px" }}>
-                      <div
-                        style={{
-                          fontFamily: "var(--font-mono)",
-                          fontSize: "11px",
-                          fontWeight: 600,
-                          letterSpacing: "var(--tracking-label)",
-                          color: "var(--color-ink-3)",
-                          textTransform: "uppercase",
-                        }}
-                      >
-                        Per-step scores
-                      </div>
-                      {diagnosis.step_scores.map((stepScore: StepScore, idx: number) => (
-                        <div
-                          key={idx}
-                          style={{
-                            border: `1px solid ${stepScore.local_pass ? "var(--color-copper)" : "var(--color-cinnabar)"}`,
-                            backgroundColor: stepScore.local_pass ? "var(--color-copper-tint)" : "var(--color-cinnabar-tint)",
-                            padding: "10px 14px",
-                            borderRadius: "var(--radius-1)",
-                            fontFamily: "var(--font-mono)",
-                            fontSize: "12px",
-                            color: stepScore.local_pass ? "var(--color-copper)" : "var(--color-cinnabar)",
-                          }}
-                        >
-                          <div style={{ fontWeight: 600 }}>
-                            {stepScore.local_pass ? "[PASS]" : "[FAIL]"} {stepScore.step_name} — Local: {(stepScore.local_fidelity * 100).toFixed(0)}%, Global: {(stepScore.global_fidelity * 100).toFixed(0)}%
-                          </div>
-                          {Object.entries(stepScore.deterministic_checks).map(([check, passed]) => (
-                            <div key={check} style={{ fontSize: "11px", marginTop: "4px", opacity: 0.8 }}>
-                              {passed ? "✓" : "✗"} {check}
-                            </div>
+                {diagnosis.step_scores?.length ? (
+                  <div className="scores">
+                    <p className="scores__label">Per-stage checks</p>
+                    <div className="table-wrap">
+                      <table className="table table--scores">
+                        <thead>
+                          <tr>
+                            <th scope="col">Stage</th>
+                            <th scope="col" className="num">
+                              Local
+                            </th>
+                            <th scope="col" className="num">
+                              Global
+                            </th>
+                            <th scope="col">Checks</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {diagnosis.step_scores.map((score) => (
+                            <tr key={score.step_name}>
+                              <td>{stepLabel(score.step_name)}</td>
+                              <td className="num">{formatPct(score.local_fidelity)}</td>
+                              <td className="num">{formatPct(score.global_fidelity)}</td>
+                              <td>
+                                {Object.entries(score.deterministic_checks).length === 0 ? (
+                                  <span className="faint">none</span>
+                                ) : (
+                                  Object.entries(score.deterministic_checks).map(
+                                    ([check, ok]) => (
+                                      <span
+                                        className={`check ${ok ? "is-pass" : "is-fail"}`}
+                                        key={check}
+                                      >
+                                        {ok ? <Check size={11} /> : <X size={11} />}
+                                        {check}
+                                      </span>
+                                    ),
+                                  )
+                                )}
+                              </td>
+                            </tr>
                           ))}
-                        </div>
-                      ))}
+                        </tbody>
+                      </table>
                     </div>
-                  )}
-                </div>
+                  </div>
+                ) : null}
 
-                {/* Human Feedback Action Bar */}
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "12px",
-                    paddingTop: "12px",
-                    borderTop: "1px solid var(--color-rule)",
-                  }}
-                >
+                <div className="panel__actions">
                   <button
+                    className="btn btn--primary btn--sm"
                     onClick={handleConfirm}
                     disabled={isConfirming}
-                    style={{
-                      fontFamily: "var(--font-mono)",
-                      fontSize: "12px",
-                      fontWeight: 600,
-                      color: "var(--color-ground)",
-                      backgroundColor: "var(--color-copper)",
-                      border: "1px solid var(--color-copper)",
-                      borderRadius: "var(--radius-1)",
-                      padding: "7px 16px",
-                    }}
                   >
-                    {isConfirming ? "Confirming..." : "Confirm diagnosis"}
+                    <Check size={13} />
+                    {isConfirming ? "Saving" : "Confirm diagnosis"}
                   </button>
 
-                  <div style={{ position: "relative" }}>
+                  <div className="menu-anchor">
                     <button
-                      onClick={() => setShowOverrideMenu(!showOverrideMenu)}
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        fontSize: "12px",
-                        color: "var(--color-ink-2)",
-                        backgroundColor: "var(--color-ground)",
-                        border: "1px solid var(--color-rule)",
-                        borderRadius: "var(--radius-1)",
-                        padding: "7px 16px",
-                      }}
+                      className="btn btn--sm"
+                      onClick={() => setShowOverrideMenu((open) => !open)}
+                      aria-haspopup="menu"
+                      aria-expanded={showOverrideMenu}
+                      disabled={isConfirming}
                     >
-                      Override classification ▾
+                      Override <ChevronDown size={13} />
                     </button>
 
-                    {showOverrideMenu && (
-                      <div
-                        style={{
-                          position: "absolute",
-                          bottom: "100%",
-                          left: 0,
-                          marginBottom: "8px",
-                          width: "240px",
-                          backgroundColor: "var(--color-ground)",
-                          border: "1px solid var(--color-rule-strong)",
-                          borderRadius: "var(--radius-1)",
-                          boxShadow: "0 4px 12px rgba(0,0,0,0.08)",
-                          padding: "8px",
-                          zIndex: 50,
-                        }}
-                      >
-                        <div style={{ fontSize: "11px", fontFamily: "var(--font-mono)", color: "var(--color-ink-3)", marginBottom: "6px" }}>
-                          Select new category:
+                    {showOverrideMenu ? (
+                      <>
+                        <div
+                          className="popover-backdrop"
+                          onClick={() => setShowOverrideMenu(false)}
+                          aria-hidden="true"
+                        />
+                        <div className="popover popover--menu" role="menu" aria-label="Override category">
+                          {CATEGORIES.map((option) => (
+                            <button
+                              className="menu-item"
+                              key={option}
+                              role="menuitem"
+                              onClick={() => handleOverride(option)}
+                            >
+                              {humanize(option)}
+                            </button>
+                          ))}
                         </div>
-                        {(
-                          [
-                            "extraction_hallucination",
-                            "misclassification",
-                            "propagation_error",
-                            "prompt_failure",
-                            "context_loss",
-                            "unknown",
-                          ] as FailureCategory[]
-                        ).map((cat) => (
-                          <div
-                            key={cat}
-                            onClick={() => handleOverride(cat)}
-                            style={{
-                              padding: "6px 8px",
-                              fontFamily: "var(--font-mono)",
-                              fontSize: "12px",
-                              cursor: "pointer",
-                              borderRadius: "var(--radius-1)",
-                              backgroundColor: overrideCategory === cat ? "var(--color-chalk)" : "transparent",
-                            }}
-                          >
-                            {cat}
-                          </div>
-                        ))}
-                      </div>
-                    )}
+                      </>
+                    ) : null}
                   </div>
+
+                  {messageNode}
                 </div>
               </div>
-            </div>
-          )}
-
-          {/* Span Inspection: Prompt, Raw Output, and Schema */}
-          <div
-            style={{
-              border: "1px solid var(--color-rule)",
-              borderRadius: "var(--radius-1)",
-              backgroundColor: "var(--color-ground)",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                padding: "12px 18px",
-                borderBottom: "1px solid var(--color-rule)",
-                backgroundColor: "var(--color-chalk)",
-              }}
-            >
-              <div style={{ display: "flex", gap: "16px" }}>
-                <span
-                  style={{
-                    fontFamily: "var(--font-mono)",
-                    fontSize: "12px",
-                    fontWeight: 700,
-                    color: "var(--color-ink)",
-                    borderBottom: "2px solid var(--color-copper)",
-                    paddingBottom: "2px",
-                  }}
+            ) : (
+              <div className="panel__body">
+                <Empty
+                  action={
+                    <button
+                      className="btn btn--primary btn--sm"
+                      onClick={handleDiagnose}
+                      disabled={isDiagnosing}
+                    >
+                      <Activity size={13} />
+                      {isDiagnosing ? "Running" : "Run diagnosis"}
+                    </button>
+                  }
                 >
-                  Stage: {selectedStep}
-                </span>
-                <span style={{ fontFamily: "var(--font-mono)", fontSize: "12px", color: "var(--color-ink-3)" }}>
-                  Checks ({currentStepChecks})
-                </span>
+                  No diagnosis stored for this trace.
+                </Empty>
+                {messageNode ? <div className="panel__actions">{messageNode}</div> : null}
               </div>
-              <span style={{ fontFamily: "var(--font-mono)", fontSize: "11px", color: "var(--color-ink-3)" }}>
-                Model: {currentSpan?.model_id || "unknown"}
+            )}
+          </section>
+
+          <section className="panel">
+            <div className="panel__head">
+              <div>
+                <h2 className="panel__title">Stage payload</h2>
+                <p className="panel__hint">
+                  {stepLabel(selectedStep)}
+                  {currentSpan?.model_id ? `, ${currentSpan.model_id}` : ""}
+                </p>
+              </div>
+              <span className="faint num" style={{ fontSize: 12 }}>
+                {currentChecks} checks
               </span>
             </div>
 
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                padding: "16px",
-                gap: "16px",
-              }}
-            >
-              {/* Left Column: Input Payload */}
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                <div
-                  style={{
-                    fontFamily: "var(--font-mono)",
-                    fontSize: "11px",
-                    fontWeight: 600,
-                    color: "var(--color-ink-3)",
-                    textTransform: "uppercase",
-                  }}
-                >
-                  Input payload and prompt
+            <div className="panel__body">
+              {currentSpan ? (
+                <div className="payload__grid">
+                  <div>
+                    <p className="payload__label">Input</p>
+                    <pre className="code">
+                      {currentSpan.prompt ||
+                        renderSpanJson(currentSpan.input_json, {
+                          document_id: trace.document_id,
+                          step: selectedStep,
+                        })}
+                    </pre>
+                  </div>
+                  <div>
+                    <p className={`payload__label${isFailingStep ? " is-fail" : ""}`}>Output</p>
+                    <pre className={`code${isFailingStep ? " is-fail" : ""}`}>
+                      {currentSpan.raw_response ||
+                        renderSpanJson(currentSpan.output_json, {
+                          document_id: trace.document_id,
+                          step: selectedStep,
+                          status: "no output recorded",
+                        })}
+                    </pre>
+                  </div>
                 </div>
-                <pre
-                  style={{
-                    margin: 0,
-                    padding: "14px",
-                    backgroundColor: "var(--color-chalk)",
-                    border: "1px solid var(--color-rule)",
-                    borderRadius: "var(--radius-1)",
-                    fontFamily: "var(--font-mono)",
-                    fontSize: "11px",
-                    lineHeight: 1.45,
-                    color: "var(--color-ink)",
-                    overflowX: "auto",
-                    maxHeight: "260px",
-                  }}
-                >
-                  {currentSpan?.prompt ||
-                    renderSpanJson(currentSpan?.input_json, {
-                      document_id: trace.document_id,
-                      step: selectedStep,
-                    })}
-                </pre>
-              </div>
-
-              {/* Right Column: Output & Validation Failure */}
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                <div
-                  style={{
-                    fontFamily: "var(--font-mono)",
-                    fontSize: "11px",
-                    fontWeight: 600,
-                    color: isFailingStep ? "var(--color-cinnabar)" : "var(--color-ink-3)",
-                    textTransform: "uppercase",
-                  }}
-                >
-                  Raw model completion / output
-                </div>
-                <pre
-                  style={{
-                    margin: 0,
-                    padding: "14px",
-                    backgroundColor:
-                      isFailingStep
-                        ? "var(--color-cinnabar-tint)"
-                        : "var(--color-chalk)",
-                    border: `1px solid ${
-                      isFailingStep
-                        ? "var(--color-cinnabar)"
-                        : "var(--color-rule)"
-                    }`,
-                    borderRadius: "var(--radius-1)",
-                    fontFamily: "var(--font-mono)",
-                    fontSize: "11px",
-                    lineHeight: 1.45,
-                    color: "var(--color-ink)",
-                    overflowX: "auto",
-                    maxHeight: "260px",
-                  }}
-                >
-                  {currentSpan?.raw_response ||
-                    renderSpanJson(currentSpan?.output_json, {
-                      document_id: trace.document_id,
-                      step: selectedStep,
-                      status: "no output recorded",
-                    })}
-                </pre>
-              </div>
+              ) : (
+                <Empty>No payload recorded for this stage.</Empty>
+              )}
             </div>
-          </div>
+          </section>
         </div>
       </div>
     </div>
