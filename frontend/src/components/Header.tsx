@@ -1,6 +1,17 @@
-import React, { useState } from "react";
-import { Activity, Play, CheckCircle2, AlertCircle } from "lucide-react";
+import React, { useEffect, useId, useState } from "react";
+import {
+  BarChart2,
+  Gauge,
+  GitBranch,
+  KeyRound,
+  Menu,
+  Play,
+  RefreshCw,
+  Rows3,
+  X,
+} from "lucide-react";
 import { clearApiKey, setApiKey } from "../api/client";
+import { SpineMark } from "./ui";
 
 export type NavTab = "home" | "explorer" | "dag" | "analytics";
 
@@ -12,7 +23,66 @@ interface HeaderProps {
   isRunningDemo: boolean;
   /** Re-fetch after the key changes, so a 401 state clears without a reload. */
   onApiKeyChange: () => Promise<void>;
+  lastUpdated: Date | null;
 }
+
+const TABS: Array<{ id: NavTab; label: string; icon: React.ComponentType<{ size?: number }> }> = [
+  { id: "home", label: "Overview", icon: Gauge },
+  { id: "explorer", label: "Traces", icon: Rows3 },
+  { id: "dag", label: "Execution graph", icon: GitBranch },
+  { id: "analytics", label: "Analytics", icon: BarChart2 },
+];
+
+const ApiKeyForm: React.FC<{
+  onSaved: () => Promise<void>;
+  autoFocus?: boolean;
+}> = ({ onSaved, autoFocus }) => {
+  const inputId = useId();
+  const hintId = useId();
+  const [draft, setDraft] = useState("");
+  const [saved, setSaved] = useState(false);
+
+  return (
+    <form
+      className="key-form"
+      title="Stored in this browser only, sent as an Authorization header. Submit empty to clear."
+      onSubmit={(event) => {
+        event.preventDefault();
+        const trimmed = draft.trim();
+        // An empty submit clears the stored key, so a wrong key can always be removed.
+        if (trimmed) {
+          setApiKey(trimmed);
+        } else {
+          clearApiKey();
+        }
+        setDraft("");
+        setSaved(true);
+        window.setTimeout(() => setSaved(false), 2000);
+        void onSaved();
+      }}
+    >
+      <label htmlFor={inputId}>API key</label>
+      <input
+        id={inputId}
+        className="input"
+        type="password"
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        placeholder="ffk_…"
+        aria-describedby={hintId}
+        autoComplete="off"
+        spellCheck={false}
+        autoFocus={autoFocus}
+      />
+      <p className="hint" id={hintId}>
+        Stored in this browser. Submit empty to clear.
+      </p>
+      <button className="btn btn--sm" type="submit">
+        {saved ? "Saved" : draft.trim() ? "Save key" : "Clear key"}
+      </button>
+    </form>
+  );
+};
 
 export const Header: React.FC<HeaderProps> = ({
   activeTab,
@@ -21,204 +91,177 @@ export const Header: React.FC<HeaderProps> = ({
   onRunDemo,
   isRunningDemo,
   onApiKeyChange,
+  lastUpdated,
 }) => {
-  const [keyDraft, setKeyDraft] = useState("");
-  const [keySaved, setKeySaved] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [keyOpen, setKeyOpen] = useState(false);
+
+  useEffect(() => {
+    if (!menuOpen && !keyOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMenuOpen(false);
+        setKeyOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [menuOpen, keyOpen]);
+
+  const go = (tab: NavTab) => {
+    setMenuOpen(false);
+    onTabChange(tab);
+  };
+
+  const brand = (
+    <button className="brand" onClick={() => go("home")} aria-label="Failure Forensics, overview">
+      <span className="brand__mark">
+        <SpineMark />
+      </span>
+      <span className="brand__name">Failure Forensics</span>
+    </button>
+  );
+
+  const nav = (
+    <nav className="nav" aria-label="Main">
+      {TABS.map((tab) => {
+        const Icon = tab.icon;
+        return (
+          <button
+            key={tab.id}
+            className="nav-item"
+            onClick={() => go(tab.id)}
+            aria-current={activeTab === tab.id ? "page" : undefined}
+          >
+            <Icon size={16} />
+            <span>{tab.label}</span>
+          </button>
+        );
+      })}
+    </nav>
+  );
 
   return (
-    <header
-      style={{
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        padding: "16px 32px",
-        borderBottom: "1px solid var(--color-rule)",
-        backgroundColor: "var(--color-ground)",
-        position: "sticky",
-        top: 0,
-        zIndex: 100,
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: "36px" }}>
-        {/* Brand */}
-        <div
-          onClick={() => onTabChange("home")}
-          style={{
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            gap: "10px",
-          }}
-        >
-          <div
-            style={{
-              width: "28px",
-              height: "28px",
-              border: "2px solid var(--color-copper)",
-              borderRadius: "var(--radius-1)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontWeight: 800,
-              fontFamily: "var(--font-display)",
-              fontSize: "14px",
-              color: "var(--color-copper)",
-            }}
-          >
-            FF
-          </div>
-          <span
-            style={{
-              fontFamily: "var(--font-display)",
-              fontSize: "20px",
-              fontWeight: 800,
-              letterSpacing: "var(--tracking-tight)",
-              color: "var(--color-ink)",
-            }}
-          >
-            Failure Forensics
-          </span>
-        </div>
-
-        {/* Navigation Tabs */}
-        <nav style={{ display: "flex", gap: "24px", fontFamily: "var(--font-mono)", fontSize: "12px" }}>
-          {[
-            { id: "home", label: "Overview" },
-            { id: "explorer", label: "Trace explorer" },
-            { id: "dag", label: "DAG graph and diff" },
-            { id: "analytics", label: "Eval and analytics" },
-          ].map((tab) => {
-            const isActive = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => onTabChange(tab.id as NavTab)}
-                style={{
-                  background: "none",
-                  border: "none",
-                  padding: "6px 0",
-                  cursor: "pointer",
-                  color: isActive ? "var(--color-ink)" : "var(--color-ink-3)",
-                  fontWeight: isActive ? 600 : 400,
-                  borderBottom: isActive ? "2px solid var(--color-copper)" : "2px solid transparent",
-                  letterSpacing: "0.04em",
-                }}
-              >
-                {tab.label}
-              </button>
-            );
-          })}
-        </nav>
-      </div>
-
-      {/* Right Controls */}
-      <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-        {/* Status Indicator */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "6px",
-            fontFamily: "var(--font-mono)",
-            fontSize: "11px",
-            color: backendOnline ? "var(--color-copper)" : "var(--color-cinnabar)",
-            padding: "4px 8px",
-            backgroundColor: backendOnline ? "var(--color-copper-tint)" : "var(--color-cinnabar-tint)",
-            borderRadius: "var(--radius-1)",
-            border: `1px solid ${backendOnline ? "var(--color-copper)" : "var(--color-cinnabar)"}`,
-          }}
-        >
-          {backendOnline ? (
-            <CheckCircle2 size={12} strokeWidth={2.5} />
-          ) : (
-            <AlertCircle size={12} strokeWidth={2.5} />
-          )}
-          <span>{backendOnline ? "API connected" : "Offline / local"}</span>
-        </div>
-
-        {/* API Key Input */}
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            const trimmed = keyDraft.trim();
-            // An empty submit clears the stored key. It used to `return` early,
-            // so a wrong key could never be removed without devtools.
-            if (trimmed) {
-              setApiKey(trimmed);
-            } else {
-              clearApiKey();
-            }
-            setKeyDraft("");
-            setKeySaved(true);
-            window.setTimeout(() => setKeySaved(false), 2000);
-            // Re-fetch so a newly valid key (or a cleared one) is reflected in
-            // the UI immediately instead of after a full page reload.
-            void onApiKeyChange();
-          }}
-          title="Stored in this browser only; sent as an Authorization header. Submit empty to clear."
-          style={{ display: "flex", gap: "6px", alignItems: "center" }}
-        >
-          <input
-            type="password"
-            value={keyDraft}
-            onChange={(event) => setKeyDraft(event.target.value)}
-            placeholder={keySaved ? "key saved" : "API key (ffk_…)"}
-            aria-label="API key"
-            autoComplete="off"
-            spellCheck={false}
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: "11px",
-              padding: "4px 8px",
-              width: "150px",
-              color: "var(--color-ink)",
-              backgroundColor: "var(--color-ground)",
-              border: "1px solid var(--color-rule-strong)",
-              borderRadius: "var(--radius-1)",
-            }}
-          />
+    <>
+      <header className="topbar">
+        <div className="topbar__left">
           <button
-            type="submit"
-            // Never disabled: submitting with an empty field is how a stored
-            // key is cleared.
-            style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: "11px",
-              padding: "4px 10px",
-              color: "var(--color-copper)",
-              backgroundColor: "transparent",
-              border: "1px solid var(--color-copper)",
-              borderRadius: "var(--radius-1)",
-              cursor: "pointer",
-            }}
+            className="icon-btn menu-btn"
+            onClick={() => setMenuOpen(true)}
+            aria-label="Open menu"
+            aria-expanded={menuOpen}
           >
-            {keySaved ? "SAVED" : keyDraft.trim() ? "SET KEY" : "CLEAR"}
+            <Menu size={18} />
           </button>
-        </form>
+          {brand}
+          <span className="scope">Local workspace</span>
+        </div>
 
-        {/* Run Demo Button */}
-        <button
-          onClick={onRunDemo}
-          disabled={isRunningDemo}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "6px",
-            fontFamily: "var(--font-mono)",
-            fontSize: "12px",
-            fontWeight: 600,
-            color: "var(--color-ground)",
-            backgroundColor: isRunningDemo ? "var(--color-ink-3)" : "var(--color-copper)",
-            border: `1px solid ${isRunningDemo ? "var(--color-ink-3)" : "var(--color-copper)"}`,
-            borderRadius: "var(--radius-1)",
-            padding: "7px 14px",
-            cursor: isRunningDemo ? "wait" : "pointer",
-          }}
-        >
-          <Play size={12} fill="currentColor" />
-          <span>{isRunningDemo ? "Running pipeline..." : "Run demo"}</span>
-        </button>
-      </div>
-    </header>
+        <div className="topbar__right">
+          {lastUpdated ? (
+            <span className="freshness">
+              Updated{" "}
+              {lastUpdated.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
+            </span>
+          ) : null}
+
+          <span className={`status${backendOnline ? "" : " is-offline"}`}>
+            <span className="status__dot" aria-hidden="true" />
+            <span className="status__text">{backendOnline ? "API connected" : "API offline"}</span>
+          </span>
+
+          <button
+            className="btn btn--ghost btn--sm"
+            onClick={() => setKeyOpen((open) => !open)}
+            aria-expanded={keyOpen}
+            aria-label="API key"
+          >
+            <KeyRound size={14} />
+            <span className="hide-sm">API key</span>
+          </button>
+
+          {keyOpen ? (
+            <>
+              <div
+                className="popover-backdrop"
+                onClick={() => setKeyOpen(false)}
+                aria-hidden="true"
+              />
+              <div className="popover" role="dialog" aria-label="API key">
+                <ApiKeyForm
+                  onSaved={async () => {
+                    await onApiKeyChange();
+                  }}
+                  autoFocus
+                />
+              </div>
+            </>
+          ) : null}
+        </div>
+      </header>
+
+      <aside className="sidebar">
+        {nav}
+        <div className="sidebar__foot">
+          <button className="btn btn--block" onClick={onRunDemo} disabled={isRunningDemo}>
+            {isRunningDemo ? (
+              <RefreshCw size={14} className="spin" />
+            ) : (
+              <Play size={13} fill="currentColor" />
+            )}
+            <span>{isRunningDemo ? "Running demo" : "Run demo"}</span>
+          </button>
+          <p className="sidebar__meta">
+            Pipeline v0.1 <a href="#/">About</a>
+          </p>
+        </div>
+      </aside>
+
+      {menuOpen ? (
+        <div className="menu-sheet" role="dialog" aria-modal="true" aria-label="Menu">
+          <div className="menu-sheet__head">
+            {brand}
+            <button
+              className="icon-btn"
+              onClick={() => setMenuOpen(false)}
+              aria-label="Close menu"
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          <div className="menu-nav">{nav}</div>
+
+          <div className="menu-sheet__foot">
+            <span className={`status${backendOnline ? "" : " is-offline"}`}>
+              <span className="status__dot" aria-hidden="true" />
+              <span>{backendOnline ? "API connected" : "API offline"}</span>
+            </span>
+
+            <ApiKeyForm
+              onSaved={async () => {
+                await onApiKeyChange();
+              }}
+            />
+
+            <button
+              className="btn btn--primary btn--block"
+              onClick={onRunDemo}
+              disabled={isRunningDemo}
+            >
+              {isRunningDemo ? (
+                <RefreshCw size={14} className="spin" />
+              ) : (
+                <Play size={13} fill="currentColor" />
+              )}
+              <span>{isRunningDemo ? "Running demo" : "Run demo"}</span>
+            </button>
+            <p className="sidebar__meta">
+              Pipeline v0.1 <a href="#/">About</a>
+            </p>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 };
