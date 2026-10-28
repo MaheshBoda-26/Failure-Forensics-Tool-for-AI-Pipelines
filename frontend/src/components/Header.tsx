@@ -211,9 +211,7 @@ export const Header: React.FC<HeaderProps> = ({
             )}
             <span>{isRunningDemo ? "Running demo" : "Run demo"}</span>
           </button>
-          <p className="sidebar__meta">
-            Pipeline v0.1 <a href="#/">About</a>
-          </p>
+          <p className="sidebar__meta">Pipeline v0.1</p>
         </div>
       </aside>
 
@@ -256,9 +254,7 @@ export const Header: React.FC<HeaderProps> = ({
               )}
               <span>{isRunningDemo ? "Running demo" : "Run demo"}</span>
             </button>
-            <p className="sidebar__meta">
-              Pipeline v0.1 <a href="#/">About</a>
-            </p>
+            <p className="sidebar__meta">Pipeline v0.1</p>
           </div>
         </div>
       ) : null}

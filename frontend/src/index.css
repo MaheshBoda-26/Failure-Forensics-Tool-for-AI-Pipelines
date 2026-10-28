@@ -343,16 +343,6 @@ a {
   text-align: center;
 }
 
-.sidebar__meta a {
-  color: var(--muted);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.sidebar__meta a:hover {
-  color: var(--text);
-}
-
 .main {
   grid-column: 2;
   grid-row: 2;

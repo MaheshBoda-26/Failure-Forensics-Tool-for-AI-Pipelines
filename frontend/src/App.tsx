@@ -4,7 +4,6 @@ import type { AnalyticsSnapshot, Diagnosis, EvalRun, Trace } from "./api/types";
 import { AnalyticsView } from "./components/AnalyticsView";
 import { GraphPage } from "./components/GraphPage";
 import { Header, NavTab } from "./components/Header";
-import { Landing } from "./components/Landing";
 import { Overview } from "./components/Overview";
 import { TraceExplorer } from "./components/TraceExplorer";
 import { isFailedTrace } from "./lib/trace";
@@ -16,30 +15,18 @@ const HASHES: Record<NavTab, string> = {
   analytics: "#/analytics",
 };
 
-type Route = NavTab | "landing";
-
-/**
- * `#/` is the landing page, `#/traces/<trace_id>` deep-links one trace. Keeping
- * the selection in the URL is what makes a mobile detail view survivable: a
- * reload or a shared link lands on the same trace.
- */
-function parseHash(): { route: Route; traceId: string | null } {
+function tabFromHash(): NavTab {
   const [segment, id] = window.location.hash.replace(/^#\/?/, "").split("/");
-  if (segment === "overview") return { route: "home", traceId: null };
-  if (segment === "traces") return { route: "explorer", traceId: id || null };
-  if (segment === "graph") return { route: "dag", traceId: null };
-  if (segment === "analytics") return { route: "analytics", traceId: null };
-  return { route: "landing", traceId: null };
+  if (segment === "traces") return "explorer";
+  if (segment === "graph") return "dag";
+  if (segment === "analytics") return "analytics";
+  return "home";
 }
 
-/** The workspace keeps its state across tab changes; the landing page does not. */
-const Workspace: React.FC = () => {
-  const initial = parseHash();
-  const [activeTab, setActiveTabState] = useState<NavTab>(
-    initial.route === "landing" ? "home" : initial.route,
-  );
+export const App: React.FC = () => {
+  const [activeTab, setActiveTabState] = useState<NavTab>(() => tabFromHash());
   const [traces, setTraces] = useState<Trace[]>([]);
-  const [selectedTraceId, setSelectedTraceId] = useState<string | null>(initial.traceId);
+  const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
   const [currentDiagnosis, setCurrentDiagnosis] = useState<Diagnosis | null>(null);
   const [analytics, setAnalytics] = useState<AnalyticsSnapshot | null>(null);
@@ -48,7 +35,7 @@ const Workspace: React.FC = () => {
   const [isRunningDemo, setIsRunningDemo] = useState<boolean>(false);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const [openSignal, setOpenSignal] = useState(initial.traceId ? 1 : 0);
+  const [openSignal, setOpenSignal] = useState(0);
 
   useEffect(() => {
     selectedIdRef.current = selectedTraceId;
@@ -73,11 +60,11 @@ const Workspace: React.FC = () => {
           nextSelected = null;
           setSelectedTraceId(null);
         } else {
-          // Prefer a failing trace that actually has spans: it is the product's
-          // job, and a fixture row with no spans is a poor first thing to open.
           const withSpans = list.filter((trace) => (trace.spans?.length ?? 0) > 0);
           const preferred =
-            withSpans.find((trace) => isFailedTrace(trace)) ?? withSpans[0] ?? list[0];
+            withSpans.find((trace) => isFailedTrace(trace)) ??
+            withSpans[0] ??
+            list[0];
           if (!nextSelected || !list.some((trace) => trace.trace_id === nextSelected)) {
             nextSelected = preferred.trace_id;
             setSelectedTraceId(nextSelected);
@@ -96,8 +83,6 @@ const Workspace: React.FC = () => {
         setEvalRuns(evalResult.value);
       }
 
-      // Re-fetch the diagnosis for the selected trace. Without this, confirming
-      // or overriding a diagnosis left the panel showing the stale verdict.
       if (nextSelected) {
         try {
           setCurrentDiagnosis(await api.getDiagnosis(nextSelected));
@@ -120,16 +105,26 @@ const Workspace: React.FC = () => {
 
   useEffect(() => {
     const onHash = () => {
-      const next = parseHash();
-      if (next.route === "landing") return;
-      setActiveTabState(next.route);
-      if (next.traceId) {
-        selectedIdRef.current = next.traceId;
-        setSelectedTraceId(next.traceId);
-        setOpenSignal((value) => value + 1);
+      const [segment, id] = window.location.hash.replace(/^#\/?/, "").split("/");
+      if (segment === "traces") {
+        setActiveTabState("explorer");
+        if (id) {
+          selectedIdRef.current = id;
+          setSelectedTraceId(id);
+          setOpenSignal((value) => value + 1);
+        }
+      } else if (segment === "graph") {
+        setActiveTabState("dag");
+      } else if (segment === "analytics") {
+        setActiveTabState("analytics");
+      } else {
+        setActiveTabState("home");
       }
     };
     window.addEventListener("hashchange", onHash);
+    if (!window.location.hash) {
+      window.history.replaceState(null, "", HASHES.home);
+    }
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
@@ -167,8 +162,6 @@ const Workspace: React.FC = () => {
   const selectTrace = (traceId: string) => {
     selectedIdRef.current = traceId;
     setSelectedTraceId(traceId);
-    // `replaceState`, not a push: clicking through a list should not bury the
-    // previous screen under thirty history entries.
     const next = `#/traces/${traceId}`;
     if (window.location.hash !== next) {
       window.history.replaceState(null, "", next);
@@ -257,20 +250,4 @@ const Workspace: React.FC = () => {
       </main>
     </div>
   );
-};
-
-export const App: React.FC = () => {
-  const [route, setRoute] = useState<Route>(() => parseHash().route);
-
-  useEffect(() => {
-    const onHash = () => setRoute(parseHash().route);
-    window.addEventListener("hashchange", onHash);
-    if (!window.location.hash) {
-      window.history.replaceState(null, "", "#/");
-    }
-    return () => window.removeEventListener("hashchange", onHash);
-  }, []);
-
-  if (route === "landing") return <Landing />;
-  return <Workspace />;
 };
