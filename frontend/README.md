@@ -22,29 +22,56 @@ npm run build
 frontend/
   src/
     api/         Typed client for FastAPI endpoints (client.ts, types.ts)
-    components/  TraceDetailView, DAGGraphView, TokenDiffView, TraceSpine, AnalyticsView, HonestyMatrix
-    pages/       TraceList, TraceDetail, Analytics
+    lib/trace.ts Step order, status rules, number/date formatting
+    components/
+      Header.tsx        Top bar, sidebar, mobile menu, API-key popover
+      Overview.tsx      KPIs, latest-failure spine, failures by stage, recent traces
+      TraceExplorer.tsx List + filters + detail pane (single pane under 900px)
+      TraceDetailView.tsx  Diagnosis, evidence, per-stage checks, stage payload
+      TraceSpine.tsx    Four-stage execution spine
+      GraphPage.tsx     Stage graph + output comparison
+      DAGGraphView.tsx  Stage cards and the first break
+      TokenDiffView.tsx Pass criteria against observed output
+      AnalyticsView.tsx Stage bars, correlation matrix, evals, models, spend
+      HonestyMatrix.tsx Guarantees and limits table
+      ui.tsx            Status pill, metric, section head, empty state, mark
+      Landing.tsx       Marketing page at `#/` (its own stylesheet, landing.css)
     main.tsx     Entry point
-    App.tsx      Root component with routing
+    App.tsx      Root router; the workspace lives beside it
 ```
+
+## Design
+
+One shell for every screen: a tinted frame holding the top bar and sidebar, and a
+white sheet inset from the right and bottom edges. Chrome is neutral; colour is
+reserved for data and status (teal for a passing check, cinnabar for the first
+break and its downstream, ochre for degraded). Type is IBM Plex Sans for text and
+IBM Plex Mono for IDs, payloads and tabular figures. Spacing runs on a 4px scale.
+
+Routes are hash-based and hold their state: `#/` (landing page), `#/overview`,
+`#/traces`, `#/traces/<trace_id>`, `#/graph`, `#/analytics`.
+
+The landing page (`src/components/Landing.tsx`, `src/landing.css`) is the front
+door: what the tool does, how the four stages are checked, the product screens,
+use cases, and the limits. Its screenshots live in `public/shots/` and are
+captured from this build.
 
 ## Features
 
-- **Trace List** — Table with trace ID, document, status, spans, latency
-- **Trace Detail** — Color-coded spans (🟢 pass, 🟡 tainted, 🔴 fail)
-- **DAG Graph** — Dynamic execution graph built from trace spans and diagnosis
-- **Evidence Chain** — Failed checks with per-step scores
-- **Token Diff** — Expected vs actual classification/entity grounding from real trace data
-- **Flag/Confirm/Override** — Creates Flag in SQLite, triggers analyzer, shows diagnosis
-- **Analytics** — Stage vulnerability map, regression table from real eval data
+- **Overview** — Pass rate, failure rate, mean time to root cause, open regressions, the latest failure's four-stage spine with the first break marked, failures by stage, recent traces, guarantees
+- **Trace List** — Searchable, filterable (all / failures / passing), newest first
+- **Trace Detail** — Colour-coded spine (pass, root cause, downstream tainted), evidence chain, per-stage checks, raw stage payload
+- **DAG Graph** — Stage cards with the failing link and downstream marked, zoom, selected-stage inspector
+- **Output comparison** — Pass criteria against the observed output for the failing stage
+- **Flag / Confirm / Override** — Writes a flag, triggers the analyzer, records a manual category
+- **Analytics** — Stage vulnerability bars, step × category correlation matrix, eval regressions, model table, spend and latency
 
 ## Tech Stack
 
 - React 19 + TypeScript
 - Vite 6 (dev server + build)
-- React Flow (DAG visualization)
 - Lucide React (icons)
-- CSS variables for theming
+- Plain CSS with tokens in `src/index.css`
 
 ## API Contract
 
