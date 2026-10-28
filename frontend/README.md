@@ -35,9 +35,8 @@ frontend/
       AnalyticsView.tsx Stage bars, correlation matrix, evals, models, spend
       HonestyMatrix.tsx Guarantees and limits table
       ui.tsx            Status pill, metric, section head, empty state, mark
-      Landing.tsx       Marketing page at `#/` (its own stylesheet, landing.css)
     main.tsx     Entry point
-    App.tsx      Root router; the workspace lives beside it
+    App.tsx      Root component: data loading, hash routing, URL state
 ```
 
 ## Design
@@ -50,11 +49,6 @@ IBM Plex Mono for IDs, payloads and tabular figures. Spacing runs on a 4px scale
 
 Routes are hash-based and hold their state: `#/` (landing page), `#/overview`,
 `#/traces`, `#/traces/<trace_id>`, `#/graph`, `#/analytics`.
-
-The landing page (`src/components/Landing.tsx`, `src/landing.css`) is the front
-door: what the tool does, how the four stages are checked, the product screens,
-use cases, and the limits. Its screenshots live in `public/shots/` and are
-captured from this build.
 
 ## Features
 
