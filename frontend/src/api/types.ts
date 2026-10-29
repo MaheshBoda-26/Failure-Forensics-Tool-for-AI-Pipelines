@@ -1,5 +1,12 @@
 export type TraceStatus = "success" | "failure" | "degraded";
 
+export type DocumentType =
+  | "contract"
+  | "invoice"
+  | "report"
+  | "correspondence"
+  | "mixed";
+
 export type FailureCategory =
   | "extraction_hallucination"
   | "misclassification"
@@ -67,6 +74,8 @@ export interface Trace {
    * output is wrong.
    */
   root_cause_step?: string | null;
+  /** Labelled or user-supplied ground-truth document type when known. */
+  expected_type?: DocumentType | null;
 }
 
 export interface StepScore {
@@ -209,4 +218,41 @@ export interface EvalResult {
   fixed: boolean;
   details: Record<string, unknown>;
   evaluated_at: string;
+}
+
+export interface PipelineRunRequest {
+  doc_id: string;
+  doc_text: string;
+  expected_type?: DocumentType | null;
+  priority?: number;
+}
+
+export interface PipelineRunResponse {
+  status: "completed" | "queued" | string;
+  trace_id?: string | null;
+  diagnosis_id?: string | null;
+  root_cause_step?: string | null;
+  job_id?: string | null;
+}
+
+export interface FaultBenchmarkRow {
+  fault: string;
+  expected_step: string;
+  expected_category: string;
+  traces: number;
+  unscoreable: number;
+  step_correct: number;
+  category_correct: number;
+}
+
+export interface FaultBenchmarkSummary {
+  baselines_scored: number;
+  baselines_skipped: number;
+  total_traces_checked: number;
+  baseline_traces: string[];
+  total: number;
+  unscoreable: number;
+  step_accuracy: number;
+  category_accuracy: number;
+  results: FaultBenchmarkRow[];
 }

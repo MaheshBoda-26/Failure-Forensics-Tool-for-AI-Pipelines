@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { api, setApiKey, clearApiKey, getApiKey } from "../client";
+import { api, setApiKey, clearApiKey } from "../client";
 
 const originalFetch = global.fetch;
 
@@ -160,6 +160,50 @@ describe("api client", () => {
 
     expect(global.fetch).toHaveBeenCalledWith(
       "/pipeline/run-demo",
+      expect.objectContaining({ method: "POST" })
+    );
+  });
+
+  it("runPipeline posts single document payload", async () => {
+    setApiKey("ffk_test");
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: "completed", trace_id: "t_custom_1" }),
+    });
+
+    const res = await api.runPipeline({
+      doc_id: "invoice_demo_1",
+      doc_text: "INVOICE #101 Total: $500.00",
+      expected_type: "invoice",
+    });
+
+    expect(res.trace_id).toBe("t_custom_1");
+    const [url, options] = (global.fetch as any).mock.calls[0];
+    expect(url).toBe("/pipeline/run");
+    expect(options.method).toBe("POST");
+    expect(JSON.parse(options.body)).toEqual({
+      doc_id: "invoice_demo_1",
+      doc_text: "INVOICE #101 Total: $500.00",
+      expected_type: "invoice",
+    });
+  });
+
+  it("runFaultBenchmark posts to /analytics/benchmark", async () => {
+    setApiKey("ffk_test");
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        baselines_scored: 10,
+        step_accuracy: 1.0,
+        category_accuracy: 1.0,
+        results: [],
+      }),
+    });
+
+    const res = await api.runFaultBenchmark();
+    expect(res.step_accuracy).toBe(1.0);
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/analytics/benchmark",
       expect.objectContaining({ method: "POST" })
     );
   });

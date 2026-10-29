@@ -1,4 +1,16 @@
-import { Trace, Diagnosis, AnalyticsSnapshot, EvalRun, EvalRunSummary, Flag, FailureCategory, EvalResult } from "./types";
+import {
+  Trace,
+  Diagnosis,
+  AnalyticsSnapshot,
+  EvalRun,
+  EvalRunSummary,
+  Flag,
+  FailureCategory,
+  EvalResult,
+  PipelineRunRequest,
+  PipelineRunResponse,
+  FaultBenchmarkSummary,
+} from "./types";
 
 const API_BASE = "";
 
@@ -96,6 +108,18 @@ export const api = {
     return handleResponse<AnalyticsSnapshot>(res);
   },
 
+  async getFaultBenchmark(): Promise<FaultBenchmarkSummary> {
+    const res = await apiFetch(`${API_BASE}/analytics/benchmark`);
+    return handleResponse<FaultBenchmarkSummary>(res);
+  },
+
+  async runFaultBenchmark(): Promise<FaultBenchmarkSummary> {
+    const res = await apiFetch(`${API_BASE}/analytics/benchmark`, {
+      method: "POST",
+    });
+    return handleResponse<FaultBenchmarkSummary>(res);
+  },
+
   async getEvalRuns(): Promise<EvalRun[]> {
     const res = await apiFetch(`${API_BASE}/eval/runs`);
     return handleResponse<EvalRun[]>(res);
@@ -111,6 +135,15 @@ export const api = {
       method: "POST",
     });
     return handleResponse<EvalRunSummary>(res);
+  },
+
+  async runPipeline(payload: PipelineRunRequest): Promise<PipelineRunResponse> {
+    const res = await apiFetch(`${API_BASE}/pipeline/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    return handleResponse<PipelineRunResponse>(res);
   },
 
   async runDemoPipeline(): Promise<{ status: string; traces_saved: number }> {
