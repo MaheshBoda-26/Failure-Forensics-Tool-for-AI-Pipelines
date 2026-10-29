@@ -40,6 +40,29 @@ CUSTOM_CHECK_NAMES = [
 #: deterministic instead of an import-order accident.
 PLUGIN_SPEC = ",".join(f"{__name__}:{name}" for name in CUSTOM_CHECK_NAMES)
 
+_KNOWN_DOC_TYPES = ("contract", "invoice", "report", "correspondence", "mixed")
+
+
+def _trace_doc_type(trace: Trace) -> str | None:
+    """Return the classified or prefix-inferred document type, or None if unknown."""
+    import json
+
+    for s in trace.spans:
+        if s.step_name == "classification":
+            try:
+                data = json.loads(s.output_json) if s.output_json else {}
+                dt = data.get("document_type")
+                if isinstance(dt, str) and dt in _KNOWN_DOC_TYPES:
+                    return dt
+            except (json.JSONDecodeError, TypeError):
+                pass
+    doc_id = (trace.document_id or "").lower()
+    for prefix in _KNOWN_DOC_TYPES:
+        if doc_id.startswith(prefix):
+            return prefix
+    return None
+
+
 # ============================================================================
 # PII Detection Checks
 # ============================================================================
@@ -85,7 +108,7 @@ def check_pii_in_summary(span: Span, trace: Trace, document_text: str) -> list[C
         if matches:
             results.append(
                 CheckResult(
-                    check_name="pii_in_summary",
+                    check_name="check_pii_in_summary",
                     passed=False,
                     evidence=(
                         f"PII detected in summary: {pii_type} found ({len(matches)} occurrence(s))"
@@ -96,7 +119,7 @@ def check_pii_in_summary(span: Span, trace: Trace, document_text: str) -> list[C
         else:
             results.append(
                 CheckResult(
-                    check_name="pii_in_summary",
+                    check_name="check_pii_in_summary",
                     passed=True,
                     evidence=f"No {pii_type} found in summary",
                     step_name=span.step_name,
@@ -149,7 +172,7 @@ def check_pii_in_extraction(span: Span, trace: Trace, document_text: str) -> lis
         if any(st in entity_type for st in sensitive_types):
             results.append(
                 CheckResult(
-                    check_name="pii_in_extraction",
+                    check_name="check_pii_in_extraction",
                     passed=False,
                     evidence=(
                         f"Sensitive entity type extracted: '{entity_type}' = "
@@ -162,7 +185,7 @@ def check_pii_in_extraction(span: Span, trace: Trace, document_text: str) -> lis
         elif re.search(r"\b(?:sk-|api_|key_)[A-Za-z0-9_-]{20,}\b", entity_value):
             results.append(
                 CheckResult(
-                    check_name="pii_in_extraction",
+                    check_name="check_pii_in_extraction",
                     passed=False,
                     evidence=f"API key pattern found in entity value: '{entity_value[:20]}...'",
                     step_name=span.step_name,
@@ -171,7 +194,7 @@ def check_pii_in_extraction(span: Span, trace: Trace, document_text: str) -> lis
         elif re.search(r"\b\d{3}-\d{2}-\d{4}\b", entity_value):
             results.append(
                 CheckResult(
-                    check_name="pii_in_extraction",
+                    check_name="check_pii_in_extraction",
                     passed=False,
                     evidence=f"SSN pattern found in entity value: '{entity_value}'",
                     step_name=span.step_name,
@@ -181,7 +204,7 @@ def check_pii_in_extraction(span: Span, trace: Trace, document_text: str) -> lis
     if not results:
         results.append(
             CheckResult(
-                check_name="pii_in_extraction",
+                check_name="check_pii_in_extraction",
                 passed=True,
                 evidence="No sensitive PII entities detected in extraction",
                 step_name=span.step_name,
@@ -259,7 +282,7 @@ def check_financial_amounts(span: Span, trace: Trace, document_text: str) -> lis
             except (InvalidOperation, ValueError):
                 results.append(
                     CheckResult(
-                        check_name="financial_amounts",
+                        check_name="check_financial_amounts",
                         passed=False,
                         evidence=(
                             f"Unparseable financial amount: '{value}' "
@@ -282,7 +305,7 @@ def check_financial_amounts(span: Span, trace: Trace, document_text: str) -> lis
             if abs(expected_total - actual_total) > Decimal("0.01"):
                 results.append(
                     CheckResult(
-                        check_name="financial_amounts",
+                        check_name="check_financial_amounts",
                         passed=False,
                         evidence=(
                             f"Financial inconsistency: subtotal+tax "
@@ -294,7 +317,7 @@ def check_financial_amounts(span: Span, trace: Trace, document_text: str) -> lis
             else:
                 results.append(
                     CheckResult(
-                        check_name="financial_amounts",
+                        check_name="check_financial_amounts",
                         passed=True,
                         evidence=(
                             f"Financial amounts consistent: subtotal+tax = total ({actual_total})"
@@ -310,7 +333,7 @@ def check_financial_amounts(span: Span, trace: Trace, document_text: str) -> lis
             if key in seen:
                 results.append(
                     CheckResult(
-                        check_name="financial_amounts",
+                        check_name="check_financial_amounts",
                         passed=False,
                         evidence=(
                             f"Duplicate amount with same label: {amount} "
@@ -324,7 +347,7 @@ def check_financial_amounts(span: Span, trace: Trace, document_text: str) -> lis
     if not any(not r.passed for r in results):
         results.append(
             CheckResult(
-                check_name="financial_amounts",
+                check_name="check_financial_amounts",
                 passed=True,
                 evidence=f"All {len(amounts)} financial amounts parsed successfully",
                 step_name=span.step_name,
@@ -366,6 +389,10 @@ def check_invoice_totals(span: Span, trace: Trace, document_text: str) -> list[C
     results: list[CheckResult] = []
 
     if span.step_name != "summarization":
+        return results
+
+    doc_type = _trace_doc_type(trace)
+    if doc_type is not None and doc_type != "invoice":
         return results
 
     # Find the invoice total from extraction
@@ -414,7 +441,7 @@ def check_invoice_totals(span: Span, trace: Trace, document_text: str) -> list[C
     if total_amount in _amounts_mentioned(searchable):
         results.append(
             CheckResult(
-                check_name="invoice_totals",
+                check_name="check_invoice_totals",
                 passed=True,
                 evidence=f"Invoice total ${total_amount} correctly referenced in summary",
                 step_name=span.step_name,
@@ -423,7 +450,7 @@ def check_invoice_totals(span: Span, trace: Trace, document_text: str) -> list[C
     else:
         results.append(
             CheckResult(
-                check_name="invoice_totals",
+                check_name="check_invoice_totals",
                 passed=False,
                 evidence=(
                     f"Invoice total ${total_amount} NOT found in summary "
@@ -455,6 +482,10 @@ def check_contract_parties(span: Span, trace: Trace, document_text: str) -> list
     if span.step_name != "extraction":
         return results
 
+    doc_type = _trace_doc_type(trace)
+    if doc_type is not None and doc_type != "contract":
+        return results
+
     try:
         output_data = json.loads(span.output_json) if span.output_json else {}
     except (json.JSONDecodeError, TypeError):
@@ -462,6 +493,8 @@ def check_contract_parties(span: Span, trace: Trace, document_text: str) -> list
 
     entities = output_data.get("entities", [])
     if not isinstance(entities, list):
+        return results
+    if doc_type is not None and not entities:
         return results
 
     parties = []
@@ -489,7 +522,7 @@ def check_contract_parties(span: Span, trace: Trace, document_text: str) -> list
     if len(unique_parties) >= 2:
         results.append(
             CheckResult(
-                check_name="contract_parties",
+                check_name="check_contract_parties",
                 passed=True,
                 evidence=(
                     f"Contract identifies {len(unique_parties)} parties: "
@@ -501,7 +534,7 @@ def check_contract_parties(span: Span, trace: Trace, document_text: str) -> list
     elif len(unique_parties) == 1:
         results.append(
             CheckResult(
-                check_name="contract_parties",
+                check_name="check_contract_parties",
                 passed=False,
                 evidence=(
                     f"Contract identifies only 1 party: "
@@ -513,7 +546,7 @@ def check_contract_parties(span: Span, trace: Trace, document_text: str) -> list
     else:
         results.append(
             CheckResult(
-                check_name="contract_parties",
+                check_name="check_contract_parties",
                 passed=False,
                 evidence="No parties identified in contract extraction",
                 step_name=span.step_name,
@@ -537,6 +570,10 @@ def check_contract_dates(span: Span, trace: Trace, document_text: str) -> list[C
     if span.step_name != "extraction":
         return results
 
+    doc_type = _trace_doc_type(trace)
+    if doc_type is not None and doc_type != "contract":
+        return results
+
     try:
         output_data = json.loads(span.output_json) if span.output_json else {}
     except (json.JSONDecodeError, TypeError):
@@ -544,6 +581,8 @@ def check_contract_dates(span: Span, trace: Trace, document_text: str) -> list[C
 
     entities = output_data.get("entities", [])
     if not isinstance(entities, list):
+        return results
+    if doc_type is not None and not entities:
         return results
 
     dates = {}
@@ -570,7 +609,7 @@ def check_contract_dates(span: Span, trace: Trace, document_text: str) -> list[C
     if "effective" in dates and "expiration" in dates:
         results.append(
             CheckResult(
-                check_name="contract_dates",
+                check_name="check_contract_dates",
                 passed=True,
                 evidence=(
                     f"Contract has both effective ({dates['effective']}) and "
@@ -583,7 +622,7 @@ def check_contract_dates(span: Span, trace: Trace, document_text: str) -> list[C
         missing = "expiration" if "effective" in dates else "effective"
         results.append(
             CheckResult(
-                check_name="contract_dates",
+                check_name="check_contract_dates",
                 passed=False,
                 evidence=f"Contract missing {missing} date (has {list(dates.keys())})",
                 step_name=span.step_name,
@@ -592,7 +631,7 @@ def check_contract_dates(span: Span, trace: Trace, document_text: str) -> list[C
     else:
         results.append(
             CheckResult(
-                check_name="contract_dates",
+                check_name="check_contract_dates",
                 passed=False,
                 evidence="No contract dates identified in extraction",
                 step_name=span.step_name,
@@ -623,12 +662,18 @@ def check_report_structure(span: Span, trace: Trace, document_text: str) -> list
     if span.step_name != "summarization":
         return results
 
+    doc_type = _trace_doc_type(trace)
+    if doc_type is not None and doc_type != "report":
+        return results
+
     try:
         output_data = json.loads(span.output_json) if span.output_json else {}
     except (json.JSONDecodeError, TypeError):
         return results
 
     summary = output_data.get("summary", "")
+    if doc_type is not None and summary.startswith("Dry run summary for "):
+        return results
     key_points = output_data.get("key_points", [])
     searchable = f"{summary} {' '.join(key_points) if isinstance(key_points, list) else ''}".lower()
 
@@ -642,7 +687,7 @@ def check_report_structure(span: Span, trace: Trace, document_text: str) -> list
         found = any(kw in searchable for kw in keywords)
         results.append(
             CheckResult(
-                check_name="report_structure",
+                check_name="check_report_structure",
                 passed=found,
                 evidence=f"Report {'includes' if found else 'MISSING'} {section} section",
                 step_name=span.step_name,
@@ -653,7 +698,7 @@ def check_report_structure(span: Span, trace: Trace, document_text: str) -> list
     has_exec_summary = any(kw in searchable for kw in ["executive summary", "overview", "summary"])
     results.append(
         CheckResult(
-            check_name="report_structure",
+            check_name="check_report_structure",
             passed=has_exec_summary,
             evidence=(
                 f"Report {'has' if has_exec_summary else 'missing'} executive summary/overview"
@@ -697,6 +742,10 @@ def check_correspondence_metadata(
     if span.step_name != "extraction":
         return results
 
+    doc_type = _trace_doc_type(trace)
+    if doc_type is not None and doc_type != "correspondence":
+        return results
+
     try:
         output_data = json.loads(span.output_json) if span.output_json else {}
     except (json.JSONDecodeError, TypeError):
@@ -704,6 +753,8 @@ def check_correspondence_metadata(
 
     entities = output_data.get("entities", [])
     if not isinstance(entities, list):
+        return results
+    if doc_type is not None and not entities:
         return results
 
     metadata = {
@@ -733,7 +784,7 @@ def check_correspondence_metadata(
     if not missing:
         results.append(
             CheckResult(
-                check_name="correspondence_metadata",
+                check_name="check_correspondence_metadata",
                 passed=True,
                 evidence=f"All correspondence metadata present: {', '.join(present)}",
                 step_name=span.step_name,
@@ -742,7 +793,7 @@ def check_correspondence_metadata(
     else:
         results.append(
             CheckResult(
-                check_name="correspondence_metadata",
+                check_name="check_correspondence_metadata",
                 passed=False,
                 evidence=(
                     f"Missing correspondence metadata: {', '.join(missing)} "
@@ -820,10 +871,13 @@ def check_mixed_consistency(span: Span, trace: Trace, document_text: str) -> lis
                 if any(ind in etype or ind in value for ind in indicators):
                     detected_types.add(dtype)
 
+    if not entities and _trace_doc_type(trace) is not None:
+        return results
+
     if len(detected_types) >= 2:
         results.append(
             CheckResult(
-                check_name="mixed_consistency",
+                check_name="check_mixed_consistency",
                 passed=True,
                 evidence=(
                     "Mixed classification consistent with content: detected "
@@ -835,7 +889,7 @@ def check_mixed_consistency(span: Span, trace: Trace, document_text: str) -> lis
     else:
         results.append(
             CheckResult(
-                check_name="mixed_consistency",
+                check_name="check_mixed_consistency",
                 passed=False,
                 evidence=(
                     "Mixed classification but content suggests single type: "

@@ -708,8 +708,8 @@
       "doc_type": "mixed",
       "should_fail": true,
       "failure_step": "summarization",
-      "failure_category": "propagation_error",
-      "notes": "Seeded failure: propagation_error at summarization"
+      "failure_category": "context_loss",
+      "notes": "Seeded failure: context_loss at summarization"
     },
     {
       "doc_id": "mixed_002",
@@ -863,9 +863,9 @@
       "doc_id": "mixed_028",
       "doc_type": "mixed",
       "should_fail": true,
-      "failure_step": "summarization",
-      "failure_category": "context_loss",
-      "notes": "Seeded failure: context_loss at summarization"
+      "failure_step": "classification",
+      "failure_category": "misclassification",
+      "notes": "Seeded failure: misclassification at classification"
     },
     {
       "doc_id": "mixed_029",
@@ -875,10 +875,7 @@
     {
       "doc_id": "mixed_030",
       "doc_type": "mixed",
-      "should_fail": true,
-      "failure_step": "summarization",
-      "failure_category": "propagation_error",
-      "notes": "Seeded failure: propagation_error at summarization"
+      "should_fail": false
     }
   ]
 }

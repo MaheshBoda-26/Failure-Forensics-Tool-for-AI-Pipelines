@@ -1,23 +1,23 @@
 PROPOSAL WITH CONTRACT TERMS
 
-PROPOSAL #PROP-2024-705
-Date: 2025-05-03
-Valid Until: 2025-06-02
+PROPOSAL #PROP-2024-579
+Date: 2023-03-16
+Valid Until: 2023-04-15
 
 PREPARED FOR:
-Summit Partners
+Apex Dynamics
 
 PREPARED BY:
-Vanguard Analytics
+Vertex Solutions
 
 EXECUTIVE SUMMARY
-Incident involving contractual service levels.
+Comprehensive proposal for strategic engagement.
 
 SCOPE OF WORK
 Full lifecycle services including design, implementation, and support.
 
 PRICING
-Total estimated investment: $57,500.30
+Total estimated investment: $88,495.00
 
 TERMS AND CONDITIONS
 1. This proposal constitutes an offer valid for 30 days.
@@ -27,7 +27,7 @@ TERMS AND CONDITIONS
 5. Confidentiality survives termination.
 
 ACCEPTANCE
-Summit Partners                              Vanguard Analytics
+Apex Dynamics                              Vertex Solutions
 _________________________              _________________________
-William Davis                          Jennifer Lee
-Date: 2025-05-03                           Date: 2025-05-03
+Christopher Moore                          Robert Taylor
+Date: 2023-03-16                           Date: 2023-03-16

@@ -500,14 +500,20 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                   <span />
                   <span className="spark-axis__labels">
                     <span>
-                      {new Date(costTrend[0].timestamp).toLocaleDateString(undefined, {
+                      {new Date(
+                        costTrend[0].timestamp.includes("T")
+                          ? costTrend[0].timestamp
+                          : `${costTrend[0].timestamp}T00:00:00`,
+                      ).toLocaleDateString(undefined, {
                         month: "short",
                         day: "numeric",
                       })}
                     </span>
                     <span>
                       {new Date(
-                        costTrend[costTrend.length - 1].timestamp,
+                        costTrend[costTrend.length - 1].timestamp.includes("T")
+                          ? costTrend[costTrend.length - 1].timestamp
+                          : `${costTrend[costTrend.length - 1].timestamp}T00:00:00`,
                       ).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
                     </span>
                   </span>

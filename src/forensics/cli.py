@@ -698,7 +698,9 @@ def _auth_manager() -> AuthManager:
     Always ensures the `default` tenant exists, so `--tenant default` works for a
     deployment that wants to put an API key in front of the data it already has.
     """
-    settings = get_settings()
+    from forensics.config import get_operational_settings
+
+    settings = get_operational_settings()
     manager = AuthManager(
         get_storage(),
         prefix=settings.auth_api_key_prefix,
@@ -1074,7 +1076,6 @@ def queue_reaper(
 
     Useful for manual recovery after a worker crash, or to test the reaper logic.
     """
-    _setup()
     from forensics.queue import get_queue
 
     reclaimed = get_queue().reclaim_stalled_jobs(stall_timeout=stall_timeout)

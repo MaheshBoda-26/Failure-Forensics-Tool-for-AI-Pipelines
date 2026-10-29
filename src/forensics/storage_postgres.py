@@ -455,11 +455,24 @@ class PostgresStorage(StorageBase):
                 """
             )
 
-            # Widening migrations for databases created before the column existed.
-            # `CREATE TABLE IF NOT EXISTS` is a no-op on an existing table, so a
-            # deployed instance would otherwise never gain `scopes`.
+            # Widening migrations for databases created before the columns existed.
+            # `CREATE TABLE IF NOT EXISTS` is a no-op on an existing table.
+            await conn.execute(
+                "ALTER TABLE diagnoses ADD COLUMN IF NOT EXISTS judge_analysis JSONB"
+            )
+            await conn.execute(
+                "ALTER TABLE diagnoses "
+                "ADD COLUMN IF NOT EXISTS analyzer_fallback BOOLEAN DEFAULT FALSE"
+            )
+            await conn.execute("ALTER TABLE diagnoses ADD COLUMN IF NOT EXISTS override_step TEXT")
+            await conn.execute(
+                "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ"
+            )
             await conn.execute(
                 "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scopes TEXT NOT NULL DEFAULT '*'"
+            )
+            await conn.execute(
+                "ALTER TABLE job_queue ADD COLUMN IF NOT EXISTS claim_expires_at TIMESTAMPTZ"
             )
 
             # Default tenant
@@ -484,13 +497,19 @@ class PostgresStorage(StorageBase):
         """
         from forensics.tracing import finalize_trace
 
-        finalize_trace(
-            trace,
-            traces_dir=self.traces_dir,
-            write_sqlite_index=False,
-        )
-
         async with self._conn() as conn:
+            existing = await conn.fetchrow(
+                "SELECT tenant_id FROM traces WHERE trace_id = $1", trace.trace_id
+            )
+            if existing is not None and existing["tenant_id"] != trace.tenant_id:
+                raise ValueError(f"trace_id {trace.trace_id!r} already belongs to another tenant")
+
+            finalize_trace(
+                trace,
+                traces_dir=self.traces_dir,
+                write_sqlite_index=False,
+            )
+
             await conn.execute(
                 """
                 INSERT INTO traces (
@@ -607,13 +626,12 @@ class PostgresStorage(StorageBase):
 
     async def _async_get_trace(self, trace_id: str, tenant_id: str | None = None) -> Trace | None:
         """Get a single trace by ID, optionally scoped to one tenant."""
-        if tenant_id is not None:
-            async with self._conn() as conn:
-                row = await conn.fetchrow(
-                    "SELECT tenant_id FROM traces WHERE trace_id = $1", trace_id
-                )
-            if row is None or row["tenant_id"] != tenant_id:
-                return None
+        async with self._conn() as conn:
+            row = await conn.fetchrow("SELECT tenant_id FROM traces WHERE trace_id = $1", trace_id)
+        if row is None:
+            return None
+        if tenant_id is not None and row["tenant_id"] != tenant_id:
+            return None
         return await self._async_load_trace(trace_id)
 
     async def _async_latest_root_cause_steps(
@@ -792,6 +810,7 @@ class PostgresStorage(StorageBase):
         override_category: str | None = None,
         override_reason: str | None = None,
         override_step: str | None = None,
+        tenant_id: str | None = None,
     ) -> None:
         """Update diagnosis confirmation status."""
         from forensics.pii import create_redactor_from_settings
@@ -801,21 +820,29 @@ class PostgresStorage(StorageBase):
             if redactor.enabled:
                 override_reason, _ = redactor.redact(override_reason)
 
+        sql = """
+            UPDATE diagnoses
+            SET confirmed = $1,
+                overridden = (overridden OR $2),
+                override_category = COALESCE($3, override_category),
+                override_reason = COALESCE($4, override_reason),
+                override_step = COALESCE($5, override_step)
+            WHERE diagnosis_id = $6
+        """
+        params: list[Any] = [
+            confirmed,
+            overridden,
+            override_category,
+            override_reason,
+            override_step,
+            diagnosis_id,
+        ]
+        if tenant_id is not None:
+            sql += " AND tenant_id = $7"
+            params.append(tenant_id)
+
         async with self._conn() as conn:
-            await conn.execute(
-                """
-                UPDATE diagnoses
-                SET confirmed = $1, overridden = $2, override_category = $3, override_reason = $4,
-                    override_step = COALESCE($5, override_step)
-                WHERE diagnosis_id = $6
-                """,
-                confirmed,
-                overridden,
-                override_category,
-                override_reason,
-                override_step,
-                diagnosis_id,
-            )
+            await conn.execute(sql, *params)
 
     # --- Eval Case operations ---
 
@@ -951,6 +978,7 @@ class PostgresStorage(StorageBase):
         passed_count: int | None = None,
         failed_count: int | None = None,
         total_cases: int | None = None,
+        tenant_id: str | None = None,
     ) -> None:
         """Update eval run completion status."""
         if completed_at is None:
@@ -973,8 +1001,13 @@ class PostgresStorage(StorageBase):
             params.append(failed_count)
             param_num += 1
 
+        where = f"WHERE run_id = ${param_num}"
         params.append(run_id)
-        sql = f"UPDATE eval_runs SET {', '.join(updates)} WHERE run_id = ${param_num}"
+        param_num += 1
+        if tenant_id is not None:
+            where += f" AND tenant_id = ${param_num}"
+            params.append(tenant_id)
+        sql = f"UPDATE eval_runs SET {', '.join(updates)} {where}"
         async with self._conn() as conn:
             await conn.execute(sql, *params)
 
@@ -1108,6 +1141,7 @@ class PostgresStorage(StorageBase):
         override_category: str | None = None,
         override_reason: str | None = None,
         override_step: str | None = None,
+        tenant_id: str | None = None,
     ) -> None:
         return self._run_coro(
             self._async_update_diagnosis_confirmation(
@@ -1117,6 +1151,7 @@ class PostgresStorage(StorageBase):
                 override_category,
                 override_reason,
                 override_step,
+                tenant_id,
             )
         )
 
@@ -1146,10 +1181,11 @@ class PostgresStorage(StorageBase):
         passed_count: int | None = None,
         failed_count: int | None = None,
         total_cases: int | None = None,
+        tenant_id: str | None = None,
     ) -> None:
         return self._run_coro(
             self._async_update_eval_run(
-                run_id, completed_at, passed_count, failed_count, total_cases
+                run_id, completed_at, passed_count, failed_count, total_cases, tenant_id
             )
         )
 

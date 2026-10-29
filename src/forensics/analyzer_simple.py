@@ -850,19 +850,43 @@ def find_root_cause(step_scores: list[StepScore]) -> tuple[str, FailureCategory,
             # `prompt_schema` first: an output we could not parse tells us nothing
             # about grounding, so any co-emitted content check is a downstream
             # symptom of the same malformed response, not an independent failure.
-            if "prompt_schema" in failed_checks:
+            failed_set = set(failed_checks)
+            if "prompt_schema" in failed_set or failed_set & {
+                "date_regex",
+                "check_pii_in_summary",
+                "pii_in_summary",
+                "check_pii_in_extraction",
+                "pii_in_extraction",
+            }:
                 category = FailureCategory.PROMPT_FAILURE
-            elif "date_regex" in failed_checks:
-                # A malformed date is a formatting contract violation, not a
-                # fabrication: the value may well be grounded in the source.
-                category = FailureCategory.PROMPT_FAILURE
-            elif "entity_grounding" in failed_checks:
+            elif failed_set & {
+                "entity_grounding",
+                "check_financial_amounts",
+                "financial_amounts",
+            }:
                 category = FailureCategory.EXTRACTION_HALLUCINATION
-            elif "label_enum" in failed_checks or "label_grounding" in failed_checks:
+            elif failed_set & {
+                "label_enum",
+                "label_grounding",
+                "check_mixed_consistency",
+                "mixed_consistency",
+            }:
                 category = FailureCategory.MISCLASSIFICATION
-            elif "context_preservation" in failed_checks:
+            elif failed_set & {
+                "context_preservation",
+                "check_invoice_totals",
+                "invoice_totals",
+                "check_contract_parties",
+                "contract_parties",
+                "check_contract_dates",
+                "contract_dates",
+                "check_report_structure",
+                "report_structure",
+                "check_correspondence_metadata",
+                "correspondence_metadata",
+            }:
                 category = FailureCategory.CONTEXT_LOSS
-            elif "propagation" in failed_checks:
+            elif "propagation" in failed_set:
                 category = FailureCategory.PROPAGATION_ERROR
             else:
                 category = FailureCategory.UNKNOWN
@@ -953,11 +977,24 @@ def analyze_trace(trace: Trace, document_text: str, expected_type: str | None = 
                 # `create_llm_client` is a coroutine returning a client, not an
                 # async context manager; entering it raised AttributeError, the
                 # bare `except` swallowed it, and the judge silently never ran.
+                from forensics.tracing import span_cost_usd
+
+                try:
+                    prior_run_cost = sum(span_cost_usd(s) for s in trace.spans)
+                except Exception:
+                    prior_run_cost = 0.0
                 async with using_llm_client() as client:
-                    return await client.judge_analyze(
-                        trace_data=trace.model_dump(mode="json"),
-                        document_text=document_text,
-                    )
+                    tracker = getattr(client, "spend_tracker", None)
+                    run_spend_var = getattr(tracker, "_run_spend", None)
+                    token = run_spend_var.set(prior_run_cost) if run_spend_var is not None else None
+                    try:
+                        return await client.judge_analyze(
+                            trace_data=trace.model_dump(mode="json"),
+                            document_text=document_text,
+                        )
+                    finally:
+                        if token is not None and run_spend_var is not None:
+                            run_spend_var.reset(token)
 
             import asyncio
 

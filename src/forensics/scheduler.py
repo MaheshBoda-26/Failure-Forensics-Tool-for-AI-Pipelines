@@ -31,7 +31,7 @@ from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from forensics.config import get_settings, validate_webhook_url
+from forensics.config import validate_webhook_url
 from forensics.eval_simple import run_eval
 from forensics.models import DEFAULT_TENANT_ID, EvalRun, Tenant
 from forensics.storage import get_storage
@@ -64,8 +64,10 @@ class EvalScheduler:
         storage: StorageBase,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        from forensics.config import get_operational_settings
+
         self.storage = storage
-        self.settings = get_settings()
+        self.settings = get_operational_settings()
         # `transport` is the seam that lets tests exercise the real httpx code
         # path (headers, signature, body) against `MockTransport` instead of a
         # live webhook.
@@ -353,7 +355,11 @@ class EvalScheduler:
         # at startup can resolve to 169.254.169.254 later (DNS rebinding), and
         # the stored setting is re-read on every run.
         try:
-            validate_webhook_url(url, dry_run=self.settings.dry_run)
+            validated_ips = validate_webhook_url(
+                url,
+                dry_run=self.settings.dry_run,
+                require_resolution=self.transport is None and not self.settings.dry_run,
+            )
         except ValueError:
             logger.exception("Refusing to send alert to an unsafe webhook URL")
             return False
@@ -376,7 +382,17 @@ class EvalScheduler:
             ).hexdigest()
             headers["X-Signature"] = f"sha256={signature}"
 
-        async with httpx.AsyncClient(timeout=10, transport=self.transport) as client:
+        # Disable redirects (`follow_redirects=False`) so a public webhook
+        # cannot 302-redirect the POST to a loopback or link-local metadata IP,
+        # and re-verify DNS resolution immediately after connecting when using
+        # the live network transport to close the DNS-rebinding TOCTOU window.
+        async with httpx.AsyncClient(
+            timeout=10, transport=self.transport, follow_redirects=False
+        ) as client:
+            if self.transport is None and not self.settings.dry_run:
+                after_ips = validate_webhook_url(url, dry_run=False, require_resolution=True)
+                if validated_ips and after_ips and not (set(validated_ips) & set(after_ips)):
+                    raise ValueError("DNS rebinding detected on ALERT_WEBHOOK_URL")
             response = await client.post(url, content=body, headers=headers)
             response.raise_for_status()
         return True

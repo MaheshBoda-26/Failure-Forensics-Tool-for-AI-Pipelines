@@ -117,6 +117,7 @@ class StorageBase(ABC):
         override_category: str | None = None,
         override_reason: str | None = None,
         override_step: str | None = None,
+        tenant_id: str | None = None,
     ) -> None:
         """Update diagnosis confirmation status."""
         ...
@@ -162,6 +163,7 @@ class StorageBase(ABC):
         passed_count: int | None = None,
         failed_count: int | None = None,
         total_cases: int | None = None,
+        tenant_id: str | None = None,
     ) -> None:
         """Update eval run completion status."""
         ...

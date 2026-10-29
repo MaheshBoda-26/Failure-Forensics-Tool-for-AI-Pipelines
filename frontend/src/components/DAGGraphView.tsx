@@ -13,6 +13,8 @@ export const DAGGraphView: React.FC<DAGGraphViewProps> = ({ trace, diagnosis }) 
   const [selectedNode, setSelectedNode] = useState<string>("intake");
   const [zoom, setZoom] = useState(1);
 
+  const effectiveRootStep = diagnosis?.override_step || diagnosis?.root_cause_step;
+
   const nodes = useMemo(() => {
     if (!trace.spans || trace.spans.length === 0) return [];
 
@@ -58,22 +60,22 @@ export const DAGGraphView: React.FC<DAGGraphViewProps> = ({ trace, diagnosis }) 
               : spanFailed
                 ? "Step raised an exception"
                 : "No checks",
-          isRoot: diagnosis?.root_cause_step === span.step_name,
+          isRoot: effectiveRootStep === span.step_name,
         };
       });
-  }, [trace, diagnosis]);
+  }, [trace, diagnosis, effectiveRootStep]);
 
   useEffect(() => {
     const preferred =
-      diagnosis?.root_cause_step && diagnosis.root_cause_step !== "none"
-        ? diagnosis.root_cause_step.toLowerCase()
+      effectiveRootStep && effectiveRootStep !== "none"
+        ? effectiveRootStep.toLowerCase()
         : nodes[0]?.id;
     if (preferred) setSelectedNode(preferred);
-  }, [trace.trace_id, diagnosis?.root_cause_step, nodes]);
+  }, [trace.trace_id, effectiveRootStep, nodes]);
 
   const selected = nodes.find((node) => node.id === selectedNode);
-  const failingIndex = diagnosis?.root_cause_step
-    ? stepIndex(diagnosis.root_cause_step)
+  const failingIndex = effectiveRootStep
+    ? stepIndex(effectiveRootStep)
     : -1;
 
   return (

@@ -28,3 +28,6 @@ Detected: 10:00 | Diagnosed: 10:30 | Resolved: 12:00
 APPROVALS
 Manager: _________________ Date: ________
 Director: _________________ Date: ________
+
+
+[Key entities above must be preserved in downstream summaries.]

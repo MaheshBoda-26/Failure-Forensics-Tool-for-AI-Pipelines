@@ -84,6 +84,7 @@ class Settings(BaseSettings):
         # them. Declaring the delimiter makes the nested spelling work too,
         # instead of being silently ignored.
         env_nested_delimiter="__",
+        populate_by_name=True,
         extra="ignore",
     )
 
@@ -594,6 +595,37 @@ def get_settings() -> Settings:
     return _settings
 
 
+def get_operational_settings() -> Settings:
+    """Return `get_settings()`, or a dry-run fallback when model env vars are unset.
+
+    Operational CLI commands (`auth`, `queue`, `scheduler-status`) and storage
+    helpers only need database paths, key prefixes, or TTLs and are explicitly
+    documented to work on machines without `NVIDIA_API_KEY` or model configs.
+    """
+    try:
+        return get_settings()
+    except Exception:
+
+        def _placeholder(mid: str, fam: str) -> ModelConfig:
+            return ModelConfig(
+                model_id=mid,
+                provider="nvidia",
+                family=fam,
+                price_in_per_1m=0.0,
+                price_out_per_1m=0.0,
+            )
+
+        return Settings(
+            _env_file=None,  # type: ignore[call-arg]
+            dry_run=True,
+            api_key=SecretStr("dry-run-operational"),
+            pipeline_model=_placeholder("operational/pipeline", "pipeline"),
+            pipeline_fallback_model=_placeholder("operational/fallback", "fallback"),
+            judge_model=_placeholder("operational/judge", "judge"),
+            cheap_model=_placeholder("operational/cheap", "cheap"),
+        )
+
+
 def reset_settings() -> None:
     """Reset the singleton (for testing)."""
     global _settings
@@ -658,7 +690,9 @@ def _resolved_addresses(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv
     return addresses
 
 
-def validate_webhook_url(url: str, *, dry_run: bool = False) -> None:
+def validate_webhook_url(
+    url: str, *, dry_run: bool = False, require_resolution: bool = False
+) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
     """Reject an alert webhook that could be used for SSRF.
 
     `ALERT_WEBHOOK_URL` is delivered by the server, not the browser, so pointing
@@ -668,6 +702,10 @@ def validate_webhook_url(url: str, *, dry_run: bool = False) -> None:
     `127.0.0.1.nip.io`, decimal/octal IP encodings, and internal DNS names
     through. Shared by startup validation and `send_alert` so the two cannot
     disagree.
+
+    When `require_resolution=True` (used right before a live network POST), a
+    hostname that fails DNS resolution is rejected so transient DNS errors or
+    rebinding cannot bypass validation.
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
@@ -679,15 +717,18 @@ def validate_webhook_url(url: str, *, dry_run: bool = False) -> None:
     if not host:
         raise ValueError("ALERT_WEBHOOK_URL must include a host")
     if dry_run:
-        return
+        return []
     if host in {"localhost", "metadata", "metadata.google.internal"}:
         raise ValueError(f"ALERT_WEBHOOK_URL host '{host}' is not allowed")
 
     addresses = _resolved_addresses(host)
     if not addresses:
-        return  # a normal DNS name that does not resolve (or is offline)
+        if require_resolution:
+            raise ValueError(f"ALERT_WEBHOOK_URL host '{host}' could not be resolved")
+        return []  # a normal DNS name that does not resolve (or is offline at startup)
     if any(_is_forbidden_address(address) for address in addresses):
         raise ValueError(f"ALERT_WEBHOOK_URL must not target a private/loopback address ({host})")
+    return addresses
 
 
 def _validate_alert_webhook(settings: Settings) -> None:

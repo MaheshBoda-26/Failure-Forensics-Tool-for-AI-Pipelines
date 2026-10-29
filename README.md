@@ -514,13 +514,13 @@ render.yaml, Procfile   deploy definitions
 This is a forensics tool, not a production monitoring platform. The significant
 gaps, all documented in [`docs/limitations.md`](docs/limitations.md):
 
-- A worker killed mid-job leaves that job `running`; there is no reaper.
-- SQLite allows one writer at a time (WAL makes readers concurrent).
+- Stalled jobs rely on worker heartbeats and periodic `forensics queue reaper` sweeps (`QUEUE_STALL_TIMEOUT`).
+- SQLite allows one writer at a time (WAL makes readers concurrent; use `DATABASE_URL` with PostgreSQL for multi-writer deployments).
 - Judge and propagation analysis are heuristics, not full dataflow analysis.
 - Prices default to `0.0` until real ones are configured, so cost reads zero.
-- No rate limiting, no key expiry, no scopes.
+- Rate limiting (`RATE_LIMIT_ENABLED`), key expiry (`AUTH_KEY_TTL_DAYS` / `--ttl`), and scopes (`read`, `write`, `*`) are opt-in and disabled by default in local dev mode.
 - Live model behavior is not exercised in CI.
-- The dataset is 15 documents: illustrative, not statistically meaningful.
+- The default demo dataset is 20 documents (`dataset_large/` provides 150 synthetic documents for larger benchmarks).
 
 ---
 

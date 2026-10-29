@@ -29,19 +29,19 @@ from forensics.storage_base import StorageBase
 
 
 def _default_traces_dir() -> Path:
-    from forensics.config import get_settings
+    from forensics.config import get_operational_settings
 
     try:
-        return get_settings().traces_dir
+        return get_operational_settings().traces_dir
     except Exception:
         return Path("data/traces")
 
 
 def _default_db_path() -> Path:
-    from forensics.config import get_settings
+    from forensics.config import get_operational_settings
 
     try:
-        return get_settings().db_path
+        return get_operational_settings().db_path
     except Exception:
         return Path("data/forensics.db")
 
@@ -265,6 +265,13 @@ class Storage(StorageBase):
         derived status and token/cost totals as one saved by the CLI. Writing
         JSON and SQLite directly would silently leave those fields at defaults.
         """
+        with self._conn() as conn:
+            existing = conn.execute(
+                "SELECT tenant_id FROM traces WHERE trace_id = ?", (trace.trace_id,)
+            ).fetchone()
+        if existing is not None and existing[0] != trace.tenant_id:
+            raise ValueError(f"trace_id {trace.trace_id!r} already belongs to another tenant")
+
         from forensics.tracing import finalize_trace
 
         finalize_trace(trace, traces_dir=self.traces_dir, db_path=self.db_path)
@@ -332,13 +339,14 @@ class Storage(StorageBase):
         because the index is the authority on ownership and a trace whose JSON
         file exists but whose index row is gone must not be served to anyone.
         """
-        if tenant_id is not None:
-            with self._conn() as conn:
-                row = conn.execute(
-                    "SELECT tenant_id FROM traces WHERE trace_id = ?", (trace_id,)
-                ).fetchone()
-            if row is None or row[0] != tenant_id:
-                return None
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT tenant_id FROM traces WHERE trace_id = ?", (trace_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        if tenant_id is not None and row[0] != tenant_id:
+            return None
         return self.load_trace(trace_id)
 
     def latest_root_cause_steps(
@@ -543,6 +551,7 @@ class Storage(StorageBase):
         override_category: str | None = None,
         override_reason: str | None = None,
         override_step: str | None = None,
+        tenant_id: str | None = None,
     ) -> None:
         """Update diagnosis confirmation status.
 
@@ -558,23 +567,29 @@ class Storage(StorageBase):
             if redactor.enabled:
                 override_reason, _ = redactor.redact(override_reason)
 
+        sql = """
+            UPDATE diagnoses
+            SET confirmed = ?,
+                overridden = CASE WHEN ? THEN 1 ELSE overridden END,
+                override_category = COALESCE(?, override_category),
+                override_reason = COALESCE(?, override_reason),
+                override_step = COALESCE(?, override_step)
+            WHERE diagnosis_id = ?
+        """
+        params: list[Any] = [
+            int(confirmed),
+            int(overridden),
+            override_category,
+            override_reason,
+            override_step,
+            diagnosis_id,
+        ]
+        if tenant_id is not None:
+            sql += " AND tenant_id = ?"
+            params.append(tenant_id)
+
         with self._conn() as conn:
-            conn.execute(
-                """
-                UPDATE diagnoses
-                SET confirmed = ?, overridden = ?, override_category = ?, override_reason = ?,
-                    override_step = COALESCE(?, override_step)
-                WHERE diagnosis_id = ?
-            """,
-                (
-                    int(confirmed),
-                    int(overridden),
-                    override_category,
-                    override_reason,
-                    override_step,
-                    diagnosis_id,
-                ),
-            )
+            conn.execute(sql, params)
 
     # --- Eval Case operations ---
 
@@ -736,6 +751,7 @@ class Storage(StorageBase):
         passed_count: int | None = None,
         failed_count: int | None = None,
         total_cases: int | None = None,
+        tenant_id: str | None = None,
     ) -> None:
         """Update eval run completion status."""
         if completed_at is None:
@@ -758,8 +774,12 @@ class Storage(StorageBase):
             if failed_count is not None:
                 updates.append("failed_count = ?")
                 params.append(failed_count)
+            where = "WHERE run_id = ?"
             params.append(run_id)
-            conn.execute(f"UPDATE eval_runs SET {', '.join(updates)} WHERE run_id = ?", params)
+            if tenant_id is not None:
+                where += " AND tenant_id = ?"
+                params.append(tenant_id)
+            conn.execute(f"UPDATE eval_runs SET {', '.join(updates)} {where}", params)
 
     @staticmethod
     def _load_eval_run_row(row: Any, cols: list[str]) -> EvalRun:

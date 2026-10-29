@@ -1,31 +1,33 @@
-SERVICE ORDER WITH INVOICE DETAILS
+PROPOSAL WITH CONTRACT TERMS
 
-Service Order #: SO-72590
-Date: 2024-09-21
-Customer: Quantum Leap Labs
-Provider: Stellar Communications
+PROPOSAL #PROP-2024-412
+Date: 2024-08-16
+Valid Until: 2024-09-15
 
-SERVICE DESCRIPTION
-Professional services engagement with deliverables.
+PREPARED FOR:
+Meridian Industries
 
-SCHEDULE
-Start: 2024-09-21
-End: 2024-12-20
-Milestones: M1: Design (Week 2), M2: Development (Week 6), M3: Testing (Week 10), M4: Deploy (Week 12)
+PREPARED BY:
+Apex Consulting Group
+
+EXECUTIVE SUMMARY
+Comprehensive proposal for strategic engagement.
+
+SCOPE OF WORK
+Full lifecycle services including design, implementation, and support.
 
 PRICING
-  Service 1: 11 hours @ $693/hr = $7623
-  Service 2: 4 hours @ $1803/hr = $7212
-  Service 3: 19 hours @ $1374/hr = $26106
-Subtotal: $40,941.00
-Tax: $4,094.10
-Total: $45,035.10
+Total estimated investment: $60,350.40
 
-BILLING
-Frequency: Monthly
-Method: Wire Transfer
-Terms: 50% upfront, 25% at milestone, 25% on completion
+TERMS AND CONDITIONS
+1. This proposal constitutes an offer valid for 30 days.
+2. Acceptance creates a binding agreement.
+3. Payment terms: 50% upfront, 25% at milestone, 25% on completion.
+4. Intellectual property transfers upon full payment.
+5. Confidentiality survives termination.
 
-AUTHORIZATION
-Customer: _________________ Date: ________
-Provider: _________________ Date: ________
+ACCEPTANCE
+Meridian Industries                              Apex Consulting Group
+_________________________              _________________________
+Christopher Moore                          Lisa Wang
+Date: 2024-08-16                           Date: 2024-08-16

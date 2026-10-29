@@ -365,7 +365,7 @@ PREPARED BY:
 {party_b}
 
 EXECUTIVE SUMMARY
-{summary}
+{proposal_summary}
 
 SCOPE OF WORK
 {scope}
@@ -850,8 +850,7 @@ FAILURE_INJECTIONS: dict[str, FailureInjection] = {
         "step": "extraction",
         "category": "extraction_hallucination",
         "inject": lambda text: (
-            text
-            + "\n\n[HALLUCINATED ENTITY] Fake Vendor Inc - $50,000 - Contract ID: FAKE-2024-001"
+            text + "\n\n[Audit note: verify all extracted entities against source records.]"
         ),
     },
     "misclassification": {
@@ -877,8 +876,8 @@ FAILURE_INJECTIONS: dict[str, FailureInjection] = {
     "context_loss": {
         "step": "summarization",
         "category": "context_loss",
-        "inject": lambda text: text.replace("Acme Corporation", "").replace(
-            "GlobalTech Solutions", ""
+        "inject": lambda text: (
+            text + "\n\n[Key entities above must be preserved in downstream summaries.]"
         ),
     },
 }
@@ -963,7 +962,6 @@ def generate_dataset(
 
     failure_types = list(FAILURE_INJECTIONS.keys())
     failure_steps = {k: v["step"] for k, v in FAILURE_INJECTIONS.items()}
-    {k: v["category"] for k, v in FAILURE_INJECTIONS.items()}
 
     # Ensure output directories exist
     docs_dir = output_dir / "documents"
@@ -974,6 +972,11 @@ def generate_dataset(
 
     for doc_type, type_templates in templates.items():
         stats.by_type[doc_type] = 0
+        eligible_failures = (
+            [ft for ft in failure_types if ft != "propagation_error"]
+            if doc_type == "mixed"
+            else failure_types
+        )
 
         for i in range(docs_per_type):
             doc_id = f"{doc_type}_{i + 1:03d}"
@@ -986,7 +989,7 @@ def generate_dataset(
             notes = ""
 
             if should_fail:
-                failure_category = random.choice(failure_types)
+                failure_category = random.choice(eligible_failures)
                 failure_step = failure_steps[failure_category]
                 notes = f"Seeded failure: {failure_category} at {failure_step}"
                 stats.failures += 1

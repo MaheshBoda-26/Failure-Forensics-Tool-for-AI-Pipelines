@@ -78,9 +78,10 @@ export const Overview: React.FC<OverviewProps> = ({
     };
   }, [focusId, lastUpdated]);
 
+  const effectiveFocusRoot = focusDiagnosis?.override_step || focusDiagnosis?.root_cause_step;
   const diagnosedRoot =
-    focusDiagnosis?.root_cause_step && focusDiagnosis.root_cause_step !== "none"
-      ? focusDiagnosis.root_cause_step
+    effectiveFocusRoot && effectiveFocusRoot !== "none"
+      ? effectiveFocusRoot
       : null;
   const traceRoot =
     focus?.root_cause_step && focus.root_cause_step !== "none" ? focus.root_cause_step : null;
@@ -101,14 +102,14 @@ export const Overview: React.FC<OverviewProps> = ({
       ? "No traces yet. Run the demo to load the 15-document dataset."
       : latestFailure
         ? `${totalTraces} traces in this workspace. Latest break: ${humanize(
-            focusDiagnosis?.category ?? latestFailure.root_cause_step,
+            focusDiagnosis?.override_category ?? focusDiagnosis?.category ?? latestFailure.root_cause_step,
           )} at ${stepLabel(latestFailure.root_cause_step)}, ${relativeTime(
             latestFailure.created_at,
           )}.`
         : `${totalTraces} traces in this workspace. No failure in the latest run.`;
 
   const verdict = hasFailure
-    ? `${humanize(focusDiagnosis?.category ?? rootStep ?? "failure")} at ${
+    ? `${humanize(focusDiagnosis?.override_category ?? focusDiagnosis?.category ?? rootStep ?? "failure")} at ${
         rootStep ? stepLabel(rootStep) : "an unidentified stage"
       }`
     : focus

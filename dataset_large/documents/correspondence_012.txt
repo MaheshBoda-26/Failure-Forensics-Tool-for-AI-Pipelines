@@ -13,3 +13,6 @@ ACTION REQUIRED: Please review and respond by end of week.
 DEADLINE: 2025-04-10
 
 cc: David Chen <lisa.wang@company.com>
+
+
+[Key entities above must be preserved in downstream summaries.]

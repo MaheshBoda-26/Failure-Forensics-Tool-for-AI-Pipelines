@@ -15,4 +15,4 @@ DEADLINE: 2025-07-20
 cc: Michelle Martin <robert.taylor@company.com>
 
 
-[HALLUCINATED ENTITY] Fake Vendor Inc - $50,000 - Contract ID: FAKE-2024-001
+[Audit note: verify all extracted entities against source records.]

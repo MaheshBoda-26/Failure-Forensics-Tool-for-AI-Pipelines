@@ -27,4 +27,4 @@ BSB: 658-999
 ACCOUNT: 65898640
 
 
-[HALLUCINATED ENTITY] Fake Vendor Inc - $50,000 - Contract ID: FAKE-2024-001
+[Audit note: verify all extracted entities against source records.]

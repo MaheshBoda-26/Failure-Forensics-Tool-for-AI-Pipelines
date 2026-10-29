@@ -520,7 +520,6 @@ def finalize_trace(
             trace.final_output = PipelineOutput.model_validate(dumped)
 
     traces_dir = traces_dir or _default_traces_dir()
-    write_trace_json(trace, traces_dir)
 
     # `db_path or _default_db_path()`: the SQLite index was previously skipped
     # whenever a caller omitted `db_path`, so the JSON file and the index
@@ -532,9 +531,17 @@ def finalize_trace(
     if write_sqlite_index:
         conn = init_db(db_path or _default_db_path())
         try:
+            existing = conn.execute(
+                "SELECT tenant_id FROM traces WHERE trace_id = ?", (trace.trace_id,)
+            ).fetchone()
+            if existing is not None and existing[0] != trace.tenant_id:
+                raise ValueError(f"trace_id {trace.trace_id!r} already belongs to another tenant")
+            write_trace_json(trace, traces_dir)
             write_trace_to_db(trace, conn)
         finally:
             conn.close()
+    else:
+        write_trace_json(trace, traces_dir)
 
     # Mirror to OTel if configured
     try:

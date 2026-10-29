@@ -980,3 +980,138 @@ def test_eval_case_not_fixed_when_the_reference_disagrees() -> None:
         prompt_version="v1",
     )
     assert _corrected_output_holds(case, trace) is False
+
+
+def test_unauthenticated_requests_do_not_drain_default_tenant_rate_limit(
+    tmp_path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """Unauthenticated 401 requests must not consume tokens from the default tenant bucket."""
+    from fastapi.testclient import TestClient
+
+    from forensics import api as api_module
+    from forensics.auth import AuthManager
+    from forensics.rate_limit import RateLimiter, reset_rate_limiter
+
+    monkeypatch.setenv("AUTH_ENABLED", "true")
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
+    monkeypatch.setenv("RATE_LIMIT_REQUESTS_PER_MINUTE", "1")
+    monkeypatch.setenv("RATE_LIMIT_BURST", "1")
+    reset_settings()
+    reset_rate_limiter()
+
+    storage = _storage(tmp_path)
+    auth = AuthManager(storage, rounds=4)
+    auth.ensure_default_tenant()
+    _, default_key = auth.create_api_key("default", name="default-key")
+    limiter = RateLimiter(db_path=tmp_path / "rl.sqlite")
+
+    monkeypatch.setattr(api_module, "_storage", storage)
+    monkeypatch.setattr(api_module, "_auth", auth)
+    monkeypatch.setattr("forensics.rate_limit._limiter", limiter)
+
+    client = TestClient(api_module.app)
+    for _ in range(5):
+        resp = client.get("/traces")
+        assert resp.status_code == 401
+
+    authed = client.get("/traces", headers={"Authorization": f"Bearer {default_key}"})
+    assert authed.status_code == 200
+    reset_rate_limiter()
+
+
+def test_confirming_diagnosis_preserves_existing_overrides(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Confirming an already-overridden diagnosis without re-sending override fields keeps them."""
+    storage = _storage(tmp_path)
+    trace = _trace()
+    storage.save_trace(trace)
+    diag = analyze_trace(trace, DOC)
+    storage.create_diagnosis(diag)
+
+    storage.update_diagnosis_confirmation(
+        diag.diagnosis_id,
+        confirmed=True,
+        overridden=True,
+        override_category="context_loss",
+        override_reason="Missed key clause",
+        override_step="summarization",
+    )
+    storage.update_diagnosis_confirmation(diag.diagnosis_id, confirmed=True)
+
+    reloaded = storage.get_diagnosis(diag.diagnosis_id)
+    assert reloaded is not None
+    assert reloaded.confirmed is True
+    assert reloaded.overridden is True
+    assert reloaded.override_category == FailureCategory.CONTEXT_LOSS
+    assert reloaded.override_reason == "Missed key clause"
+    assert reloaded.override_step == "summarization"
+
+
+def test_get_trace_requires_index_row_and_save_trace_guards_cross_tenant_collision(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    """Orphan JSON files are ignored by get_trace, and cross-tenant trace_id collisions raise."""
+    storage = _storage(tmp_path)
+    orphan = _trace()
+    orphan.trace_id = "orphan_1"
+    from forensics.tracing import write_trace_json
+
+    write_trace_json(orphan, storage.traces_dir)
+    assert storage.get_trace("orphan_1", tenant_id=None) is None
+
+    owned = _trace()
+    owned.trace_id = "shared_id"
+    owned.tenant_id = "tenant_a"
+    for s in owned.spans:
+        s.trace_id = "shared_id"
+        s.tenant_id = "tenant_a"
+    storage.save_trace(owned)
+
+    intruder = _trace()
+    intruder.trace_id = "shared_id"
+    intruder.tenant_id = "tenant_b"
+    for s in intruder.spans:
+        s.trace_id = "shared_id"
+        s.tenant_id = "tenant_b"
+    import pytest
+
+    with pytest.raises(ValueError, match="already belongs to another tenant"):
+        storage.save_trace(intruder)
+
+
+def test_reclaim_stalled_jobs_fails_exhausted_jobs_and_honors_stall_timeout(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    """Stalled jobs at max_attempts transition to failed instead of looping forever."""
+    from datetime import UTC, datetime, timedelta
+
+    from forensics.queue import JobQueue, JobStatus
+
+    q = JobQueue(db_path=tmp_path / "nested" / "dir" / "queue.sqlite")
+    j1 = q.enqueue("default", {"doc_id": "d1", "doc_text": "hello"}, max_attempts=1)
+    j2 = q.enqueue("default", {"doc_id": "d2", "doc_text": "world"}, max_attempts=3)
+    q.dequeue("w1", concurrency=2, stall_timeout=60)
+
+    past = (datetime.now(UTC) - timedelta(seconds=120)).isoformat()
+    with q._conn() as conn:
+        conn.execute("UPDATE job_queue SET claim_expires_at = ?", (past,))
+
+    reclaimed = q.reclaim_stalled_jobs(stall_timeout=60)
+    assert reclaimed == 2
+    job1_after = q.get_job(j1.job_id)
+    job2_after = q.get_job(j2.job_id)
+    assert job1_after is not None and job1_after.status == JobStatus.FAILED
+    assert job1_after.payload == {}
+    assert job2_after is not None and job2_after.status == JobStatus.PENDING
+
+
+def test_operational_settings_work_without_llm_env_vars(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """get_operational_settings succeeds even when NVIDIA_API_KEY is empty or invalid."""
+    from forensics.config import get_operational_settings
+
+    monkeypatch.setenv("NVIDIA_API_KEY", "")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("DRY_RUN", "false")
+    reset_settings()
+
+    op_settings = get_operational_settings()
+    assert op_settings.dry_run is True

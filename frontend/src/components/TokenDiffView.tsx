@@ -16,7 +16,7 @@ function parseJson(raw: string): unknown {
 }
 
 export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }) => {
-  const rootCauseStep = diagnosis?.root_cause_step;
+  const rootCauseStep = diagnosis?.override_step || diagnosis?.root_cause_step;
   const hasRootCause = !!rootCauseStep && rootCauseStep !== "none";
 
   const fallbackSpan = trace.spans?.[2] ?? trace.spans?.[0];

@@ -34,3 +34,6 @@ Appendix B: Methodology Details
 
 DISTRIBUTION: Executive Team, Department Heads
 CLASSIFICATION: Internal
+
+
+[Key entities above must be preserved in downstream summaries.]

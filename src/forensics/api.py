@@ -5,7 +5,10 @@ confirm or override a diagnosis, list eval cases, trigger and fetch eval runs
 and trend data, fetch analytics.
 """
 
+import asyncio
+import contextvars
 import json
+import math
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -98,32 +101,55 @@ _auth: AuthManager | None = None
 #: the same tenant rather than two invisible halves.
 DEFAULT_TENANT = Tenant(tenant_id=DEFAULT_TENANT_ID, name="default")
 
+#: Per-request auth cache populated by middleware so `get_current_tenant` does
+#: not repeat bcrypt verification and `touch_api_key` writes on the same request.
+_request_auth_cache: contextvars.ContextVar[tuple[str, APIKey | None, Tenant | None] | None] = (
+    contextvars.ContextVar("_request_auth_cache", default=None)
+)
 
-async def get_current_tenant_from_request(request: Request) -> Tenant | APIKey:
-    """Extract tenant from request without using Depends."""
-    from forensics.auth import AuthManager
-    from forensics.config import get_settings
-    from forensics.storage import get_storage
 
+async def get_current_tenant_from_request(request: Request) -> Tenant | APIKey | None:
+    """Extract and validate the calling tenant from `request`, caching the result.
+
+    Returns `None` when `AUTH_ENABLED=true` and the header is missing, the key
+    is invalid/revoked, or the owning tenant is inactive, so unauthenticated
+    requests never consume tokens from the shared `default` tenant bucket.
+    """
     settings = get_settings()
     if not settings.auth_enabled:
         return DEFAULT_TENANT
 
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
-        # Will be handled by the endpoint's own auth check
-        return DEFAULT_TENANT
+        request.state.auth_status = "missing"
+        request.state.auth_key = None
+        request.state.auth_tenant = None
+        _request_auth_cache.set(("missing", None, None))
+        return None
 
-    auth = AuthManager(
-        get_storage(),
-        prefix=settings.auth_api_key_prefix,
-        rounds=settings.auth_bcrypt_rounds,
-    )
-    api_key = auth.validate_api_key(auth_header[len("Bearer ") :].strip())
+    raw_key = auth_header[len("Bearer ") :].strip()
+    auth = get_auth()
+    api_key = await asyncio.to_thread(auth.validate_api_key, raw_key)
     if api_key is None:
-        return DEFAULT_TENANT
+        request.state.auth_status = "invalid"
+        request.state.auth_key = None
+        request.state.auth_tenant = None
+        _request_auth_cache.set(("invalid", None, None))
+        return None
 
-    return api_key
+    tenant = await asyncio.to_thread(auth.get_tenant, api_key.tenant_id)
+    if tenant is None:
+        request.state.auth_status = "inactive"
+        request.state.auth_key = api_key
+        request.state.auth_tenant = None
+        _request_auth_cache.set(("inactive", api_key, None))
+        return None
+
+    request.state.auth_status = "ok"
+    request.state.auth_key = api_key
+    request.state.auth_tenant = tenant
+    _request_auth_cache.set(("ok", api_key, tenant))
+    return tenant
 
 
 @app.middleware("http")
@@ -142,45 +168,54 @@ async def rate_limit_middleware(
         return await call_next(request)
 
     # Skip health check and static files
-    if request.url.path in ("/health", "/") or request.url.path.startswith("/static"):
+    if request.url.path in ("/health", "/") or request.url.path.startswith(("/static", "/assets")):
         return await call_next(request)
 
-    # Resolve tenant
-    tenant = await get_current_tenant_from_request(request)
+    token = _request_auth_cache.set(None)
+    try:
+        # Resolve tenant
+        tenant = await get_current_tenant_from_request(request)
 
-    # If no tenant (auth disabled), skip rate limiting
-    if tenant.tenant_id == DEFAULT_TENANT_ID and not settings.auth_enabled:
-        return await call_next(request)
+        # If unauthenticated / invalid key / inactive tenant, or auth is disabled,
+        # let the route handler respond without draining the `default` bucket.
+        if tenant is None or (tenant.tenant_id == DEFAULT_TENANT_ID and not settings.auth_enabled):
+            return await call_next(request)
 
-    # Apply rate limit
-    from forensics.rate_limit import get_rate_limiter
+        # Apply rate limit
+        from forensics.rate_limit import get_rate_limiter
 
-    limiter = get_rate_limiter()
-    success, retry_after = limiter.try_consume(tenant.tenant_id)
+        limiter = get_rate_limiter()
+        success, retry_after = limiter.try_consume(tenant.tenant_id)
 
-    if not success:
-        from fastapi.responses import JSONResponse
+        if not success:
+            from fastapi.responses import JSONResponse
 
+            bucket = limiter.get_bucket_state(tenant.tenant_id)
+            cap = float(bucket["capacity"])
+            tok = float(bucket["tokens"])
+            refill_rate = float(bucket.get("refill_rate_per_sec") or 0.0)
+            reset_seconds = (
+                math.ceil((cap - tok) / refill_rate) if refill_rate > 0 else int(retry_after) + 1
+            )
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Rate limit exceeded"},
+                headers={
+                    "Retry-After": str(int(retry_after) + 1),
+                    "X-RateLimit-Limit": str(int(cap)),
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Reset": str(max(int(reset_seconds), int(retry_after) + 1)),
+                },
+            )
+
+        response = await call_next(request)
+        # Add rate limit headers
         bucket = limiter.get_bucket_state(tenant.tenant_id)
-        cap = float(bucket["capacity"])
-        tok = float(bucket["tokens"])
-        return JSONResponse(
-            status_code=429,
-            content={"detail": "Rate limit exceeded"},
-            headers={
-                "Retry-After": str(int(retry_after) + 1),
-                "X-RateLimit-Limit": str(int(cap)),
-                "X-RateLimit-Remaining": "0",
-                "X-RateLimit-Reset": str(int(cap - tok) + int(retry_after)),
-            },
-        )
-
-    response = await call_next(request)
-    # Add rate limit headers
-    bucket = limiter.get_bucket_state(tenant.tenant_id)
-    response.headers["X-RateLimit-Limit"] = str(int(bucket["capacity"]))
-    response.headers["X-RateLimit-Remaining"] = str(int(bucket["tokens"]))
-    return response
+        response.headers["X-RateLimit-Limit"] = str(int(bucket["capacity"]))
+        response.headers["X-RateLimit-Remaining"] = str(int(bucket["tokens"]))
+        return response
+    finally:
+        _request_auth_cache.reset(token)
 
 
 def get_storage() -> StorageBase:
@@ -236,7 +271,7 @@ def get_current_tenant(
     If `request` is provided and the middleware already validated the key, the
     cached result is reused — one bcrypt + DB write per request instead of two.
     """
-    # Fast path: middleware already validated and cached the key
+    # Fast path 1: explicit request with middleware state
     if (
         request is not None
         and hasattr(request.state, "auth_key")
@@ -252,6 +287,26 @@ def get_current_tenant(
                 ),
             )
         return cast(Tenant, request.state.auth_tenant)
+
+    # Fast path 2: middleware already validated the key in this request context
+    cached = _request_auth_cache.get()
+    if cached is not None:
+        status, cached_key, cached_tenant = cached
+        if status == "missing":
+            raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+        if status == "invalid" or cached_key is None:
+            raise HTTPException(status_code=401, detail="Invalid or revoked API key")
+        if status == "inactive" or cached_tenant is None:
+            raise HTTPException(status_code=403, detail="Tenant not found or inactive")
+        if not cached_key.allows(scope):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"API key is missing the '{scope}' scope "
+                    f"(has: {', '.join(cached_key.scopes) or 'none'})"
+                ),
+            )
+        return cached_tenant
 
     # Slow path: direct call (tests, non-middleware paths) or no cached value
     if not get_settings().auth_enabled:
@@ -411,9 +466,9 @@ def get_diagnosis_endpoint(
     if not trace:
         raise HTTPException(status_code=404, detail="Trace not found")
     diag = get_storage().get_diagnosis_for_trace(trace_id, tenant_id=scope)
-    if diag:
-        return diag
-    return diagnose_trace(trace_id, authorization=authorization)
+    if not diag:
+        raise HTTPException(status_code=404, detail="Diagnosis not found")
+    return diag
 
 
 @app.post("/traces/{trace_id}/flag", response_model=Flag)
@@ -491,6 +546,7 @@ def confirm_diagnosis(
         override_category=override_category,
         override_reason=request.override_reason,
         override_step=request.override_step,
+        tenant_id=scope,
     )
 
     # Everything below reads the *updated* row. Passing the pre-update object
@@ -609,7 +665,7 @@ async def trigger_eval_run(
                     tenant_id=t.tenant_id,
                 )
                 storage.create_flag(flag)
-            storage.update_diagnosis_confirmation(diag.diagnosis_id, True)
+            storage.update_diagnosis_confirmation(diag.diagnosis_id, True, tenant_id=scope)
         create_eval_cases_from_confirmed_flags(scope)
 
     run = await run_eval(scope)
@@ -868,6 +924,18 @@ def get_analytics(tenant_id: str | None = None) -> AnalyticsSnapshot:
             model_span_totals[model] = model_span_totals.get(model, 0) + 1
             if root_cause_step is None or step != root_cause_step:
                 model_span_ok[model] = model_span_ok.get(model, 0) + 1
+
+        if (
+            diagnosis is not None
+            and diagnosis.judge_analysis is not None
+            and diagnosis.judge_analysis.cost_usd > 0
+        ):
+            judge_cost = diagnosis.judge_analysis.cost_usd
+            judge_model = diagnosis.judge_analysis.model_id or "unknown"
+            trace_cost += judge_cost
+            cost_by_model[judge_model] = cost_by_model.get(judge_model, 0.0) + judge_cost
+            cost_by_step["judge"] = cost_by_step.get("judge", 0.0) + judge_cost
+            model_cost_sums[judge_model] = model_cost_sums.get(judge_model, 0.0) + judge_cost
 
         total_cost_usd += trace_cost
         cost_by_date[trace_date] = cost_by_date.get(trace_date, 0.0) + trace_cost

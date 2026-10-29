@@ -22,9 +22,10 @@ export const TraceSpine: React.FC<TraceSpineProps> = ({
   selectedStep,
   onSelectStep,
 }) => {
+  const effectiveRoot = diagnosis?.override_step || diagnosis?.root_cause_step;
   const rootCause =
-    diagnosis?.root_cause_step && diagnosis.root_cause_step !== "none"
-      ? diagnosis.root_cause_step.toLowerCase()
+    effectiveRoot && effectiveRoot !== "none"
+      ? effectiveRoot.toLowerCase()
       : null;
   const rootIndex = stepIndex(rootCause);
 

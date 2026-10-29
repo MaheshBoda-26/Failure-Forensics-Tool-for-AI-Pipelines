@@ -106,7 +106,7 @@ New visualization sections added:
 - Correspondence metadata (sender, recipient, date, subject)
 - Mixed document consistency checking
 
-**Load with:** `CHECK_PLUGINS=forensics.custom_checks:register_custom_checks`
+**Load with:** `CHECK_PLUGINS=$(python -c "from forensics.custom_checks import PLUGIN_SPEC; print(PLUGIN_SPEC)")`
 
 ---
 
@@ -161,8 +161,8 @@ AUTH_KEY_TTL_DAYS=90
 # PostgreSQL Backend
 DATABASE_URL=postgresql://user:pass@host:port/dbname  # pragma: allowlist secret
 
-# Custom Checks
-CHECK_PLUGINS=forensics.custom_checks:register_custom_checks
+# Custom Checks (use forensics.custom_checks.PLUGIN_SPEC)
+CHECK_PLUGINS=forensics.custom_checks:check_pii_in_summary,forensics.custom_checks:check_pii_in_extraction,forensics.custom_checks:check_financial_amounts,forensics.custom_checks:check_invoice_totals,forensics.custom_checks:check_contract_parties,forensics.custom_checks:check_contract_dates,forensics.custom_checks:check_report_structure,forensics.custom_checks:check_correspondence_metadata,forensics.custom_checks:check_mixed_consistency
 ```
 
 ### New CLI Commands

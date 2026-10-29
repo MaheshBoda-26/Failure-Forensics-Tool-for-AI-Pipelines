@@ -85,14 +85,16 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
     return Array.from(names);
   }, [trace]);
 
+  const effectiveRootStep = diagnosis?.override_step || diagnosis?.root_cause_step;
+
   useEffect(() => {
-    const root = diagnosis?.root_cause_step;
+    const root = effectiveRootStep;
     if (root && root !== "none") {
       setSelectedStep(root.toLowerCase());
       return;
     }
     setSelectedStep((trace.spans?.[0]?.step_name ?? "intake").toLowerCase());
-  }, [trace.trace_id, diagnosis?.root_cause_step, trace.spans]);
+  }, [trace.trace_id, effectiveRootStep, trace.spans]);
 
   const notify = (text: string, error = false) => {
     setMessage(text);
@@ -115,11 +117,11 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
   const currentChecks = currentScore ? Object.keys(currentScore.deterministic_checks).length : 0;
   const isFailingStep =
     currentSpan?.status === "failure" ||
-    (diagnosis?.root_cause_step ?? "").toLowerCase() === selectedStep;
+    (effectiveRootStep ?? "").toLowerCase() === selectedStep;
 
   const rootStep =
-    diagnosis?.root_cause_step && diagnosis.root_cause_step !== "none"
-      ? diagnosis.root_cause_step
+    effectiveRootStep && effectiveRootStep !== "none"
+      ? effectiveRootStep
       : null;
   const hasRootCause = !!rootStep;
   const rootStage = stepIndex(rootStep);
@@ -170,6 +172,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
         true,
         next,
         "Manual override from the trace inspector",
+        selectedStep,
       );
       setShowOverrideMenu(false);
       notify(`Override saved: ${humanize(next)}.`);

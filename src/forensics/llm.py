@@ -1030,18 +1030,37 @@ class NIMClient:
             return DocumentType.MIXED
         return DocumentType.CONTRACT
 
+    @staticmethod
+    def _dataset_label_for(doc_id: str) -> dict[str, Any] | None:
+        """Look up `doc_id` in the configured dataset's `labels.json`, if any."""
+        try:
+            labels_path = get_settings().dataset_dir / "labels.json"
+            if not labels_path.exists():
+                return None
+            with open(labels_path) as f:
+                data = json.load(f)
+            for item in data.get("documents", []):
+                if isinstance(item, dict) and str(item.get("doc_id", "")).lower() == doc_id:
+                    return item
+        except Exception:
+            return None
+        return None
+
     def _dry_run_response(
         self, response_model: type[T], document_id: str, prompt: str
     ) -> BaseModel:
-        """Canned step output for `DRY_RUN`, keyed by document id.
+        """Canned step output for `DRY_RUN`, keyed by document id and `labels.json`.
 
-        Keying on `document_id` is what makes the five seeded failures
-        reproducible: the id is threaded from `Pipeline.run`, whereas the prompt
-        is not a reliable signal (the classification prompt has no document
-        text at all).
+        Keying on `document_id` (plus consulting `labels.json` when present) makes
+        seeded failures reproducible across both the 20-doc demo dataset and any
+        generated corpus such as `dataset_large/`.
         """
         doc_id = document_id.lower()
         doc_type = self._dry_run_document_type(doc_id, prompt)
+        label = self._dataset_label_for(doc_id)
+        label_cat = (
+            str(label.get("failure_category") or "") if label and label.get("should_fail") else ""
+        )
 
         if response_model == IntakeOutput:
             return IntakeOutput(
@@ -1049,26 +1068,78 @@ class NIMClient:
             )
 
         if response_model == ExtractionOutput:
-            seeded = _DRY_RUN_HALLUCINATED_ENTITIES.get(doc_id, [])
-            return ExtractionOutput(entities=[Entity(**entity) for entity in seeded])
+            seeded = _DRY_RUN_HALLUCINATED_ENTITIES.get(doc_id)
+            if seeded is not None:
+                return ExtractionOutput(entities=[Entity(**entity) for entity in seeded])
+            if label_cat == "extraction_hallucination":
+                return ExtractionOutput(
+                    entities=[
+                        Entity(
+                            value="Fake Vendor Inc",
+                            entity_type="organization",
+                            start_offset=0,
+                            end_offset=15,
+                        )
+                    ]
+                )
+            if label_cat == "context_loss":
+                # Extract a grounded phrase from the fenced document text so
+                # summarization's omission triggers `context_preservation`.
+                body = prompt
+                if DOCUMENT_OPEN in prompt and DOCUMENT_CLOSE in prompt:
+                    body = prompt.split(DOCUMENT_OPEN, 1)[1].split(DOCUMENT_CLOSE, 1)[0]
+                grounded = next(
+                    (
+                        line.strip()
+                        for line in body.splitlines()
+                        if len(line.strip()) >= 6 and not line.strip().startswith("[")
+                    ),
+                    "Acme Corporation",
+                )
+                return ExtractionOutput(
+                    entities=[
+                        Entity(
+                            value=grounded,
+                            entity_type="key_fact",
+                            start_offset=0,
+                            end_offset=len(grounded),
+                        )
+                    ]
+                )
+            return ExtractionOutput(entities=[])
 
         if response_model == ClassificationOutput:
             wrong = _DRY_RUN_MISCLASSIFY.get(doc_id)
             if wrong is not None:
-                # A seeded wrong answer; deliberately unsure confidence.
                 return ClassificationOutput(document_type=DocumentType(wrong), confidence=0.42)
+            if label_cat == "misclassification":
+                alt = (
+                    DocumentType.INVOICE
+                    if doc_type != DocumentType.INVOICE
+                    else DocumentType.CONTRACT
+                )
+                return ClassificationOutput(document_type=alt, confidence=0.42)
             return ClassificationOutput(document_type=doc_type, confidence=0.95)
 
         if response_model == SummaryOutput:
-            if doc_id in _DRY_RUN_SCHEMA_INVALID_SUMMARIZATION:
-                # A model that ignored the output contract and returned no
-                # usable summary. `model_construct` bypasses the `min_length=1`
-                # that made this seeded failure unrepresentable before.
+            if doc_id in _DRY_RUN_SCHEMA_INVALID_SUMMARIZATION or label_cat == "prompt_failure":
                 return SummaryOutput.model_construct(summary="", key_points=[], metadata={})
             override = _DRY_RUN_SUMMARY_OVERRIDES.get(doc_id)
-            return SummaryOutput(
-                summary=override or f"Dry run summary for {doc_type.value}", key_points=[]
-            )
+            if override is not None:
+                return SummaryOutput(summary=override, key_points=[])
+            if label_cat == "propagation_error":
+                mismatch_summary = (
+                    "The invoice total is $5000 per the contract terms."
+                    if doc_type != DocumentType.INVOICE
+                    else "The correspondence letter from the sender to the recipient was filed."
+                )
+                return SummaryOutput(summary=mismatch_summary, key_points=[])
+            if label_cat == "context_loss":
+                return SummaryOutput(
+                    summary=f"Brief overview of {doc_type.value} omitting extracted specifics.",
+                    key_points=[],
+                )
+            return SummaryOutput(summary=f"Dry run summary for {doc_type.value}", key_points=[])
 
         raise ValueError(f"Unknown response model: {response_model}")
 

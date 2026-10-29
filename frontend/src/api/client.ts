@@ -17,7 +17,7 @@ function clearApiKey(): void {
   localStorage.removeItem(API_KEY_STORAGE);
 }
 
-export { setApiKey, clearApiKey };
+export { getApiKey, setApiKey, clearApiKey };
 
 async function apiFetch(url: string, options: RequestInit = {}): Promise<Response> {
   const apiKey = getApiKey();
