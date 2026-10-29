@@ -1,7 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Play } from "lucide-react";
 import { api } from "../api/client";
-import type { AnalyticsSnapshot, EvalResult, EvalRun } from "../api/types";
+import type {
+  AnalyticsSnapshot,
+  EvalResult,
+  EvalRun,
+  FaultBenchmarkSummary,
+} from "../api/types";
 import {
   STEP_LABEL,
   STEP_ORDER,
@@ -41,6 +46,8 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   const [isRunningEval, setIsRunningEval] = useState(false);
   const [evalNotice, setEvalNotice] = useState<string | null>(null);
   const [evalResults, setEvalResults] = useState<EvalResult[]>([]);
+  const [benchmark, setBenchmark] = useState<FaultBenchmarkSummary | null>(null);
+  const [isRunningBenchmark, setIsRunningBenchmark] = useState(false);
 
   const handleRunEval = async () => {
     try {
@@ -65,6 +72,19 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     }
   };
 
+  const handleRunBenchmark = async () => {
+    try {
+      setIsRunningBenchmark(true);
+      const summary = await api.runFaultBenchmark();
+      setBenchmark(summary);
+    } catch (err: unknown) {
+      setEvalNotice(`Could not run fault benchmark: ${(err as Error).message}`);
+      window.setTimeout(() => setEvalNotice(null), 6000);
+    } finally {
+      setIsRunningBenchmark(false);
+    }
+  };
+
   useEffect(() => {
     const latestRun = evalRuns[0];
     if (!latestRun) {
@@ -76,6 +96,21 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       .then(setEvalResults)
       .catch(() => setEvalResults([]));
   }, [evalRuns]);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .getFaultBenchmark()
+      .then((res) => {
+        if (alive) setBenchmark(res);
+      })
+      .catch(() => {
+        if (alive) setBenchmark(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [analytics?.total_traces]);
 
   const totalTraces = analytics?.total_traces ?? 0;
   const passRate = analytics ? 1 - analytics.failure_rate : null;
@@ -152,6 +187,14 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
               {evalNotice}
             </span>
           ) : null}
+          <button
+            className="btn"
+            onClick={handleRunBenchmark}
+            disabled={isRunningBenchmark}
+          >
+            <Play size={13} fill="currentColor" />
+            {isRunningBenchmark ? "Scoring faults" : "Score fault injector"}
+          </button>
           <button
             className="btn btn--primary"
             onClick={handleRunEval}
@@ -283,6 +326,87 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
               </tbody>
             </table>
           </div>
+        </div>
+      </section>
+
+      <section className="section">
+        <SectionHead
+          title="Fault injection scorecard"
+          hint={
+            benchmark && benchmark.total > 0
+              ? `Step localization ${formatPct(benchmark.step_accuracy, 1)}, category accuracy ${formatPct(benchmark.category_accuracy, 1)} across ${benchmark.total} injected faults (${benchmark.baselines_scored} clean baselines).`
+              : "Synthetic corruptions injected into clean traces to verify analyzer localization."
+          }
+        />
+        <div className="panel">
+          {!benchmark || benchmark.results.length === 0 ? (
+            <div className="panel__body">
+              <Empty
+                action={
+                  <button
+                    className="btn btn--sm"
+                    onClick={handleRunBenchmark}
+                    disabled={isRunningBenchmark}
+                  >
+                    {isRunningBenchmark ? "Scoring" : "Score fault injector"}
+                  </button>
+                }
+              >
+                No eligible clean baseline traces yet. Run the demo first.
+              </Empty>
+            </div>
+          ) : (
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th scope="col">Injected fault</th>
+                    <th scope="col">Target stage</th>
+                    <th scope="col">Expected category</th>
+                    <th scope="col" className="num">
+                      Baselines
+                    </th>
+                    <th scope="col" className="num">
+                      Step localization
+                    </th>
+                    <th scope="col" className="num">
+                      Category match
+                    </th>
+                    <th scope="col">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {benchmark.results.map((row) => {
+                    const scoreable = row.traces > 0;
+                    const stepRate = scoreable ? row.step_correct / row.traces : null;
+                    const catRate = scoreable ? row.category_correct / row.traces : null;
+                    const perfect = stepRate === 1 && catRate === 1;
+                    return (
+                      <tr key={row.fault}>
+                        <td className="mono">{row.fault}</td>
+                        <td>{stepLabel(row.expected_step)}</td>
+                        <td>{humanize(row.expected_category)}</td>
+                        <td className="num">{row.traces}</td>
+                        <td className="num">
+                          {stepRate == null ? "n/a" : formatPct(stepRate, 0)}
+                        </td>
+                        <td className="num">
+                          {catRate == null ? "n/a" : formatPct(catRate, 0)}
+                        </td>
+                        <td>
+                          <StatusPill
+                            tone={!scoreable ? "neutral" : perfect ? "pass" : "fail"}
+                          >
+                            {!scoreable ? "Skipped" : perfect ? "Verified" : "Miss"}
+                          </StatusPill>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </section>
 

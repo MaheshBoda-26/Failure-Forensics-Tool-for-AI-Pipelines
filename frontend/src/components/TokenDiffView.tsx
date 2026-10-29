@@ -17,6 +17,7 @@ function parseJson(raw: string): unknown {
 
 export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }) => {
   const rootCauseStep = diagnosis?.override_step || diagnosis?.root_cause_step;
+  const effectiveCategory = diagnosis?.override_category || diagnosis?.category;
   const hasRootCause = !!rootCauseStep && rootCauseStep !== "none";
 
   const fallbackSpan = trace.spans?.[2] ?? trace.spans?.[0];
@@ -36,18 +37,28 @@ export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }
   const rootScore = diagnosis?.step_scores?.find(
     (score) => score.step_name === rootCauseStep,
   );
+  const classificationSpan = trace.spans?.find((span) => span.step_name === "classification");
+  const classifiedOutput = classificationSpan ? parseJson(classificationSpan.output_json) : null;
+  const observedDocType =
+    classifiedOutput &&
+    typeof classifiedOutput === "object" &&
+    "document_type" in classifiedOutput
+      ? String((classifiedOutput as Record<string, unknown>).document_type)
+      : null;
+
   const criteria = {
     document_id: trace.document_id,
+    expected_type: trace.expected_type ?? "not specified",
+    observed_type: observedDocType,
     step: rootCauseStep && rootCauseStep !== "none" ? rootCauseStep : null,
     checks: Object.keys(rootScore?.deterministic_checks ?? {}),
-    ground_truth: "not exposed",
   };
 
   const observed = hasRootCause
     ? {
         trace_id: trace.trace_id,
         step: rootCauseStep,
-        category: diagnosis?.category,
+        category: effectiveCategory,
         confidence: diagnosis?.confidence,
         input: inputJson,
         output: outputJson,
@@ -86,8 +97,11 @@ export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }
           <p className="diff__label">Pass criteria</p>
           <pre className="code">{JSON.stringify(criteria, null, 2)}</pre>
           <p className="diff__note">
-            The API does not expose a labelled ground truth for this document, so only the
-            stored checks are shown.
+            {trace.expected_type
+              ? `Ground-truth label: ${trace.expected_type}${
+                  observedDocType ? ` (classified as ${observedDocType})` : ""
+                }.`
+              : "No ground-truth label was provided for this document; deterministic checks still apply."}
           </p>
         </div>
 
@@ -98,7 +112,7 @@ export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }
           </pre>
           <p className={`diff__note${hasRootCause ? " is-fail" : ""}`}>
             {hasRootCause
-              ? `${humanize(diagnosis?.category)} at ${stepLabel(rootCauseStep)}, ${(
+              ? `${humanize(effectiveCategory)} at ${stepLabel(rootCauseStep)}, ${(
                   (diagnosis?.confidence ?? 0) * 100
                 ).toFixed(1)}% confidence.`
               : "No deterministic failure detected."}

@@ -1,6 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api/client";
-import type { AnalyticsSnapshot, Diagnosis, EvalRun, Trace } from "./api/types";
+import type {
+  AnalyticsSnapshot,
+  Diagnosis,
+  EvalRun,
+  PipelineRunRequest,
+  Trace,
+} from "./api/types";
 import { AnalyticsView } from "./components/AnalyticsView";
 import { GraphPage } from "./components/GraphPage";
 import { Header, NavTab } from "./components/Header";
@@ -16,7 +22,7 @@ const HASHES: Record<NavTab, string> = {
 };
 
 function tabFromHash(): NavTab {
-  const [segment, id] = window.location.hash.replace(/^#\/?/, "").split("/");
+  const [segment] = window.location.hash.replace(/^#\/?/, "").split("/");
   if (segment === "traces") return "explorer";
   if (segment === "graph") return "dag";
   if (segment === "analytics") return "analytics";
@@ -33,6 +39,7 @@ export const App: React.FC = () => {
   const [evalRuns, setEvalRuns] = useState<EvalRun[]>([]);
   const [backendOnline, setBackendOnline] = useState<boolean>(true);
   const [isRunningDemo, setIsRunningDemo] = useState<boolean>(false);
+  const [isRunningDocument, setIsRunningDocument] = useState<boolean>(false);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [openSignal, setOpenSignal] = useState(0);
@@ -187,6 +194,25 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleRunDocument = async (payload: PipelineRunRequest) => {
+    try {
+      setIsRunningDocument(true);
+      const res = await api.runPipeline(payload);
+      if (res.trace_id) {
+        selectedIdRef.current = res.trace_id;
+        setSelectedTraceId(res.trace_id);
+      }
+      await loadData();
+      if (res.trace_id) {
+        handleInspect(res.trace_id);
+      } else {
+        setActiveTab("explorer");
+      }
+    } finally {
+      setIsRunningDocument(false);
+    }
+  };
+
   return (
     <div className="app">
       <Header
@@ -195,6 +221,8 @@ export const App: React.FC = () => {
         backendOnline={backendOnline}
         onRunDemo={handleRunDemo}
         isRunningDemo={isRunningDemo}
+        onRunDocument={handleRunDocument}
+        isRunningDocument={isRunningDocument}
         onApiKeyChange={loadData}
         lastUpdated={lastUpdated}
       />

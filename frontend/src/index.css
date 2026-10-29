@@ -1966,6 +1966,35 @@ pre.code.is-fail {
   z-index: 60;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(23, 25, 28, 0.35);
+}
+
+.modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 81;
+  width: min(680px, calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sheet);
+  background: var(--surface);
+  transform: translate(-50%, -50%);
+}
+
+.textarea {
+  height: auto;
+  min-height: 140px;
+  padding: 10px 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
 .popover--menu {
   top: auto;
   right: auto;
