@@ -425,6 +425,21 @@ def scheduler_status(
     return {key: value for key, value in status.items() if key != "job_store"}
 
 
+def _resolve_expected_type(trace: Trace) -> DocumentType | None:
+    """Return the trace's ground-truth DocumentType if stored or in labels.json."""
+    if trace.expected_type is not None:
+        return trace.expected_type
+    from forensics.eval_simple import document_ground_truth
+
+    raw = document_ground_truth(trace.document_id)
+    if not raw:
+        return None
+    try:
+        return DocumentType(raw)
+    except ValueError:
+        return None
+
+
 @app.get("/traces", response_model=list[Trace])
 def list_traces(
     status: TraceStatus | None = None,
@@ -444,6 +459,7 @@ def list_traces(
     verdicts = storage.latest_root_cause_steps([t.trace_id for t in traces], tenant_id=scope)
     for trace in traces:
         trace.root_cause_step = verdicts.get(trace.trace_id)
+        trace.expected_type = _resolve_expected_type(trace)
     return traces
 
 
@@ -453,6 +469,7 @@ def get_trace(trace_id: str, authorization: Annotated[str | None, Header()] = No
     trace = get_storage().get_trace(trace_id, tenant_id=tenant_scope(tenant))
     if not trace:
         raise HTTPException(status_code=404, detail="Trace not found")
+    trace.expected_type = _resolve_expected_type(trace)
     return trace
 
 
@@ -509,12 +526,10 @@ def diagnose_trace(
     if not doc_text:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    # Ground-truth type, when the document has a label, so misclassification is
-    # observable rather than assumed away. One loader serves the CLI, the eval
-    # loop, and this endpoint.
-    from forensics.eval_simple import document_ground_truth
-
-    diagnosis = analyze_trace(trace, doc_text, document_ground_truth(trace.document_id))
+    # Ground-truth type, when the document has a label or user-supplied type, so
+    # misclassification is observable rather than assumed away.
+    expected = _resolve_expected_type(trace)
+    diagnosis = analyze_trace(trace, doc_text, expected.value if expected else None)
     # `analyze_trace` cannot know who called it; the tenant is assigned by the
     # layer that does.
     diagnosis.tenant_id = tenant.tenant_id
@@ -736,6 +751,11 @@ async def trigger_pipeline_demo(
                     # Diagnose before persisting: `save_trace` redacts the trace
                     # in place, and grounding a redacted entity always fails.
                     expected_type = doc_info.get("doc_type")
+                    if expected_type:
+                        import contextlib
+
+                        with contextlib.suppress(ValueError):
+                            ctx.trace.expected_type = DocumentType(expected_type)
                     diag = analyze_trace(ctx.trace, doc_text, expected_type)
                     diag.tenant_id = tenant.tenant_id
                     storage.save_trace(ctx.trace)
@@ -822,6 +842,72 @@ def get_analytics_endpoint(
     """Authenticated route; the aggregation itself lives in `get_analytics`."""
     tenant = get_current_tenant(authorization)
     return get_analytics(tenant_scope(tenant))
+
+
+@app.get("/analytics/benchmark")
+@app.post("/analytics/benchmark")
+def get_benchmark_endpoint(
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    """Run the fault-injection benchmark across eligible clean traces for this tenant."""
+    tenant = get_current_tenant(authorization)
+    return get_fault_benchmark(tenant_scope(tenant))
+
+
+def get_fault_benchmark(tenant_id: str | None = None) -> dict[str, object]:
+    """Score all 7 deterministic faults across every eligible clean trace."""
+    from forensics.cli import _aggregate_fault_scorecards
+    from forensics.faults import score_all_faults
+
+    storage = get_storage()
+    traces = storage.list_traces(limit=50, tenant_id=tenant_id)
+
+    def _classified_type(trace: Trace) -> str | None:
+        for span in trace.spans:
+            if span.step_name != "classification":
+                continue
+            try:
+                data = json.loads(span.output_json) if span.output_json else {}
+            except json.JSONDecodeError:
+                return None
+            value = data.get("document_type")
+            return str(value) if value is not None else None
+        return None
+
+    baselines: list[tuple[Trace, str, str | None]] = []
+    skipped = 0
+    for trace in sorted(traces, key=lambda t: t.trace_id):
+        diagnosis = storage.get_diagnosis_for_trace(trace.trace_id, tenant_id=tenant_id)
+        effective_root = (
+            (diagnosis.override_step or diagnosis.root_cause_step) if diagnosis else None
+        )
+        is_clean = effective_root in (None, "", "none")
+        if not is_clean or _classified_type(trace) in (None, "", "mixed"):
+            skipped += 1
+            continue
+        doc_text = resolve_document_text(trace)
+        if not doc_text:
+            skipped += 1
+            continue
+        expected = _resolve_expected_type(trace)
+        baselines.append((trace, doc_text, expected.value if expected else None))
+
+    scorecards = [
+        score_all_faults(trace, doc_text, expected_type)
+        for trace, doc_text, expected_type in baselines
+    ]
+    aggregate = _aggregate_fault_scorecards(scorecards)
+    return {
+        "baselines_scored": len(baselines),
+        "baselines_skipped": skipped,
+        "total_traces_checked": len(traces),
+        "baseline_traces": [f"{t.trace_id}/{t.document_id}" for t, _, _ in baselines],
+        "total": aggregate["total"],
+        "unscoreable": aggregate["unscoreable"],
+        "step_accuracy": aggregate["step_accuracy"],
+        "category_accuracy": aggregate["category_accuracy"],
+        "results": aggregate["results"],
+    }
 
 
 def get_analytics(tenant_id: str | None = None) -> AnalyticsSnapshot:

@@ -1080,3 +1080,68 @@ async def test_run_eval_returns_none_when_a_tenant_has_no_cases(
 
     assert await run_eval(tenant_id="empty") is None
     assert storage.list_eval_runs(tenant_id="empty") == []
+
+
+def test_trace_endpoints_expose_expected_type_from_labels_and_custom_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GET /traces and GET /traces/{id} expose ground-truth expected_type."""
+    from forensics import api
+
+    st = Storage(traces_dir=tmp_path / "traces", db_path=tmp_path / "db.sqlite")
+    monkeypatch.setattr(api, "_storage", st)
+
+    trace = _clean_trace()
+    trace.trace_id = "trace_gt_label"
+    trace.document_id = "contract_001"
+    for span in trace.spans:
+        span.trace_id = trace.trace_id
+    st.save_trace(trace)
+
+    custom = _clean_trace()
+    custom.trace_id = "trace_gt_custom"
+    custom.document_id = "custom_upload_01"
+    custom.expected_type = DocumentType.INVOICE
+    for span in custom.spans:
+        span.trace_id = custom.trace_id
+    st.save_trace(custom)
+
+    res_label = api.get_trace("trace_gt_label")
+    assert res_label.expected_type is DocumentType.CONTRACT
+
+    res_custom = api.get_trace("trace_gt_custom")
+    assert res_custom.expected_type is DocumentType.INVOICE
+
+    listed = {row.trace_id: row.expected_type for row in api.list_traces()}
+    assert listed["trace_gt_label"] is DocumentType.CONTRACT
+    assert listed["trace_gt_custom"] is DocumentType.INVOICE
+
+
+def test_analytics_benchmark_endpoint_scores_clean_baselines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """/analytics/benchmark runs all 7 deterministic faults against eligible clean traces."""
+    from forensics import api
+
+    st = Storage(traces_dir=tmp_path / "traces", db_path=tmp_path / "db.sqlite")
+    monkeypatch.setattr(api, "_storage", st)
+
+    trace = _clean_trace()
+    trace.trace_id = "trace_bench_01"
+    trace.document_id = "custom_clean_contract"
+    trace.expected_type = DocumentType.CONTRACT
+    for span in trace.spans:
+        span.trace_id = trace.trace_id
+    st.save_trace(trace)
+
+    body = api.get_benchmark_endpoint()
+    assert body["baselines_scored"] == 1
+    assert cast_int(body["total"]) == 7
+    assert body["step_accuracy"] == 1.0
+    assert body["category_accuracy"] == 1.0
+    assert len(body["results"]) == 7  # type: ignore[arg-type]
+
+
+def cast_int(value: object) -> int:
+    assert isinstance(value, int)
+    return value

@@ -241,6 +241,12 @@ class Trace(VersionedModel, TenantScoped):
         default=None,
         description="Root cause from the latest diagnosis, when one exists",
     )
+    #: Ground-truth document type (from dataset labels or user-supplied on a
+    #: custom run), exposed so the UI and re-diagnosis know the expected type.
+    expected_type: DocumentType | None = Field(
+        default=None,
+        description="Ground-truth document type when known",
+    )
 
 
 class StepScore(BaseModel):

@@ -90,7 +90,15 @@ async def process_document(
     # Off the event loop: the analyzer does O(N·M) fuzzy matching per entity and,
     # with JUDGE_ENABLED, blocks on a thread-pool future. Running it inline
     # stalled every other task in the worker's `asyncio.gather` batch.
-    diagnosis = await asyncio.to_thread(analyze_trace, trace, doc_text, expected_type)
+    from forensics.eval_simple import document_ground_truth
+    from forensics.models import DocumentType
+
+    resolved_expected = expected_type or document_ground_truth(doc_id)
+    if resolved_expected:
+        with contextlib.suppress(ValueError):
+            trace.expected_type = DocumentType(resolved_expected)
+
+    diagnosis = await asyncio.to_thread(analyze_trace, trace, doc_text, resolved_expected)
     diagnosis.tenant_id = tenant_id
     storage.save_trace(trace)
     storage.create_diagnosis(diagnosis)

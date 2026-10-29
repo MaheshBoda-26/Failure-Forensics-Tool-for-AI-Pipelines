@@ -386,12 +386,15 @@ async def _evaluate_cases(
         # Re-run against the document the case came from and judge against its
         # label, so a misclassification case is scored by the label-grounding
         # check rather than silently skipped.
+        resolved_expected = (
+            trace.expected_type.value if trace.expected_type else None
+        ) or document_ground_truth(trace.document_id)
         result = await run_eval_case(
             case,
             pipeline,
             doc_text,
             document_id=trace.document_id,
-            expected_type=document_ground_truth(trace.document_id),
+            expected_type=resolved_expected,
         )
         result.run_id = run.run_id
 

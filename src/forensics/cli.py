@@ -5,6 +5,7 @@ analyze, eval, analytics, validate-dataset, demo. Exposed as the `forensics`
 console script and as `python -m forensics.cli`.
 """
 
+import contextlib
 import json
 import sys
 import threading
@@ -130,8 +131,12 @@ def seed() -> None:
             failed += 1
             continue
 
+        expected_gt = document_ground_truth(trace.document_id)
+        if expected_gt and trace.expected_type is None:
+            with contextlib.suppress(ValueError):
+                trace.expected_type = DocumentType(expected_gt)
         storage.save_trace(trace)
-        diagnosis = analyze_trace(trace, document_text, document_ground_truth(trace.document_id))
+        diagnosis = analyze_trace(trace, document_text, expected_gt)
         storage.create_diagnosis(diagnosis)
         seeded += 1
         typer.secho(
@@ -183,6 +188,9 @@ def run(doc_path: Path) -> None:
                 assert ctx.trace is not None
                 # Diagnose the unredacted trace, then persist (save_trace redacts
                 # in place when PII_REDACTION_ENABLED is on).
+                if expected_type:
+                    with contextlib.suppress(ValueError):
+                        ctx.trace.expected_type = DocumentType(expected_type)
                 diagnosis = analyze_trace(ctx.trace, doc.content, expected_type)
                 json_path = storage.save_trace(ctx.trace)
 
@@ -349,6 +357,9 @@ def demo() -> None:
                 # Analyze before `save_trace` redacts the trace in place (PII
                 # redaction), or every extracted entity grounds against a
                 # span that no longer contains it.
+                if expected_type:
+                    with contextlib.suppress(ValueError):
+                        ctx.trace.expected_type = DocumentType(expected_type)
                 diagnosis = analyze_trace(ctx.trace, doc.content, expected_type)
                 storage.save_trace(ctx.trace)
                 storage.create_diagnosis(diagnosis)

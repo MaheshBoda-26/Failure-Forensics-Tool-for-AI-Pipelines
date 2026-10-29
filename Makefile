@@ -58,8 +58,8 @@ run-web: ## build and serve React frontend via FastAPI
 run-ui: ## launch the Streamlit trace explorer
 	.venv/bin/streamlit run streamlit_app.py
 
-seed: ## dataset generation is not implemented; the dataset ships with the repo
-	@echo "Dataset generation is not implemented; the labeled dataset is checked in."
+seed: ## load committed real-model traces and validate dataset
+	@.venv/bin/python -m forensics.cli seed
 	@.venv/bin/python -m forensics.cli validate-dataset
 
 eval: ## re-run the accumulated eval dataset
