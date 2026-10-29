@@ -113,7 +113,7 @@ New visualization sections added:
 ## Test Results
 
 ```
-make check: ruff (check + format), mypy strict, 496 tests passing (+12 live-PostgreSQL tests via `make test-postgres`)
+make check: ruff (check + format), mypy strict, 566 tests passing (+12 live-PostgreSQL tests via `make test-postgres`)
 ```
 
 ### Demo Verification

@@ -12,8 +12,7 @@ if [ -x ".venv/bin/python" ]; then
   PY=".venv/bin/python"
 fi
 
-# The demo is explicitly described below as a fake-LLM run, so it must not fall
-# through to live API calls.
+# Default to offline deterministic fixture mode when DRY_RUN is not set.
 export DRY_RUN="${DRY_RUN:-true}"
 
 echo "=========================================="
@@ -21,7 +20,7 @@ echo "Failure Forensics Tool -- Live Demo"
 echo "=========================================="
 echo ""
 
-# --- Setup ------------------------------------------------------------------─
+# --- Setup -------------------------------------------------------------------
 echo ">> Step 1: Validate configuration"
 $PY -m forensics.cli validate-config
 echo ""
@@ -30,84 +29,34 @@ echo ">> Step 2: Validate dataset"
 $PY -m forensics.cli validate-dataset
 echo ""
 
-# --- Run Demo ---------------------------------------------------------------─
+# --- Seed & Run Demo ---------------------------------------------------------
+echo ">> Step 3: Seed committed live-model traces"
+$PY -m forensics.cli seed
 echo ""
-echo ">> Step 3: Run demo on all 15 documents"
-echo "    (This runs the 4-step pipeline on each document with a fake LLM)"
+
+echo ">> Step 4: Run demo on all 15 dataset documents"
 $PY -m forensics.cli demo
 echo ""
 
-# --- Analytics ---------------------------------------------------------------
+# --- Benchmark & Analytics ---------------------------------------------------
+echo ">> Step 5: Run Fault-Injection Benchmark Scorecard"
+$PY -m forensics.cli benchmark-analyzer
 echo ""
-echo ">> Step 4: View analytics dashboard"
+
+echo ">> Step 6: View analytics dashboard summary"
 $PY -m forensics.cli analytics
 echo ""
 
-# --- Trace Explorer (Streamlit) ---------------------------------------------─
-echo ""
-echo ">> Step 5: Launch Trace Explorer (Streamlit UI)"
-echo "    Run this in a separate terminal:"
-echo "    streamlit run streamlit_app.py"
-echo ""
-echo "    The UI provides:"
-echo "  • Trace list with filtering (status, failure category)"
-echo "  • Interactive pipeline graph (color-coded nodes)"
-echo "  • Span detail panel (input/output/prompt/raw_response/tokens/checks/evidence)"
-echo "  • Diff view (expected vs actual vs grounded truth)"
-echo "  • Flagging interface with confirm/override"
-echo ""
-
-# --- Flag & Diagnose ------------------------------------------------------──
-echo ">> Step 6: Flag a trace and diagnose via API"
-echo "    Start API server in a separate terminal:"
-echo "    uvicorn forensics.api:app --reload"
-echo ""
-echo "    Then flag a trace:"
-echo "    curl -X POST http://localhost:8000/traces/<TRACE_ID>/flag \\"
-echo "         -H 'Content-Type: application/json' \\"
-echo "         -d '{\"user_id\": \"demo_user\", \"note\": \"Classification wrong\"}'"
-echo ""
-echo "    Diagnose the trace:"
-echo "    curl -X POST http://localhost:8000/traces/<TRACE_ID>/diagnose"
-echo ""
-echo "    Confirm diagnosis:"
-echo "    curl -X POST http://localhost:8000/diagnoses/<DIAGNOSIS_ID>/confirm \\"
-echo "         -H 'Content-Type: application/json' \\"
-echo "         -d '{\"confirmed\": true}'"
-echo ""
-
-# --- Eval Loop ---------------------------------------------------------------
-echo ">> Step 7: Feedback-to-Eval Loop"
-echo "    Create eval cases from confirmed flags:"
-echo "    python -m forensics.cli eval-cases"
-echo ""
-echo "    Run eval suite against current pipeline:"
-echo "    python -m forensics.cli eval-run"
-echo ""
-echo "    View eval results:"
-echo "    python -m forensics.cli eval"
-echo ""
-
-# --- Analytics ---------------------------------------------------------------
-echo ">> Step 8: Analytics via API"
-echo "    curl http://localhost:8000/analytics"
-echo ""
-
-# --- Trace Explorer UI ------------------------------------------------------─
-echo ">> Step 9: Full Trace Explorer (Streamlit)"
-echo "    streamlit run streamlit_app.py"
-echo ""
-echo "    Features:"
-echo "  1. Trace list with status/category filters"
-echo "  2. Pipeline graph (Plotly + NetworkX, color-coded)"
-echo "  3. Span detail: input/output/prompt/raw_response/tokens/checks/evidence"
-echo "  4. Diff view: expected vs actual vs grounded truth"
-echo "  5. Flag button → diagnosis → confirm/override"
-echo ""
-
-# --- Cleanup ---------------------------------------------------------------──
-echo ">> Cleanup (optional)"
-echo "    rm -rf data/traces data/forensics.db*"
+# --- Web UI & API ------------------------------------------------------------
+echo ">> Step 7: Launch React Trace Explorer + FastAPI Server"
+echo "    Run in a terminal:"
+echo "    make run-web"
+echo "    Then open http://127.0.0.1:8000 in your browser:"
+echo "  • Overview: KPIs, latest failure causal spine, stage breakdown, guarantees"
+echo "  • Traces: Search/filter traces, per-stage checks, Confirm/Override diagnosis"
+echo "  • Test document: Click 'Test document' to run custom text or upload a .txt file"
+echo "  • Execution graph: Stage DAG + Ground-truth vs Observed Output comparison"
+echo "  • Analytics: Failure correlation matrix, Fault Injection Scorecard, Eval suite, Spend"
 echo ""
 
 echo "=========================================="

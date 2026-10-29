@@ -195,7 +195,7 @@ $EDITOR .env                 # set NVIDIA_API_KEY + model slugs; for offline mod
 make check                   # ruff + mypy strict + pytest
 ```
 
-`make check` is green from a clean checkout: **455 tests**, no network, no API
+`make check` is green from a clean checkout: **566 tests**, no network, no API
 key required.
 
 ### Demo — no API key needed
@@ -278,6 +278,7 @@ where an API key can be stored in the browser for authenticated deployments.
 | `POST` | `/eval/run` | Trigger an eval run |
 | `GET` | `/jobs`, `/jobs/{id}` | Queue status |
 | `GET` | `/analytics` | Aggregated reliability snapshot |
+| `GET`, `POST` | `/analytics/benchmark` | Fault-injection scorecard across clean baselines |
 | `GET` | `/scheduler/status` | Schedule, next run, recent runs |
 
 When `AUTH_ENABLED=true`, data routes require `Authorization: Bearer ffk_…`.
@@ -478,7 +479,7 @@ the disk and env).
 
 ```
 src/forensics/          Python package (see the component table above)
-tests/                  455 hermetic tests
+tests/                  566 hermetic tests
 frontend/               React 19 + Vite + TypeScript explorer
 dataset/
   documents/            15 synthetic documents, 3 per type
