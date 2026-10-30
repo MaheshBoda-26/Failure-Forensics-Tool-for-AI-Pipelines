@@ -14,6 +14,7 @@ from forensics.models import (
     EvalResult,
     EvalRun,
     Flag,
+    PromptTemplate,
     Tenant,
     Trace,
     TraceStatus,
@@ -120,6 +121,26 @@ class StorageBase(ABC):
         tenant_id: str | None = None,
     ) -> None:
         """Update diagnosis confirmation status."""
+        ...
+
+    # --- Prompt template operations ---
+
+    @abstractmethod
+    def save_prompt_template(self, template: PromptTemplate) -> None:
+        """Insert or update a prompt template by (name, version).
+
+        Idempotent: re-saving the same name + version is a no-op.
+        """
+        ...
+
+    @abstractmethod
+    def get_prompt_template(self, name: str, version: str) -> PromptTemplate | None:
+        """Get one prompt template by name and content hash."""
+        ...
+
+    @abstractmethod
+    def list_prompt_templates(self) -> list[PromptTemplate]:
+        """List every archived prompt template."""
         ...
 
     # --- Eval Case operations ---

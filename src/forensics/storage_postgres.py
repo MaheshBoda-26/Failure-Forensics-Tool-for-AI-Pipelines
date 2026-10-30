@@ -24,6 +24,7 @@ from forensics.models import (
     EvalResult,
     EvalRun,
     Flag,
+    PromptTemplate,
     Tenant,
     Trace,
     TraceStatus,
@@ -151,10 +152,13 @@ class PostgresStorage(StorageBase):
         pool is the thing that knows when the schema must exist, so it ensures it.
         """
         if self._pool is None:
+            from forensics.config import get_settings
+
+            settings = get_settings()
             self._pool = await asyncpg.create_pool(
                 self._database_url,
-                min_size=2,
-                max_size=10,
+                min_size=settings.pg_pool_min,
+                max_size=settings.pg_pool_max,
                 command_timeout=30,
             )
             await self._init_schema()
@@ -341,6 +345,24 @@ class PostgresStorage(StorageBase):
                 """
             )
 
+            # Prompt templates table (spec 09)
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS prompt_templates (
+                    name TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    template_text TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL,
+                    tenant_id TEXT NOT NULL DEFAULT 'default',
+                    PRIMARY KEY (name, version),
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id)
+                )
+                """
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_prompt_templates_name ON prompt_templates(name)"
+            )
+
             # Job queue table (for worker queue)
             await conn.execute(
                 """
@@ -429,6 +451,13 @@ class PostgresStorage(StorageBase):
             )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_eval_results_tenant ON eval_results(tenant_id)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_prompt_templates_tenant "
+                "ON prompt_templates(tenant_id)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_prompt_templates_name ON prompt_templates(name)"
             )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_job_queue_status "
@@ -572,6 +601,37 @@ class PostgresStorage(StorageBase):
                     for span in trace.spans
                 ],
             )
+
+            # Archive the prompt templates referenced by this trace's spans, one
+            # row per (name, version). Idempotent. `intake` is deterministic (no
+            # LLM prompt), so it carries no template and is skipped.
+            import hashlib
+
+            seen: set[tuple[str, str]] = set()
+            for span in trace.spans:
+                name = span.prompt_template
+                if not name or name == "intake":
+                    continue
+                key = (name, span.prompt)
+                if key in seen:
+                    continue
+                seen.add(key)
+                version = hashlib.sha256(span.prompt.encode()).hexdigest()
+                await conn.execute(
+                    """
+                    INSERT INTO prompt_templates
+                    (name, version, template_text, created_at, tenant_id)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (name, version) DO UPDATE SET
+                        template_text = EXCLUDED.template_text,
+                        created_at = EXCLUDED.created_at
+                    """,
+                    name,
+                    version,
+                    span.prompt,
+                    trace.created_at,
+                    trace.tenant_id,
+                )
 
         return self.traces_dir / f"{trace.trace_id}.json"
 
@@ -843,6 +903,62 @@ class PostgresStorage(StorageBase):
 
         async with self._conn() as conn:
             await conn.execute(sql, *params)
+
+    # --- Prompt template operations ---
+
+    async def _async_save_prompt_template(self, template: PromptTemplate) -> None:
+        """Insert or update a prompt template by (name, version)."""
+        async with self._conn() as conn:
+            await conn.execute(
+                """
+                INSERT INTO prompt_templates
+                (name, version, template_text, created_at, tenant_id)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (name, version) DO UPDATE SET
+                    template_text = EXCLUDED.template_text,
+                    created_at = EXCLUDED.created_at
+                """,
+                template.name,
+                template.version,
+                template.template_text,
+                template.created_at,
+                template.tenant_id,
+            )
+
+    async def _async_get_prompt_template(
+        self, name: str, version: str, tenant_id: str | None = None
+    ) -> PromptTemplate | None:
+        """Get one prompt template by name and content hash."""
+        sql = "SELECT * FROM prompt_templates WHERE name = $1 AND version = $2"
+        params: list[Any] = [name, version]
+        if tenant_id is not None:
+            sql += " AND tenant_id = $" + str(len(params) + 1)
+            params.append(tenant_id)
+        async with self._conn() as conn:
+            row = await conn.fetchrow(sql, *params)
+            if not row:
+                return None
+            return self._load_prompt_template_row(row)
+
+    async def _async_list_prompt_templates(
+        self, tenant_id: str | None = None
+    ) -> list[PromptTemplate]:
+        """List every archived prompt template."""
+        sql = "SELECT * FROM prompt_templates"
+        params: list[Any] = []
+        if tenant_id is not None:
+            sql += " WHERE tenant_id = $1"
+            params.append(tenant_id)
+        sql += " ORDER BY name, version"
+        async with self._conn() as conn:
+            rows = await conn.fetch(sql, *params)
+            return [self._load_prompt_template_row(row) for row in rows]
+
+    @staticmethod
+    def _load_prompt_template_row(row: Any) -> PromptTemplate:
+        data = dict(row)
+        data["created_at"] = data["created_at"].isoformat() if data["created_at"] else None
+        return PromptTemplate.model_validate(data)
 
     # --- Eval Case operations ---
 
@@ -1154,6 +1270,17 @@ class PostgresStorage(StorageBase):
                 tenant_id,
             )
         )
+
+    def save_prompt_template(self, template: PromptTemplate) -> None:
+        return self._run_coro(self._async_save_prompt_template(template))
+
+    def get_prompt_template(
+        self, name: str, version: str, tenant_id: str | None = None
+    ) -> PromptTemplate | None:
+        return self._run_coro(self._async_get_prompt_template(name, version, tenant_id))
+
+    def list_prompt_templates(self, tenant_id: str | None = None) -> list[PromptTemplate]:
+        return self._run_coro(self._async_list_prompt_templates(tenant_id))
 
     def find_eval_case(
         self, trace_id: str, failing_step: str, tenant_id: str | None = None

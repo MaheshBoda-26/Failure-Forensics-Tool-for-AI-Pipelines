@@ -21,6 +21,7 @@ from forensics.models import (
     EvalResult,
     EvalRun,
     Flag,
+    PromptTemplate,
     Tenant,
     Trace,
     TraceStatus,
@@ -231,12 +232,36 @@ class Storage(StorageBase):
                 "CREATE INDEX IF NOT EXISTS idx_eval_results_run_id ON eval_results(run_id)"
             )
 
+            # Prompt templates table (spec 09)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS prompt_templates (
+                    name TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    template_text TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    tenant_id TEXT NOT NULL DEFAULT 'default',
+                    PRIMARY KEY (name, version),
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_prompt_templates_name ON prompt_templates(name)"
+            )
+
             conn.commit()
 
         # Close the gap for a database created before multi-tenancy (or by
         # `tracing.init_db`, which only knows about traces and spans).
         with self._conn() as conn:
             migrate(conn)
+            # Ensure the default tenant exists so tenant-scoped tables (e.g.
+            # prompt_templates) have a parent row to reference.
+            conn.execute(
+                "INSERT OR IGNORE INTO tenants (tenant_id, name, created_at, active) "
+                "VALUES ('default', 'default', datetime('now'), 1)"
+            )
 
     @contextmanager
     def _conn(self) -> Generator[sqlite3.Connection, None, None]:
@@ -275,6 +300,34 @@ class Storage(StorageBase):
         from forensics.tracing import finalize_trace
 
         finalize_trace(trace, traces_dir=self.traces_dir, db_path=self.db_path)
+
+        # Archive the prompt templates referenced by this trace's spans, one row
+        # per (name, version). Idempotent: re-saving the same template is a no-op.
+        # The version is the SHA-256 of the rendered template text, so the same
+        # template revision reuses one row. `intake` is deterministic (no LLM
+        # prompt), so it carries no template and is skipped.
+        import hashlib
+
+        seen: set[tuple[str, str]] = set()
+        for span in trace.spans:
+            name = span.prompt_template
+            if not name or name == "intake":
+                continue
+            key = (name, span.prompt)
+            if key in seen:
+                continue
+            seen.add(key)
+            version = hashlib.sha256(span.prompt.encode()).hexdigest()
+            self.save_prompt_template(
+                PromptTemplate(
+                    name=name,
+                    version=version,
+                    template_text=span.prompt,
+                    created_at=trace.created_at,
+                    tenant_id=trace.tenant_id,
+                )
+            )
+
         return self.traces_dir / f"{trace.trace_id}.json"
 
     def load_trace(self, trace_id: str) -> Trace | None:
@@ -590,6 +643,63 @@ class Storage(StorageBase):
 
         with self._conn() as conn:
             conn.execute(sql, params)
+
+    # --- Prompt template operations ---
+
+    def save_prompt_template(self, template: PromptTemplate) -> None:
+        """Insert or update a prompt template by (name, version).
+
+        Idempotent: re-saving the same name + version is a no-op.
+        """
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO prompt_templates
+                (name, version, template_text, created_at, tenant_id)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(name, version) DO UPDATE SET
+                    template_text = excluded.template_text,
+                    created_at = excluded.created_at
+                """,
+                (
+                    template.name,
+                    template.version,
+                    template.template_text,
+                    template.created_at.isoformat(),
+                    template.tenant_id,
+                ),
+            )
+
+    def get_prompt_template(
+        self, name: str, version: str, tenant_id: str | None = None
+    ) -> PromptTemplate | None:
+        """Get one prompt template by name and content hash."""
+        sql = "SELECT * FROM prompt_templates WHERE name = ? AND version = ?"
+        params: list[Any] = [name, version]
+        if tenant_id is not None:
+            sql += " AND tenant_id = ?"
+            params.append(tenant_id)
+        with self._conn() as conn:
+            cursor = conn.execute(sql, params)
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cursor.description]
+            return PromptTemplate.model_validate(dict(zip(cols, row, strict=False)))
+
+    def list_prompt_templates(self, tenant_id: str | None = None) -> list[PromptTemplate]:
+        """List every archived prompt template."""
+        sql = "SELECT * FROM prompt_templates"
+        params: list[Any] = []
+        if tenant_id is not None:
+            sql += " WHERE tenant_id = ?"
+            params.append(tenant_id)
+        sql += " ORDER BY name, version"
+        with self._conn() as conn:
+            cursor = conn.execute(sql, params)
+            rows = cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            return [PromptTemplate.model_validate(dict(zip(cols, r, strict=False))) for r in rows]
 
     # --- Eval Case operations ---
 

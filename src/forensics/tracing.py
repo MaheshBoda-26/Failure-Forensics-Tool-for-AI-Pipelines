@@ -29,6 +29,7 @@ from forensics.migrations import migrate
 from forensics.models import DEFAULT_TENANT_ID, PipelineOutput, Span, Trace, TraceStatus
 from forensics.otel_export import ForensicsSpanProcessor, configure_otel
 from forensics.pii import create_redactor_from_settings
+from forensics.prompts import template_for_step
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -333,6 +334,11 @@ def traced_step(step_name: str) -> Callable[[F], F]:
                 span.error = error
                 span.output_json = _serialize_payload(result)
                 span.ended_at = _utc_now()
+                # The prompt template that produced this span's prompt, recorded
+                # by name (not text) so a trace can be replayed against the
+                # template revision that ran. Intake is deterministic (no LLM
+                # prompt), so it gets no template.
+                span.prompt_template = template_for_step(span.step_name)
 
                 # Consume whatever the step published. A step that raises after
                 # a successful LLM call still reports failure, but the model and
