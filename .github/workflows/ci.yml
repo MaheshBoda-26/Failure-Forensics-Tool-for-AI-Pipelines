@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: "0 6 * * 1"  # weekly live-model smoke (Monday 06:00 UTC), bounded spend
   workflow_dispatch: {}  # manual trigger for live tests
 
 concurrency:
@@ -99,11 +101,17 @@ jobs:
         run: npm run build
 
   live-tests:
-    name: Live model tests (manual)
-    if: github.event_name == 'workflow_dispatch'
+    name: Live model tests (weekly + manual)
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     env:
       NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      # Bounded spend so a weekly smoke cannot drain quota: one document at a few
+      # cents per run, and a global ceiling well under a dollar per week.
+      SPEND_CAP_PER_RUN_USD: "0.05"
+      SPEND_CAP_GLOBAL_USD: "0.20"
+      # One labelled document; invoice_001 is what the live smoke test runs.
+      LIVE_TEST_DOC_ID: invoice_001
     steps:
       - uses: actions/checkout@v4
 
@@ -118,5 +126,26 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Run live tests
-        run: pytest -m live -v --tb=short
+      - name: Run live smoke test
+        run: |
+          pytest -m live -v --tb=short \
+            -k "contract_001 or invoice_001" \
+            || pytest -m live -v --tb=short -k "invoice_001"
+
+      - name: Upload live trace artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-trace-${{ github.run_id }}
+          path: data/traces/*.json
+          retention-days: 7
+
+      - name: Job summary
+        if: always()
+        run: |
+          echo "## Live-model smoke" >> $GITHUB_STEP_SUMMARY
+          echo "Document: \`${LIVE_TEST_DOC_ID}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Per-run cap: \${SPEND_CAP_PER_RUN_USD} USD · Global cap: \${SPEND_CAP_GLOBAL_USD} USD" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Traces written to \`data/traces/\` (uploaded as artifact above)." >> $GITHUB_STEP_SUMMARY
+          echo "Model, tokens, cost and root cause are recorded on each trace span." >> $GITHUB_STEP_SUMMARY
