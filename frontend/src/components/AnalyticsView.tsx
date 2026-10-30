@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Play } from "lucide-react";
+import { Download, Play } from "lucide-react";
 import { api } from "../api/client";
 import type {
   AnalyticsSnapshot,
@@ -36,6 +36,73 @@ const CATEGORIES = [
 
 function titleCase(value: string): string {
   return value.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+export function serializeAnalyticsCsv(analytics: AnalyticsSnapshot): string {
+  const rows: string[] = [];
+  const push = (section: string, headers: string[], cells: Array<{ a: string; b: string }>) => {
+    rows.push(section);
+    rows.push(headers.join(","));
+    for (const cell of cells) {
+      rows.push(`${cell.a},${cell.b}`);
+    }
+    rows.push("");
+  };
+
+  push("Overview", ["Metric", "Value"], [
+    { a: "Total traces", b: String(analytics.total_traces) },
+    { a: "Failure rate", b: String(analytics.failure_rate) },
+    { a: "Total cost (USD)", b: String(analytics.total_cost_usd) },
+    { a: "Avg latency (ms)", b: String(analytics.avg_latency_ms) },
+  ]);
+
+  push(
+    "Failures by category",
+    ["Category", "Count"],
+    Object.entries(analytics.failures_by_category).map(([key, value]) => ({ a: key, b: String(value) })),
+  );
+  push(
+    "Failures by step",
+    ["Step", "Count"],
+    Object.entries(analytics.failures_by_step).map(([key, value]) => ({ a: key, b: String(value) })),
+  );
+  push(
+    "Cost by model",
+    ["Model", "Cost (USD)"],
+    Object.entries(analytics.cost_by_model).map(([key, value]) => ({ a: key, b: String(value) })),
+  );
+  push(
+    "Tokens by model",
+    ["Model", "Tokens"],
+    Object.entries(analytics.tokens_by_model).map(([key, value]) => ({ a: key, b: String(value) })),
+  );
+  push(
+    "Latency by step",
+    ["Step", "Latency (ms)"],
+    Object.entries(analytics.latency_by_step).map(([key, value]) => ({ a: key, b: String(value) })),
+  );
+  push(
+    "Model performance",
+    ["Model", "Span pass rate, Avg latency (ms), Avg cost (USD), Total cost (USD), Tokens"],
+    Object.entries(analytics.model_performance).map(([key, p]) => ({
+      a: key,
+      b: `${p.span_pass_rate},${p.avg_latency_ms},${p.avg_cost_usd},${String(
+        analytics.cost_by_model[key] ?? 0,
+      )},${String(analytics.tokens_by_model[key] ?? 0)}`,
+    })),
+  );
+  push(
+    "Failure correlation",
+    ["Step,Category", "Count"],
+    analytics.failure_correlation.map((item) => ({ a: `${item.step},${item.category}`, b: String(item.count) })),
+  );
+  push(
+    "Cost trend",
+    ["Date", "Cost (USD)"],
+    analytics.cost_trend.map((point) => ({ a: point.timestamp, b: String(point.cost_usd) })),
+  );
+
+  return rows.join("\n");
 }
 
 export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
@@ -83,6 +150,21 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     } finally {
       setIsRunningBenchmark(false);
     }
+  };
+
+  const handleExportCsv = () => {
+    if (!analytics) return;
+    const csv = serializeAnalyticsCsv(analytics);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `forensics-analytics-${new Date().toISOString().slice(0, 10)}.csv`);
+    link.style.visibility = "hidden";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   useEffect(() => {
@@ -202,6 +284,14 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
           >
             <Play size={13} fill="currentColor" />
             {isRunningEval ? "Running eval" : "Run eval suite"}
+          </button>
+          <button
+            className="btn"
+            onClick={handleExportCsv}
+            disabled={!analytics}
+          >
+            <Download size={13} fill="currentColor" />
+            Export CSV
           </button>
         </div>
       </div>

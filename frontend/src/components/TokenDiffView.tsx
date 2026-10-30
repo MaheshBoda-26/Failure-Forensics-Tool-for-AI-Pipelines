@@ -101,7 +101,7 @@ export const TokenDiffView: React.FC<TokenDiffViewProps> = ({ trace, diagnosis }
               ? `Ground-truth label: ${trace.expected_type}${
                   observedDocType ? ` (classified as ${observedDocType})` : ""
                 }.`
-              : "No ground-truth label was provided for this document; deterministic checks still apply."}
+              : "Ground truth not available for this document; deterministic checks still apply."}
           </p>
         </div>
 

@@ -13,6 +13,8 @@ import { GraphPage } from "./components/GraphPage";
 import { Header, NavTab } from "./components/Header";
 import { Overview } from "./components/Overview";
 import { TraceExplorer } from "./components/TraceExplorer";
+import { Empty, StatusPill } from "./components/ui";
+import { X } from "lucide-react";
 import { isFailedTrace } from "./lib/trace";
 
 const HASHES: Record<NavTab, string> = {
@@ -45,6 +47,9 @@ export const App: React.FC = () => {
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [openSignal, setOpenSignal] = useState(0);
+  const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
+  const keyBufferRef = useRef<string>("");
+  const keyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     selectedIdRef.current = selectedTraceId;
@@ -220,6 +225,63 @@ export const App: React.FC = () => {
     }
   };
 
+  // Keyboard shortcuts:
+  //   g o  → overview,  g t  → traces,  g a  → analytics
+  //   /    → (no search component yet; opens help)
+  //   ?    → help dialog
+  //   Escape → close help dialog
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      // Only handle shortcuts when not typing into an input.
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+
+      if (event.key === "Escape") {
+        setShortcutHelpOpen(false);
+        return;
+      }
+
+      if (event.key === "?") {
+        event.preventDefault();
+        setShortcutHelpOpen(true);
+        return;
+      }
+
+      if (event.key === "/") {
+        event.preventDefault();
+        setShortcutHelpOpen(true);
+        return;
+      }
+
+      if (event.key === "g") {
+        keyBufferRef.current = "g";
+        keyTimerRef.current = window.setTimeout(() => {
+          keyBufferRef.current = "";
+        }, 800);
+        return;
+      }
+
+      if (keyBufferRef.current === "g") {
+        window.clearTimeout(keyTimerRef.current ?? undefined);
+        keyBufferRef.current = "";
+        if (event.key === "o") {
+          event.preventDefault();
+          setActiveTab("home");
+        } else if (event.key === "t") {
+          event.preventDefault();
+          setActiveTab("explorer");
+        } else if (event.key === "a") {
+          event.preventDefault();
+          setActiveTab("analytics");
+        }
+      }
+    };
+
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [setActiveTab]);
+
   return (
     <div className="app">
       <Header
@@ -284,6 +346,67 @@ export const App: React.FC = () => {
           ) : null}
         </div>
       </main>
+
+      {shortcutHelpOpen ? (
+        <div
+          className="menu-sheet"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Keyboard shortcuts"
+          onClick={() => setShortcutHelpOpen(false)}
+        >
+          <div className="menu-sheet__head">
+            <h2 className="panel__title">Keyboard shortcuts</h2>
+            <button
+              className="icon-btn"
+              onClick={() => setShortcutHelpOpen(false)}
+              aria-label="Close help"
+            >
+              <X size={18} />
+            </button>
+          </div>
+          <div className="menu-sheet__foot">
+            <table className="table table--scores">
+              <thead>
+                <tr>
+                  <th scope="col">Key</th>
+                  <th scope="col">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>g o</code></td>
+                  <td>Go to overview</td>
+                </tr>
+                <tr>
+                  <td><code>g t</code></td>
+                  <td>Go to traces</td>
+                </tr>
+                <tr>
+                  <td><code>g a</code></td>
+                  <td>Go to analytics</td>
+                </tr>
+                <tr>
+                  <td><code>/</code></td>
+                  <td>Open help (search not yet implemented)</td>
+                </tr>
+                <tr>
+                  <td><code>?</code></td>
+                  <td>Open help dialog</td>
+                </tr>
+                <tr>
+                  <td><code>Escape</code></td>
+                  <td>Close dialogs / help</td>
+                </tr>
+              </tbody>
+            </table>
+            <p className="faint" style={{ marginTop: 12 }}>
+              Shortcuts work app-wide when not typing into an input.
+            </p>
+          </div>
+        </div>
+      ) : null}
+
     </div>
   );
 };
