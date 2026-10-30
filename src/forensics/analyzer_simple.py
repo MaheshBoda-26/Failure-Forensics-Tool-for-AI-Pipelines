@@ -627,6 +627,19 @@ def check_propagation(span: Span, trace: Trace) -> list[CheckResult]:
 
     classified_lower = classified_type.lower()
     if classified_lower not in TYPE_MARKERS:
+        # Upstream carries no salient definitional terminology the summary can
+        # misread, so there is nothing to propagate. Report a pass with an
+        # evidence note rather than a silent absence — mirroring how
+        # context_loss is unscoreable without salient entities.
+        results.append(
+            CheckResult(
+                "propagation",
+                True,
+                f"Skipped: classification='{classified_type}' carries no salient "
+                f"definitional terminology, so propagation cannot be judged",
+                span.step_name,
+            )
+        )
         return results
 
     # Propagation is judged by how the summary *frames* the document: the first
@@ -892,7 +905,22 @@ def find_root_cause(step_scores: list[StepScore]) -> tuple[str, FailureCategory,
                 category = FailureCategory.UNKNOWN
 
             confidence = 0.9 if category != FailureCategory.UNKNOWN else 0.5
-            return score.step_name, category, confidence, score.evidence
+            evidence_chain = list(score.evidence)
+            # Cascade suppression: a downstream propagation failure is a symptom
+            # of the upstream root cause, not an independent root cause. The
+            # earliest failing step is the root cause; list any later steps that
+            # failed `propagation` as "downstream of <root step>" so the evidence
+            # chain names the cascade without blaming the wrong step.
+            root_index = step_scores.index(score)
+            for later in step_scores[root_index + 1 :]:
+                if (
+                    "propagation" in later.deterministic_checks
+                    and not later.deterministic_checks["propagation"]
+                ):
+                    evidence_chain.append(
+                        f"{later.step_name} failure is downstream of {score.step_name}"
+                    )
+            return score.step_name, category, confidence, evidence_chain
 
     # No failures found
     return "none", FailureCategory.UNKNOWN, 1.0, ["All deterministic checks passed"]

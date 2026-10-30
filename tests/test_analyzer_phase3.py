@@ -407,6 +407,68 @@ def test_propagation_error_only_when_upstream_is_correct() -> None:
     assert diagnosis.root_cause_step == "summarization"
 
 
+def test_propagation_skipped_when_upstream_has_no_salient_terminology() -> None:
+    """When the classification type carries no definitional terminology,
+    propagation is skipped (reported pass-with-note) rather than falsely
+    flagging the summary.
+
+    Mirroring how `context_loss` is unscoreable without salient entities, a
+    propagation check needs salient upstream terminology to judge against.
+    """
+    doc = "Widget spec v2"
+    spans = [
+        _span("intake", {"cleaned_text": doc}),
+        _span("extraction", {"entities": []}),
+        _span("classification", {"document_type": "widget", "confidence": 0.9}),
+        _span(
+            "summarization",
+            {"summary": "Invoice details", "key_points": ["invoice"]},
+        ),
+    ]
+    trace = _trace_with_spans(spans)
+    diagnosis = analyze_trace(trace, doc)
+
+    # The invalid type is a prompt_schema failure at classification (root cause);
+    # propagation is NOT a false failure at summarization.
+    assert diagnosis.root_cause_step == "classification"
+    assert diagnosis.category is FailureCategory.PROMPT_FAILURE
+    summary_score = next(s for s in diagnosis.step_scores if s.step_name == "summarization")
+    assert summary_score.deterministic_checks.get("propagation") is True
+
+
+def test_cascade_blames_earliest_failing_step() -> None:
+    """When extraction fails locally and summarization also fails propagation
+    (a cascade), the earliest failing step (extraction) is root cause and the
+    summarization failure is listed as downstream evidence."""
+    doc = "Contract between Alpha and Beta."
+    spans = [
+        _span("intake", {"cleaned_text": doc}),
+        _span(
+            "extraction",
+            {
+                "entities": [
+                    {"value": "ghost", "entity_type": "PERSON", "start_offset": 0, "end_offset": 5}
+                ]
+            },
+        ),  # extraction hallucinates -> local failure
+        _span("classification", {"document_type": "contract", "confidence": 0.9}),
+        _span(
+            "summarization",
+            {"summary": "Invoice between Alpha and Beta", "key_points": ["invoice"]},
+        ),  # propagation error (cascade)
+    ]
+    trace = _trace_with_spans(spans)
+    diagnosis = analyze_trace(trace, doc)
+
+    # Root cause is the earliest failing step (extraction), not summarization.
+    assert diagnosis.root_cause_step == "extraction"
+    assert diagnosis.category is FailureCategory.EXTRACTION_HALLUCINATION
+    # The summarization propagation failure is noted as downstream evidence.
+    assert any(
+        "summarization failure is downstream of extraction" in e for e in diagnosis.evidence_chain
+    ), diagnosis.evidence_chain
+
+
 # --- Root cause is FIRST failing step ------------------------------------
 
 
