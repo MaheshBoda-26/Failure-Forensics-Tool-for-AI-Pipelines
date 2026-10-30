@@ -1,146 +1,118 @@
-# Failure Forensics Tool — Interview Talking Points
+# Failure Forensics Tool — Viva & Interview Talking Points
 
-This document contains the 8 hardest questions an interviewer would ask about this project, each with a strong, honest answer grounded in the design.
+This document contains the 8 hardest questions a college external examiner or engineering interviewer will ask about this project, each with a strong, honest answer grounded in the shipped codebase, followed by a step-by-step 3-minute live demo script.
 
 ---
 
 ## Q1: "Why build this when LangSmith, Langfuse, and Braintrust exist?"
 
-**Answer:** This isn't a competitor — it's a *demonstration* that I understand the hard problems those platforms solve. The point was to build the core loop myself: trace → deterministic analysis → human feedback → eval → regression detection.
+**Answer:** General-purpose observability tools log spans and prompts, or run an expensive LLM-as-judge over the final output, but they don't solve **causal step localization** in multi-step pipelines where step 2 subtly corrupts an entity and step 4 fails downstream.
 
-Key differentiators I implemented:
-- **Deterministic first, LLM judge second**: The analyzer runs 7 deterministic checks (entity grounding, label enum, date regex, context preservation, propagation, prompt schema) before any LLM call. Most platforms lead with LLM-as-judge, which is expensive, non-deterministic, and biased.
-- **Fault injection for ground truth**: I built a fault injector that corrupts clean traces in 7 ways (hallucination, misclassification, prompt failure, propagation error, context loss). This gives me *labeled* failures to measure analyzer accuracy objectively — 100% step localization on injected faults. Most platforms have no way to validate their judge.
-- **Cost-aware by design**: Every span tracks model, tokens, latency, and cost. Per-run ($0.50) and global ($20) caps are enforced *before* the request completes. Most platforms add cost tracking as an afterthought.
-- **Single-file SQLite + JSON**: Zero infrastructure. No Docker, no Redis, no Postgres required. Deploy to Render free tier with a 512MB persistent disk. LangSmith requires their hosted platform.
+Key architectural differentiators I built:
+- **Deterministic first, cross-family LLM judge second**: The analyzer runs **7 deterministic checks** (`entity_grounding`, `label_enum`, `date_regex`, `context_preservation`, `propagation`, `schema_validity`, `label_grounding`) plus **9 domain plugin checks** before making any LLM judge call. Most platforms lead with LLM-as-judge, which is slow, non-deterministic, and expensive.
+- **Fault injection for ground-truth benchmarking**: I built a 7-fault injection harness (`src/forensics/faults.py` and `/analytics/benchmark`) that corrupts clean traces in 7 controlled ways (`hallucinated_entity`, `bad_date_format`, `invalid_enum`, `misclassification`, `context_loss`, `propagation_failure`, `prompt_truncation`). That lets us objectively measure the analyzer's step-localization and category accuracy (**100% across 12 clean baselines**) rather than guessing whether the judge works.
+- **Closed-loop human-to-regression flywheel**: When an operator confirms or overrides a root-cause diagnosis in the UI (`POST /diagnoses/{id}/confirm`), the system automatically mints a permanent regression `EvalCase` (`src/forensics/eval_simple.py`) so future prompt or model changes are tested against real historical failures.
+- **Zero-infrastructure local-first storage**: Dual JSON-payload + SQLite-WAL index (`src/forensics/storage.py`) with a drop-in PostgreSQL backend (`src/forensics/storage_postgres.py`) verified by schema-parity tests (`tests/test_schema_parity.py`).
 
 ---
 
 ## Q2: "Your deterministic analyzer — how do you know it's actually accurate?"
 
-**Answer:** I measured it. The fault injector creates 7 fault types across a baseline trace, producing ground truth for each. The analyzer is scored on:
-- **Step-localization accuracy**: 100% (7/7 faults blamed on correct step)
-- **Category accuracy**: 100% (7/7 faults categorized correctly)
-- **False positive rate on clean traces**: 0/15 on the clean baseline
+**Answer:** We measure it continuously in both the CLI (`forensics benchmark-analyzer`) and the React **Analytics** tab (**Fault injection scorecard**). The fault injector takes every eligible clean trace, injects all 7 fault types, runs `analyze_trace`, and scores whether the analyzer localized both the exact failing step and the failure category:
+- **Step-localization accuracy**: **100.0%** across all scoreable injected faults on our 12 clean baseline traces
+- **Category accuracy**: **100.0%** across all scoreable injected faults
+- **Seeded dataset reproduction**: **5/5** seeded failures in `dataset/labels.json` (`contract_001`, `invoice_003`, `report_003`, `correspondence_002`, `mixed_001`) localized to their exact step and category
 
-The test is `forensics benchmark-analyzer` — it takes a clean trace, injects each fault, runs the analyzer, and prints a scorecard. This is in the codebase and runs in CI.
-
-I also track **judge-vs-human agreement** on a labeled subset, and **confidence-signal usefulness** (whether low-confidence spans are actually more likely to be root causes — early data says they're not well calibrated, which I document honestly in `docs/limitations.md`).
+When a fault's precondition isn't met on a baseline (for example, `context_loss` on an offline fixture trace that extracted zero salient entities), `Fault.scoreable` marks it `unscoreable` rather than counting a no-op corruption as a false miss.
 
 ---
 
 ## Q3: "The judge LLM — how do you prevent self-preference bias?"
 
-**Answer:** Three-layer mitigation:
-1. **Provider family separation enforced at startup**: The judge model *must* come from a different provider family than the pipeline models. Configured via `JUDGE_MODEL_FAMILY` vs `PIPELINE_MODEL_FAMILY`. If they match, startup fails (unless `JUDGE_FAMILY_SEPARATION_REQUIRED=false`).
-2. **Cross-family model selection**: Default config uses Minimax (pipeline) + Nemotron (judge) — different architectures, different training.
-3. **Deterministic checks run first**: The judge only runs when deterministic checks find a failure (or `JUDGE_FORCE=true`). The judge *overrides* the deterministic verdict, it doesn't replace it. Both verdicts are stored (`Diagnosis.judge_analysis` + `analyzer_fallback` flag).
-
-The judge prompt enumerates *exactly* which steps to score (derived from trace spans), so it can't hallucinate "nothing failed" on a partial trace. Validator ensures coverage before accepting a judge verdict.
+**Answer:** Three-layer mitigation enforced in code (`src/forensics/config.py` and `src/forensics/analyzer_simple.py`):
+1. **Provider family separation enforced at startup**: `validate_startup()` verifies that `JUDGE_MODEL_FAMILY` differs from `PIPELINE_MODEL_FAMILY` and `PIPELINE_FALLBACK_MODEL_FAMILY`. If someone configures the same model family for both pipeline and judge while `JUDGE_FAMILY_SEPARATION_REQUIRED=true`, the service refuses to boot.
+2. **Cross-family model pairing**: Default configuration runs `minimaxai/minimax-m3.1-flash` (`minimaxai` family) for the 4-step pipeline and `meta/llama-3.1-8b-instruct` (`meta` family) for the semantic judge.
+3. **Deterministic-first auditability**: Deterministic checks always run first. When the judge runs (`JUDGE_ENABLED=true`), both the deterministic step scores and `Diagnosis.judge_analysis` (along with `analyzer_fallback: bool`) are persisted so a human reviewer can see when and why the judge overrode the deterministic analyzer.
 
 ---
 
 ## Q4: "How does your propagation error detection actually work? Isn't that just heuristic?"
 
-**Answer:** Yes, it's a heuristic — I document this honestly in `docs/limitations.md` #12. It works by checking if the summarization uses *definitional terminology* from a different document type than what classification output.
-
-The logic:
-1. Classification outputs a `DocumentType` (contract, invoice, report, correspondence, mixed)
-2. Each type has **definitional markers** — e.g., "invoice"/"receipt"/"subtotal" for invoices; "contract"/"clause"/"indemnif" for contracts
-3. Summarization's *opening sentence* is scanned for these markers
-4. If a conclusive marker from a *different* type appears, it's a propagation error
-
-Why opening sentence? Because a report *about* contracts will mention "contract" in body — that's not propagation error. The opening frames the document type.
-
-Limitations acknowledged:
-- It's not full dataflow analysis
-- Cascading failures can be reported at multiple steps
-- Mixed documents are exempt (they legitimately mix terminology)
+**Answer:** Yes, it is a targeted lexical heuristic — documented transparently in `docs/limitations.md` §11. It detects when the `summarization` step frames a document using definitional terminology that contradicts the upstream `classification` step:
+1. `classification` outputs a `DocumentType` (`contract`, `invoice`, `report`, `correspondence`, `mixed`).
+2. Each type has conclusive opening-sentence markers (e.g., `"invoice"`, `"receipt"`, `"subtotal"` for invoices; `"agreement"`, `"clause"`, `"indemnif"` for contracts).
+3. `check_propagation` inspects the opening sentence of `summarization` (because a report *about* contracts can legitimately mention contracts in its body, whereas the opening sentence frames what the document *is*).
+4. If the opening sentence frames the document as a different type than `classification` emitted (or drops upstream fields), `check_propagation` flags a `propagation_error` at `summarization`.
 
 ---
 
-## Q5: "Your cost tracking defaults to $0.00 — how is that useful?"
+## Q5: "How do you prevent runaway LLM costs during demos or batch evaluations?"
 
-**Answer:** The accounting *code* is correct; the *values* are config. `.env.example` ships all prices as `0.0` with `VERIFY BEFORE USE` banners because:
-- Hosted prices change without notice
-- Inventing prices is worse than leaving them blank
-- The code correctly computes `prompt_tokens × price_in + (completion + reasoning) × price_out`
-
-When real prices are configured, `total_cost_usd`, per-run/global caps, and per-step spend attribution (including the `judge` tag) all work. I demonstrate this with a real run in the README showing 14/15 classifications correct, 100% fault-injection accuracy, and real token/cost numbers from a Minimax run.
+**Answer:** We enforce **both** pre-flight and post-hoc spend guards in `src/forensics/llm.py`:
+- **Pre-flight cost estimation (`SpendTracker.check_preflight`)**: Before sending an HTTP request to NVIDIA NIM, the client estimates upper-bound cost (`len(prompt) / 4` input tokens + full `max_tokens` output budget at the model's configured per-1M rates in `.env`). If the call would breach `SPEND_CAP_PER_RUN_USD` (`$0.50`) or `SPEND_CAP_GLOBAL_USD` (`$20.00`), it raises `QuotaExhaustedError` before a single token is billed.
+- **Post-hoc ledger & SHA-256 response cache**: Actual `prompt_tokens`, `completion_tokens`, and `reasoning_tokens` from the provider response are recorded on every `Span` and summed via `span_cost_usd()`. Content-addressed caching (`CACHE_ENABLED=true`) short-circuits repeated prompts at `$0.00` cost.
 
 ---
 
-## Q6: "SQLite for production? What about concurrency and scaling?"
+## Q6: "Why dual storage (JSON files + SQLite WAL) instead of just one database?"
 
-**Answer:** SQLite WAL mode + `busy_timeout=5000` handles the demo scale (single writer, many readers). The design acknowledges limitations honestly in `docs/limitations.md` #12:
-- Single-writer bottleneck
-- No horizontal scaling
-- Worker killed mid-job leaves job `running` (no reaper — documented as #2)
-
-Mitigations:
-- Traces written once, read many → WAL handles this well
-- `db_path` is substitutable — PostgreSQL backend is implemented in `storage_postgres.py` behind the same `StorageBase` interface. Flip `DATABASE_URL=postgresql://...` to switch.
-- `Storage`, `JobQueue`, `AuthManager` all take `db_path` — swap is a substitution, not a rewrite.
-
-For the demo scope (Render free tier, 512MB disk, single instance), SQLite is the right choice. The PostgreSQL backend exists for when you outgrow it.
+**Answer:** Each store is optimized for its access pattern (ADR 0004):
+- **Atomic JSON files (`data/traces/<trace_id>.json`)**: Hold the full, arbitrarily nested span payloads (`prompt`, `raw_response`, `input_json`, `output_json`). Written via temp-file + `os.replace()` after pre-storage PII redaction (`src/forensics/pii.py`), making traces human-inspectable and git-commit-friendly (`dataset/live/traces/`).
+- **SQLite WAL index (`data/forensics.db`)**: Indexes metadata, timestamps, latencies, token/cost totals, diagnoses, flags, tenants, API keys, and the job queue so `/analytics` and `/traces` never have to parse dozens of JSON files on each request.
+- **Drop-in PostgreSQL parity**: `src/forensics/storage_postgres.py` implements the exact same `StorageBase` interface (`DATABASE_URL=postgresql://...`), and `tests/test_schema_parity.py` verifies table-for-table and column-for-column parity on every `make check` run.
 
 ---
 
-## Q7: "What happens when the worker crashes mid-job? You said there's no reaper."
+## Q7: "What happens when a background worker crashes mid-job?"
 
-**Answer:** That was limitation #2 — now **resolved** (see `docs/limitations.md` Resolved section).
-
-Implementation:
-- Added `claim_expires_at` column to `job_queue` table
-- Worker sets expiration on claim (`QUEUE_STALL_TIMEOUT=300s` default)
-- Worker sends heartbeat every `stall_timeout/3` seconds
-- Periodic reaper in worker loop reclaims stalled jobs from other workers
-- `forensics queue reaper --stall-timeout N` CLI for manual recovery
-
-The worker handles `SIGTERM` cleanly (finishes current batch). For `SIGKILL`/OOM, the job is reclaimed by the reaper within `QUEUE_STALL_TIMEOUT` seconds.
+**Answer:** Implemented in `src/forensics/queue.py` and `src/forensics/worker.py` (Spec 07):
+- Jobs are claimed atomically via `UPDATE job_queue ... RETURNING *` with a lease expiration timestamp (`claim_expires_at = now + QUEUE_STALL_TIMEOUT`, default 300s).
+- Active workers send periodic heartbeats every `stall_timeout / 3` seconds to extend their lease.
+- A periodic reaper in the worker loop (and `forensics queue reaper` in the CLI) reclaims any job whose lease expired after a worker `SIGKILL` or crash, resetting it to `pending` (up to `max_attempts`) so no document run is ever silently lost.
 
 ---
 
-## Q8: "What's the hardest technical decision you made, and what would you do differently?"
+## Q8: "What was the hardest engineering decision you made?"
 
-**Answer:** **Decision**: Building the custom chain instead of LangChain.
+**Answer:** **Building a custom, zero-framework pipeline and `@traced_step` decorator (`src/forensics/tracing.py`) instead of wrapping LangChain.**
 
-**Why**: Tracing clarity and testability mattered more than framework features. Every step is a clean async function with typed Pydantic I/O. The `@traced_step` decorator captures input, output, prompt, raw response, tokens, latency in one line. If steps are spaghetti, tracing is meaningless.
-
-**What I'd do differently**:
-1. **Invest in the React UI auth integration earlier** — the bundled UI can't send API keys (limitation #1). The backend auth works; the frontend just needs a key-input field and header injection.
-2. **Add a pre-flight cost estimator** — current caps are post-hoc (limitation #8). A `max_tokens × price` check before sending would prevent single-request overshoot.
-3. **Build the eval case dedup earlier** — duplicate eval cases inflated the suite silently until I added the unique index in migrations.
-
-**What I'm proud of**: The fault injection harness. It turns one clean trace into 7 labeled failures, making analyzer accuracy *measurable* rather than claimed. That's the difference between a demo and a credible system.
+- **Why**: LangChain's internal callback trees obscure the exact boundary between step inputs and outputs, and serializing framework objects into spans risks leaking client state or API keys. With our 1-line `@traced_step("step_name")` decorator and `ContextVar`-scoped `StepTelemetry` side-channel, every pipeline step stays a pure typed Pydantic function (`Document -> IntakeOutput -> ExtractionOutput -> ClassificationOutput -> SummarizationOutput`), while the decorator automatically captures latency, tokens, cost, model provenance, OTel export, and PII redaction.
+- **Safety guarantee**: `tests/test_llm.py::test_analyzer_does_not_execute_trace_payload` and `_safe_repr` verify that neither the tracer nor the analyzer ever calls `eval()` or leaks `Settings` secrets into trace files.
 
 ---
 
-## Quick Reference: Project Stats
+## Quick Reference: Shipped Project Metrics
 
 | Metric | Value |
-|--------|-------|
-| Tests | 460 passing |
-| Lines of code | ~12,000 Python + ~2,500 TSX |
-| Document types | 5 (contract, invoice, report, correspondence, mixed) |
-| Failure categories | 5 + unknown |
-| Deterministic checks | 7 |
-| Fault injection types | 7 |
-| Seeded failures in demo | 5 (1 per category + mixed) |
-| Max demo documents | 150 (generated) |
-| Deploy target | Render free tier + 512MB disk |
-| Config-driven | 100% (no hardcoded model IDs) |
+|---|---|
+| **Automated Test Suite** | **582 passing tests** (`568` backend `pytest` + `14` frontend `vitest`), `0` errors in `ruff` & `mypy --strict` |
+| **Pipeline Architecture** | 4 traced steps (`Intake → Extraction → Classification → Summarization`) |
+| **Document Types** | 5 (`contract`, `invoice`, `report`, `correspondence`, `mixed`) |
+| **Failure Categories** | 5 (`extraction_hallucination`, `misclassification`, `propagation_error`, `prompt_failure`, `context_loss`) + `unknown` |
+| **Forensic Checks** | 7 core deterministic checks + 9 domain plugin checks (`src/forensics/custom_checks.py`) + cross-family Judge LLM |
+| **Fault Injection Harness** | 7 controlled fault injectors (`100.0%` step & category localization accuracy across 12 clean baselines) |
+| **Pre-Seeded Corpus** | 20 traces in `data/forensics.db` (5 committed real NVIDIA NIM traces + 15 dataset traces) + 150-doc `dataset_large/` |
+| **Enterprise Guards** | Multi-tenant RBAC (`ffk_` bcrypt keys + `read`/`write` scopes), SQLite token-bucket rate limiter, pre-storage PII redaction, OTel exporter |
 
 ---
 
-## Demo Script (3 minutes)
+## 3-Minute Live Evaluation Demo Script
 
-1. **Home page** (15s): Show the four pipeline strata, engineering guarantees
-2. **Run Demo** (45s): Click "Run Demo (15 Traces)" — watch traces populate in real-time
-3. **Trace Explorer** (45s): Click a failed trace → see root cause badge → drill into spans → see failed checks evidence chain
-4. **Confirm/Override** (15s): Click "Confirm Diagnosis" → see it become an eval case
-5. **Analytics** (30s): Show failure rate, cost trend, model comparison, failure correlation heatmap
-6. **DAG + Diff** (30s): Visual graph with green/red/tainted nodes, token diff view
-7. **CLI** (15s): `forensics benchmark-analyzer` → 100% accuracy scorecard
+Before the examiners arrive, run `make run-web` and open `http://127.0.0.1:8000`.
 
-Total: ~3 minutes, all live, no video editing needed.
+1. **Header & Overview (30s)**:
+   - Point out the top bar's runtime status pill (`Live NIM · minimax-m3.1-flash` or `Offline fixture`) and `API connected` indicator.
+   - Show the **Overview** KPIs (**20 traces**, **30.0% failure rate**, **5 open regressions**) and the **Latest failure** causal spine showing the exact stage where the pipeline broke (`intake → extraction → classification → summarization`).
+2. **Interactive Custom Document Run (45s)**:
+   - Click **Test document** in the top header or left sidebar.
+   - Pick the **Invoice (hallucination fault)** preset (or upload a `.txt` file / paste an examiner's text), select `invoice` as the ground-truth expected type, and click **Run & diagnose**.
+   - Watch the UI run all 4 steps, diagnose the failure, and jump directly to the new trace in the **Traces** view.
+3. **Trace Forensics & Human-in-the-Loop Confirmation (45s)**:
+   - In **Traces**, click through the 4 stages of the spine (`intake`, `extraction`, `classification`, `summarization`).
+   - Show the failed deterministic check (`entity_grounding` or `label_grounding`), the natural-language **Evidence chain**, and the **Prompt & raw response** drawer.
+   - Click **Confirm** (or **Override** to assign a custom step/category) and explain how confirming a failure automatically mints a regression `EvalCase`.
+4. **Execution Graph & Ground-Truth Diff (30s)**:
+   - Switch to **Execution graph** to show the React Flow DAG (green upstream nodes, red root-cause node, amber tainted downstream nodes).
+   - Scroll to **Input vs Output Comparison** to show extracted entities highlighted inline in the source document and the **Ground-truth vs Observed Output** classification comparison (`expected_type` vs `document_type`).
+5. **Analytics, Spend & Fault-Injection Scorecard (30s)**:
+   - Switch to **Analytics** to show **Failure correlation (step × category)**, **Model comparison & spend** (`minimaxai/minimax-m3.1-flash` token and USD breakdown), **Evaluation suite regressions** (click **Run eval suite**), and the **Fault injection scorecard** showing **100.0% step and category accuracy** across all 7 injected fault types.
