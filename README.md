@@ -321,7 +321,15 @@ forensics worker start
 forensics queue enqueue --file doc.txt --expected invoice
 forensics queue status --job-id <id>
 forensics queue list --status pending
-forensics queue reaper [--stall-timeout N]  # reclaim stalled jobs from crashed workers
+forensics queue stats                        # counts by status, oldest pending, per-tenant in-flight
+forensics queue reaper [--stall-timeout N]   # reclaim stalled jobs from crashed workers
+forensics queue requeue --dead               # requeue dead-lettered jobs after an outage
+
+forensics prompts list                       # archived prompt templates
+forensics prompts show <name> <version>      # print one template's text
+
+forensics validate-config                    # validate settings without running
+forensics validate-config --strict-prices    # exit 2 when model prices are unset
 ```
 
 ---
@@ -337,12 +345,12 @@ Everything is environment-driven; `.env.example` documents every setting.
 | Cost control | `SPEND_CAP_PER_RUN_USD`, `SPEND_CAP_GLOBAL_USD`, `CACHE_ENABLED`, `DRY_RUN` |
 | Diagnosis | `JUDGE_ENABLED`, `JUDGE_FORCE`, `CHECK_PLUGINS`, `ANALYZER_VERSION` |
 | Privacy | `PII_REDACTION_ENABLED`, `PII_ENTITY_TYPES`, `PII_CUSTOM_PATTERNS` |
-| Auth | `AUTH_ENABLED`, `AUTH_API_KEY_PREFIX`, `AUTH_BCRYPT_ROUNDS`, `AUTH_KEY_TTL_DAYS` |
+| Auth | `AUTH_ENABLED`, `AUTH_API_KEY_PREFIX`, `AUTH_BCRYPT_ROUNDS`, `AUTH_KEY_TTL_DAYS`, `AUTH_OFF_MULTI_TENANT_POLICY` |
 | Scheduling | `EVAL_SCHEDULE`, `EVAL_SCHEDULE_TIMEZONE`, `ALERT_WEBHOOK_URL`, `ALERT_WEBHOOK_SECRET`, `ALERT_REGRESSION_THRESHOLD` |
-| Queue | `QUEUE_ENABLED`, `QUEUE_WORKER_CONCURRENCY`, `QUEUE_POLL_INTERVAL`, `QUEUE_JOB_TTL`, `QUEUE_STALL_TIMEOUT` |
+| Queue | `QUEUE_ENABLED`, `QUEUE_WORKER_CONCURRENCY`, `QUEUE_POLL_INTERVAL`, `QUEUE_JOB_TTL`, `QUEUE_STALL_TIMEOUT`, `QUEUE_PAYLOAD_MODE`, `QUEUE_MAX_INFLIGHT_PER_TENANT`, `QUEUE_MAX_ATTEMPTS`, `QUEUE_DEAD_LETTER_ENABLED` |
 | Rate Limiting | `RATE_LIMIT_ENABLED`, `RATE_LIMIT_REQUESTS_PER_MINUTE`, `RATE_LIMIT_BURST` |
 | Cost guard | `SPEND_CAP_PER_RUN_USD`, `SPEND_CAP_GLOBAL_USD`, `SPEND_PREFLIGHT_ENABLED` |
-| Database | `DATABASE_URL` (PostgreSQL) |
+| Database | `DATABASE_URL` (PostgreSQL), `PG_POOL_MIN`, `PG_POOL_MAX` |
 | Observability | `OTEL_EXPORTER`, `OTEL_ENDPOINT`, `OTEL_SERVICE_NAME`, `OTEL_SAMPLING_RATE` |
 | Paths / server | `DATA_DIR`, `TRACES_DIR`, `DB_PATH`, `CACHE_DIR`, `SPEND_FILE`, `STATIC_DIR`, `CORS_ORIGINS` |
 
@@ -363,6 +371,10 @@ fails immediately instead of at the first request.
 | Custom checks | `CHECK_PLUGINS=mod:fn` | Domain checks join the deterministic suite |
 | Judge LLM | `JUDGE_ENABLED=true` | Optional semantic second opinion |
 | Job Reaper | `QUEUE_STALL_TIMEOUT=300` | Auto-reclaim stalled jobs from crashed workers |
+| Queue fairness | `QUEUE_MAX_INFLIGHT_PER_TENANT` | Per-tenant cap on concurrent pending/running jobs; one tenant can't starve the queue |
+| Dead letter | `QUEUE_MAX_ATTEMPTS`, `QUEUE_DEAD_LETTER_ENABLED` | Jobs that exhaust retries move to `dead` instead of retrying forever |
+| Prompt templates | `QUEUE_PAYLOAD_MODE=reference` | Store only `{doc_id, expected_type}` in the queue; worker resolves text at claim time |
+| Prompt archive | (automatic) | Prompt templates archived per version; `forensics prompts list/show` |
 | Rate Limiting | `RATE_LIMIT_ENABLED=true` | Per-tenant token bucket with 429 + `Retry-After` |
 | API Key Expiry | `AUTH_KEY_TTL_DAYS=90` | Keys auto-expire after configured days |
 | Key scopes | `auth create-key --scope read` | A key can be limited to reads; `write` implies read, `*` is everything |

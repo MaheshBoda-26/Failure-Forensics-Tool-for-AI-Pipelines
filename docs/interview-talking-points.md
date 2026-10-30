@@ -10,7 +10,7 @@ This document contains the 8 hardest questions a college external examiner or en
 
 Key architectural differentiators I built:
 - **Deterministic first, cross-family LLM judge second**: The analyzer runs **7 deterministic checks** (`entity_grounding`, `label_enum`, `date_regex`, `context_preservation`, `propagation`, `schema_validity`, `label_grounding`) plus **9 domain plugin checks** before making any LLM judge call. Most platforms lead with LLM-as-judge, which is slow, non-deterministic, and expensive.
-- **Fault injection for ground-truth benchmarking**: I built a 7-fault injection harness (`src/forensics/faults.py` and `/analytics/benchmark`) that corrupts clean traces in 7 controlled ways (`hallucinated_entity`, `bad_date_format`, `invalid_enum`, `misclassification`, `context_loss`, `propagation_failure`, `prompt_truncation`). That lets us objectively measure the analyzer's step-localization and category accuracy (**100% across 12 clean baselines**) rather than guessing whether the judge works.
+- **Fault injection for ground-truth benchmarking**: I built a 7-fault injection harness (`src/forensics/faults.py` and `/analytics/benchmark`) that corrupts clean traces in 7 controlled ways (`hallucinated_entity`, `bad_date_format`, `invalid_enum`, `misclassification`, `context_loss`, `propagation_error`, `prompt_failure`). That lets us objectively measure the analyzer's step-localization and category accuracy (**100.0% across 27 clean baselines**) rather than guessing whether the judge works.
 - **Closed-loop human-to-regression flywheel**: When an operator confirms or overrides a root-cause diagnosis in the UI (`POST /diagnoses/{id}/confirm`), the system automatically mints a permanent regression `EvalCase` (`src/forensics/eval_simple.py`) so future prompt or model changes are tested against real historical failures.
 - **Zero-infrastructure local-first storage**: Dual JSON-payload + SQLite-WAL index (`src/forensics/storage.py`) with a drop-in PostgreSQL backend (`src/forensics/storage_postgres.py`) verified by schema-parity tests (`tests/test_schema_parity.py`).
 
@@ -19,7 +19,7 @@ Key architectural differentiators I built:
 ## Q2: "Your deterministic analyzer — how do you know it's actually accurate?"
 
 **Answer:** We measure it continuously in both the CLI (`forensics benchmark-analyzer`) and the React **Analytics** tab (**Fault injection scorecard**). The fault injector takes every eligible clean trace, injects all 7 fault types, runs `analyze_trace`, and scores whether the analyzer localized both the exact failing step and the failure category:
-- **Step-localization accuracy**: **100.0%** across all scoreable injected faults on our 12 clean baseline traces
+- **Step-localization accuracy**: **100.0%** across all scoreable injected faults on **27** clean baseline traces
 - **Category accuracy**: **100.0%** across all scoreable injected faults
 - **Seeded dataset reproduction**: **5/5** seeded failures in `dataset/labels.json` (`contract_001`, `invoice_003`, `report_003`, `correspondence_002`, `mixed_001`) localized to their exact step and category
 
@@ -81,16 +81,30 @@ When a fault's precondition isn't met on a baseline (for example, `context_loss`
 
 ---
 
+## Q9: "Why do you persist redacted spans instead of the raw trace text?"
+
+**Answer:** Because `POST /pipeline/run` analyzes the trace **before** `PII_REDACTION_ENABLED` scrubs it on disk, so entity grounding works against real text. But once the trace is written, **only the redacted version survives** (`finalize_trace` in `src/forensics/tracing.py` redacts every span field and the diagnosis evidence at the persistence boundary). That means `POST /traces/{id}/diagnose` on an old trace would see `█` where the original had an email or IP, and `entity_grounding` would flag a correctly extracted entity as a hallucination.
+
+We deliberately **do not** persist an unredacted second copy anywhere — that would reopen the leak spec 03 closes. Instead, the re-diagnosis endpoint follows a **409/override contract** (`docs/limitations.md` §7b): return the stored write-time diagnosis (`X-Diagnosis-Source: stored`), or refuse with `409` unless the operator explicitly opts in with `?allow_redacted=true`, which sets `Diagnosis.degraded_reason` so the UI shows a banner that the verdict was computed against redacted spans.
+
+---
+
+## Q10: "Why no message broker (Redis/RabbitMQ) or Kubernetes for the queue?"
+
+**Answer:** Because this is a **forensics** tool, not a monitoring platform, and its queue is a correctness device, not a throughput engine (`docs/limitations.md` §17). Every claim is an atomic `UPDATE ... RETURNING` on the **same SQLite file** that holds the traces, so two workers can never claim the same job — no external broker needed. The only levers are `QUEUE_WORKER_CONCURRENCY`, `QUEUE_POLL_INTERVAL`, `QUEUE_JOB_TTL`, and `QUEUE_MAX_INFLIGHT_PER_TENANT` (per-tenant inflight cap to prevent starvation). A job that exhausts `QUEUE_MAX_ATTEMPTS` moves to a `dead` state (dead-lettering) instead of retrying forever. Adding Redis, Celery, autoscaling, or Kubernetes would add operational surface for zero forensics benefit — if that ever becomes a real requirement, it is a separate project, not a phase here.
+
+---
+
 ## Quick Reference: Shipped Project Metrics
 
 | Metric | Value |
 |---|---|
-| **Automated Test Suite** | **582 passing tests** (`568` backend `pytest` + `14` frontend `vitest`), `0` errors in `ruff` & `mypy --strict` |
+| **Automated Test Suite** | **626 passing tests** (`607` backend `pytest` + `19` frontend `vitest`), `0` errors in `ruff` & `mypy --strict` |
 | **Pipeline Architecture** | 4 traced steps (`Intake → Extraction → Classification → Summarization`) |
 | **Document Types** | 5 (`contract`, `invoice`, `report`, `correspondence`, `mixed`) |
 | **Failure Categories** | 5 (`extraction_hallucination`, `misclassification`, `propagation_error`, `prompt_failure`, `context_loss`) + `unknown` |
 | **Forensic Checks** | 7 core deterministic checks + 9 domain plugin checks (`src/forensics/custom_checks.py`) + cross-family Judge LLM |
-| **Fault Injection Harness** | 7 controlled fault injectors (`100.0%` step & category localization accuracy across 12 clean baselines) |
+| **Fault Injection Harness** | 7 controlled fault injectors (`100.0%` step & category localization accuracy across 27 clean baselines) |
 | **Pre-Seeded Corpus** | 20 traces in `data/forensics.db` (5 committed real NVIDIA NIM traces + 15 dataset traces) + 150-doc `dataset_large/` |
 | **Enterprise Guards** | Multi-tenant RBAC (`ffk_` bcrypt keys + `read`/`write` scopes), SQLite token-bucket rate limiter, pre-storage PII redaction, OTel exporter |
 

@@ -217,3 +217,52 @@ The project is now production-hardened with:
 - ✅ Enhanced analytics with cost/latency/model tracking
 - ✅ 9 custom domain check plugins
 - ✅ Complete interview preparation materials
+
+---
+
+## ✅ Phase G: Remaining Limitations (failure-forensics-remaining-work.md)
+
+All gaps catalogued in `docs/limitations.md` were turned into sequenced, testable work:
+
+**Phase 0 — Baseline lock & harness**: `docs/baseline-2026-10.md` records `make check` (626 passing tests), `pytest` count, `npm test` count, `demo` summary, and `benchmark-analyzer` scorecard. `tests/test_limitations_contract.py` is a regression fence asserting the guard flags on `GET /runtime`, queue payload clearing, `finalize_trace` PII redaction, check-plugin loader raising on bad specs, and `AUTH_KEY_TTL_DAYS` binding. New `make baseline` target re-records these.
+
+**Phase 1 — Configuration honesty**:
+- `Settings.prices_configured` (computed) warns at startup when any active model's price is zero, so a misconfigured deploy announces itself instead of reporting `$0.0000` (`docs/limitations.md` §10).
+- `GET /runtime` exposes `prices_configured`, `spend_caps_usd`, `auth_enabled`, and `tenant_isolation`.
+- `forensics validate-config --strict-prices` exits 2 when prices are unset (exit 0 + warning otherwise, so `demo` is unchanged).
+- `Header.tsx` renders a "Prices unset — spend reads $0.00" chip when prices are unconfigured; `.env.example` documents the price block with a worked per-1M example.
+- `AUTH_OFF_MULTI_TENANT_POLICY` (`warn`|`refuse`, default `warn`): startup warns (or refuses) when `AUTH_ENABLED=false` and the DB holds >1 tenant, auditable via `forensics auth list-tenants` (`docs/limitations.md` §4).
+
+**Phase 2 — Data lifecycle & redaction correctness**:
+- `QUEUE_PAYLOAD_MODE=reference`: `POST /pipeline/run` stores only `{doc_id, expected_type}` (no `doc_text`); the worker resolves it via `read_document` at claim time, failing synchronously at enqueue if the document is unresolvable. `job_queue` no longer holds raw text at rest in reference mode (`docs/limitations.md` §5).
+- Re-diagnosis contract: with `PII_REDACTION_ENABLED=true`, `POST /traces/{id}/diagnose` returns the stored write-time diagnosis (`X-Diagnosis-Source: stored`), returns `409` naming the cause when none is stored, or accepts `?allow_redacted=true` which sets `Diagnosis.degraded_reason` and `X-Diagnosis-Source: redacted-recompute` so the UI surfaces a banner (`docs/limitations.md` §7b).
+
+**Phase 3 — Evidence completeness**:
+- Prompt builders extracted to `src/forensics/prompts.py` byte-for-byte (hash-pinned test); each `Span` now records `prompt_template` (name, not text) and `save_trace` upserts one `PromptTemplate` row per (name, content-hash version) in SQLite and PostgreSQL. Exposed via `GET /prompt-templates`, `GET /prompt-templates/{name}/{version}`, and `forensics prompts list` / `forensics prompts show` (`docs/limitations.md` §9).
+- `check_propagation` skips (pass-with-note) when upstream classification carries no salient definitional terminology; `find_root_cause` attributes the earliest failing step as root cause and lists later `propagation` failures as downstream evidence (`docs/limitations.md` §11). Benchmark accuracy unchanged at **100.0%**.
+
+**Phase 4 — Queue fairness & worker health**:
+- `QUEUE_MAX_INFLIGHT_PER_TENANT` (default 0 = unlimited): `Queue.dequeue` excludes tenants whose `pending`+`running` count reaches the cap, in the same atomic `UPDATE ... RETURNING` claim (SQLite + PostgreSQL), so one tenant cannot starve the queue.
+- `QUEUE_MAX_ATTEMPTS` + `QUEUE_DEAD_LETTER_ENABLED` (default true): jobs that exhaust retries move to `DEAD` instead of `failed`, so poison jobs stop retrying forever.
+- `Queue.stats()`: counts by status, oldest pending age, per-tenant in-flight; exposed via `GET /queue/stats`, `forensics queue stats`, and `forensics queue requeue --dead` (ADR 0017; `docs/limitations.md` §17).
+
+**Phase 5 — Verification & operations**:
+- Weekly scheduled live-model CI job (`schedule: cron "0 6 * * 1"`, Monday 06:00 UTC, plus `workflow_dispatch`) runs one document against real NVIDIA NIM with bounded spend (`SPEND_CAP_PER_RUN_USD=0.05`, `SPEND_CAP_GLOBAL_USD=0.20`), skips-with-success on quota `429`, uploads the trace JSON as a workflow artifact, and writes a job summary (model, tokens, cost, root cause). PRs never spend quota (`docs/limitations.md` §16).
+- `tests/test_postgres_ops.py`: pool exhaustion (concurrent ops succeed under a tiny `PG_POOL_MAX`), connection-kill reconnect (`pg_terminate_backend`), idempotent `close()` and rebuild-after-close, and long-running-transaction non-wedging (`PG_POOL_MIN`/`PG_POOL_MAX` wired into `storage_postgres.py`; `docs/limitations.md` §18).
+
+**Phase 6 — Residual UI/UX gaps**:
+- `TraceDetailView` shows an explicit "this trace has no spans (fixture row)" panel with trace id and back link when a trace has no spans.
+- `TokenDiffView` shows "Ground truth not available for this document" when `trace.expected_type` is null.
+- `AnalyticsView` has an "Export CSV" button serializing all analytics tables client-side (`serializeAnalyticsCsv`).
+- `App.tsx` implements keyboard shortcuts: `g o`/`g t`/`g a` (overview/traces/analytics), `/` and `?` (help dialog), `Escape` (close dialogs), with an accessible help dialog.
+- Frontend unit/component tests for `serializeAnalyticsCsv` and the `TraceDetailView` empty state.
+
+The project is now production-hardened with:
+- ✅ Job reaper for worker crash recovery
+- ✅ API key expiry with configurable TTL
+- ✅ Per-tenant rate limiting with token bucket
+- ✅ PostgreSQL backend for horizontal scaling
+- ✅ Scaled demo dataset (150 docs, 7 fault types)
+- ✅ Enhanced analytics with cost/latency/model tracking
+- ✅ 9 custom domain check plugins
+- ✅ Complete interview preparation materials
