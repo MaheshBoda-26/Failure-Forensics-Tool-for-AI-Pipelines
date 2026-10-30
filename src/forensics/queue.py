@@ -34,6 +34,8 @@ from typing import Any, cast
 
 from pydantic import BaseModel, Field
 
+from forensics.config import get_settings
+
 #: Payload retained for a finished job: empty, never the document text.
 _CLEARED_PAYLOAD = "{}"
 
@@ -87,6 +89,7 @@ class JobStatus(StrEnum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    DEAD = "dead"
 
 
 class Job(BaseModel):
@@ -256,10 +259,18 @@ class JobQueue:
     # --- consumer ---
 
     def dequeue(self, worker_id: str, concurrency: int = 1, stall_timeout: int = 300) -> list[Job]:
-        """Atomically claim up to `concurrency` pending jobs, highest priority first."""
+        """Atomically claim up to `concurrency` pending jobs, highest priority first.
+
+        When `QUEUE_MAX_INFLIGHT_PER_TENANT` is set (> 0), tenants that already
+        have that many jobs `pending` or `running` are skipped so one tenant
+        cannot starve the queue. The exclusion is part of the atomic claim, so two
+        workers cannot both claim past a tenant's cap.
+        """
         claimed: list[Job] = []
         now_dt = datetime.now(UTC)
         expires_at = now_dt + timedelta(seconds=stall_timeout)
+        settings = get_settings()
+        cap = settings.queue_max_inflight_per_tenant
 
         if self._use_postgres:
             from forensics.storage import get_storage
@@ -270,26 +281,57 @@ class JobQueue:
                 rows_claimed: list[Job] = []
                 async with storage._conn() as conn:
                     for _ in range(max(concurrency, 0)):
-                        row = await conn.fetchrow(
-                            """
-                            UPDATE job_queue
-                            SET status = $1, started_at = $2, worker_id = $3,
-                                attempts = attempts + 1, claim_expires_at = $4
-                            WHERE job_id = (
-                                SELECT job_id FROM job_queue
-                                WHERE status = $5
-                                ORDER BY priority DESC, created_at
-                                FOR UPDATE SKIP LOCKED
-                                LIMIT 1
+                        if cap > 0:
+                            row = await conn.fetchrow(
+                                """
+                                UPDATE job_queue
+                                SET status = $1, started_at = $2, worker_id = $3,
+                                    attempts = attempts + 1, claim_expires_at = $4
+                                WHERE job_id = (
+                                    SELECT job_id FROM job_queue
+                                    WHERE status = $5
+                                      AND tenant_id NOT IN (
+                                          SELECT tenant_id FROM job_queue
+                                          WHERE status IN ($6, $7)
+                                          GROUP BY tenant_id
+                                          HAVING COUNT(*) >= $8
+                                      )
+                                    ORDER BY priority DESC, created_at
+                                    FOR UPDATE SKIP LOCKED
+                                    LIMIT 1
+                                )
+                                RETURNING *
+                                """,
+                                JobStatus.RUNNING.value,
+                                now_dt,
+                                worker_id,
+                                expires_at,
+                                JobStatus.PENDING.value,
+                                JobStatus.PENDING.value,
+                                JobStatus.RUNNING.value,
+                                cap,
                             )
-                            RETURNING *
-                            """,
-                            JobStatus.RUNNING.value,
-                            now_dt,
-                            worker_id,
-                            expires_at,
-                            JobStatus.PENDING.value,
-                        )
+                        else:
+                            row = await conn.fetchrow(
+                                """
+                                UPDATE job_queue
+                                SET status = $1, started_at = $2, worker_id = $3,
+                                    attempts = attempts + 1, claim_expires_at = $4
+                                WHERE job_id = (
+                                    SELECT job_id FROM job_queue
+                                    WHERE status = $5
+                                    ORDER BY priority DESC, created_at
+                                    FOR UPDATE SKIP LOCKED
+                                    LIMIT 1
+                                )
+                                RETURNING *
+                                """,
+                                JobStatus.RUNNING.value,
+                                now_dt,
+                                worker_id,
+                                expires_at,
+                                JobStatus.PENDING.value,
+                            )
                         if row is None:
                             break
                         rows_claimed.append(self._row_to_job(row))
@@ -299,27 +341,59 @@ class JobQueue:
 
         with self._conn() as conn:
             for _ in range(max(concurrency, 0)):
-                cursor = conn.execute(
-                    """
-                    UPDATE job_queue
-                    SET status = ?, started_at = ?, worker_id = ?, attempts = attempts + 1,
-                        claim_expires_at = ?
-                    WHERE job_id = (
-                        SELECT job_id FROM job_queue
-                        WHERE status = ?
-                        ORDER BY priority DESC, created_at
-                        LIMIT 1
+                if cap > 0:
+                    cursor = conn.execute(
+                        """
+                        UPDATE job_queue
+                        SET status = ?, started_at = ?, worker_id = ?, attempts = attempts + 1,
+                            claim_expires_at = ?
+                        WHERE job_id = (
+                            SELECT job_id FROM job_queue
+                            WHERE status = ?
+                              AND tenant_id NOT IN (
+                                  SELECT tenant_id FROM job_queue
+                                  WHERE status IN (?, ?)
+                                  GROUP BY tenant_id
+                                  HAVING COUNT(*) >= ?
+                              )
+                            ORDER BY priority DESC, created_at
+                            LIMIT 1
+                        )
+                        RETURNING *
+                        """,
+                        (
+                            JobStatus.RUNNING.value,
+                            datetime.now(UTC).isoformat(),
+                            worker_id,
+                            expires_at.isoformat(),
+                            JobStatus.PENDING.value,
+                            JobStatus.PENDING.value,
+                            JobStatus.RUNNING.value,
+                            cap,
+                        ),
                     )
-                    RETURNING *
-                    """,
-                    (
-                        JobStatus.RUNNING.value,
-                        datetime.now(UTC).isoformat(),
-                        worker_id,
-                        expires_at.isoformat(),
-                        JobStatus.PENDING.value,
-                    ),
-                )
+                else:
+                    cursor = conn.execute(
+                        """
+                        UPDATE job_queue
+                        SET status = ?, started_at = ?, worker_id = ?, attempts = attempts + 1,
+                            claim_expires_at = ?
+                        WHERE job_id = (
+                            SELECT job_id FROM job_queue
+                            WHERE status = ?
+                            ORDER BY priority DESC, created_at
+                            LIMIT 1
+                        )
+                        RETURNING *
+                        """,
+                        (
+                            JobStatus.RUNNING.value,
+                            datetime.now(UTC).isoformat(),
+                            worker_id,
+                            expires_at.isoformat(),
+                            JobStatus.PENDING.value,
+                        ),
+                    )
                 row = cursor.fetchone()
                 if row is None:
                     break
@@ -372,8 +446,16 @@ class JobQueue:
             return cursor.rowcount > 0
 
     def fail(self, job_id: str, error: str) -> JobStatus:
-        """Record a failure, requeueing while attempts remain."""
+        """Record a failure, requeueing while attempts remain.
+
+        When `QUEUE_DEAD_LETTER_ENABLED` is true (default) and the job has
+        exhausted `max_attempts`, it is marked `dead` instead of `failed` so a
+        poison job stops retrying forever. Set `QUEUE_DEAD_LETTER_ENABLED=false`
+        to keep the historical `failed` terminal state.
+        """
         now_dt = datetime.now(UTC)
+        settings = get_settings()
+        dead_letter = settings.queue_dead_letter_enabled
         if self._use_postgres:
             from forensics.storage import get_storage
 
@@ -398,6 +480,7 @@ class JobQueue:
                         )
                         return JobStatus.PENDING
 
+                    terminal = JobStatus.DEAD.value if dead_letter else JobStatus.FAILED.value
                     await conn.execute(
                         """
                         UPDATE job_queue
@@ -405,13 +488,13 @@ class JobQueue:
                             payload = $4, claim_expires_at = NULL
                         WHERE job_id = $5
                         """,
-                        JobStatus.FAILED.value,
+                        terminal,
                         now_dt,
                         error,
                         _CLEARED_PAYLOAD,
                         job_id,
                     )
-                    return JobStatus.FAILED
+                    return JobStatus(terminal)
 
             return JobStatus(storage._run_coro(_pg_fail()))
 
@@ -431,6 +514,7 @@ class JobQueue:
                 )
                 return JobStatus.PENDING
 
+            terminal = JobStatus.DEAD.value if dead_letter else JobStatus.FAILED.value
             conn.execute(
                 """
                 UPDATE job_queue
@@ -439,14 +523,14 @@ class JobQueue:
                 WHERE job_id = ?
                 """,
                 (
-                    JobStatus.FAILED.value,
+                    terminal,
                     now_dt.isoformat(),
                     error,
                     _CLEARED_PAYLOAD,
                     job_id,
                 ),
             )
-            return JobStatus.FAILED
+            return JobStatus(terminal)
 
     # --- readers ---
 
@@ -558,6 +642,70 @@ class JobQueue:
         for status, count in rows:
             totals[str(status)] = int(count)
         return totals
+
+    def stats(self) -> dict[str, Any]:
+        """Queue statistics for an operator dashboard.
+
+        Returns counts by status, the age (in seconds) of the oldest pending job,
+        and per-tenant in-flight (pending + running) counts.
+        """
+        now_dt = datetime.now(UTC)
+        stats: dict[str, Any] = {
+            "by_status": {status.value: 0 for status in JobStatus},
+            "oldest_pending_age_s": None,
+            "inflight_per_tenant": {},
+        }
+        if self._use_postgres:
+            from forensics.storage import get_storage
+
+            storage: Any = get_storage()
+
+            async def _pg_stats() -> dict[str, Any]:
+                async with storage._conn() as conn:
+                    rows = await conn.fetch(
+                        "SELECT status, COUNT(*) AS cnt FROM job_queue GROUP BY status"
+                    )
+                    for row in rows:
+                        stats["by_status"][str(row["status"])] = int(row["cnt"])
+                    oldest = await conn.fetchval(
+                        "SELECT MAX(EXTRACT(EPOCH FROM ($1::timestamptz - created_at))) "
+                        "FROM job_queue WHERE status = $2",
+                        now_dt,
+                        JobStatus.PENDING.value,
+                    )
+                    if oldest is not None:
+                        stats["oldest_pending_age_s"] = float(oldest)
+                    rows = await conn.fetch(
+                        "SELECT tenant_id, COUNT(*) AS cnt FROM job_queue "
+                        "WHERE status IN ($1, $2) GROUP BY tenant_id",
+                        JobStatus.PENDING.value,
+                        JobStatus.RUNNING.value,
+                    )
+                    for row in rows:
+                        stats["inflight_per_tenant"][row["tenant_id"]] = int(row["cnt"])
+                return stats
+
+            return cast(dict[str, Any], storage._run_coro(_pg_stats()))
+
+        with self._conn() as conn:
+            rows = conn.execute("SELECT status, COUNT(*) FROM job_queue GROUP BY status").fetchall()
+            for status, count in rows:
+                stats["by_status"][str(status)] = int(count)
+            oldest = conn.execute(
+                "SELECT MAX(strftime('%s', ?) - strftime('%s', created_at)) "
+                "FROM job_queue WHERE status = ?",
+                (now_dt.isoformat(), JobStatus.PENDING.value),
+            ).fetchone()
+            if oldest and oldest[0] is not None:
+                stats["oldest_pending_age_s"] = float(oldest[0])
+            rows = conn.execute(
+                "SELECT tenant_id, COUNT(*) FROM job_queue WHERE status IN (?, ?) "
+                "GROUP BY tenant_id",
+                (JobStatus.PENDING.value, JobStatus.RUNNING.value),
+            ).fetchall()
+            for tenant_id, count in rows:
+                stats["inflight_per_tenant"][tenant_id] = int(count)
+        return stats
 
     # --- housekeeping ---
 
