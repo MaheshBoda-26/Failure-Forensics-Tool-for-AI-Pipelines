@@ -10,6 +10,7 @@ import {
   PipelineRunRequest,
   PipelineRunResponse,
   FaultBenchmarkSummary,
+  RuntimeStatus,
 } from "./types";
 
 const API_BASE = "";
@@ -52,6 +53,11 @@ async function handleResponse<T>(res: Response): Promise<T> {
 }
 
 export const api = {
+  async getRuntimeStatus(): Promise<RuntimeStatus> {
+    const res = await apiFetch(`${API_BASE}/runtime`);
+    return handleResponse<RuntimeStatus>(res);
+  },
+
   async getTraces(limit: number = 100): Promise<Trace[]> {
     const res = await apiFetch(`${API_BASE}/traces?limit=${limit}`);
     return handleResponse<Trace[]>(res);

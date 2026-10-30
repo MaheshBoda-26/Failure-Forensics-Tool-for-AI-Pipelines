@@ -5,6 +5,7 @@ import type {
   Diagnosis,
   EvalRun,
   PipelineRunRequest,
+  RuntimeStatus,
   Trace,
 } from "./api/types";
 import { AnalyticsView } from "./components/AnalyticsView";
@@ -37,6 +38,7 @@ export const App: React.FC = () => {
   const [currentDiagnosis, setCurrentDiagnosis] = useState<Diagnosis | null>(null);
   const [analytics, setAnalytics] = useState<AnalyticsSnapshot | null>(null);
   const [evalRuns, setEvalRuns] = useState<EvalRun[]>([]);
+  const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
   const [backendOnline, setBackendOnline] = useState<boolean>(true);
   const [isRunningDemo, setIsRunningDemo] = useState<boolean>(false);
   const [isRunningDocument, setIsRunningDocument] = useState<boolean>(false);
@@ -51,10 +53,11 @@ export const App: React.FC = () => {
   const loadData = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      const [traceResult, analyticsResult, evalResult] = await Promise.allSettled([
+      const [traceResult, analyticsResult, evalResult, runtimeResult] = await Promise.allSettled([
         api.getTraces(100),
         api.getAnalytics(),
         api.getEvalRuns(),
+        api.getRuntimeStatus(),
       ]);
 
       let nextSelected = selectedIdRef.current;
@@ -88,6 +91,10 @@ export const App: React.FC = () => {
 
       if (evalResult.status === "fulfilled") {
         setEvalRuns(evalResult.value);
+      }
+
+      if (runtimeResult.status === "fulfilled") {
+        setRuntime(runtimeResult.value);
       }
 
       if (nextSelected) {
@@ -219,6 +226,7 @@ export const App: React.FC = () => {
         activeTab={activeTab}
         onTabChange={setActiveTab}
         backendOnline={backendOnline}
+        runtime={runtime}
         onRunDemo={handleRunDemo}
         isRunningDemo={isRunningDemo}
         onRunDocument={handleRunDocument}

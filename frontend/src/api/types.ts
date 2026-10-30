@@ -256,3 +256,18 @@ export interface FaultBenchmarkSummary {
   category_accuracy: number;
   results: FaultBenchmarkRow[];
 }
+
+export interface RuntimeStatus {
+  status: string;
+  dry_run: boolean;
+  pipeline_model: string;
+  pipeline_provider: string;
+  judge_model: string;
+  judge_provider: string;
+  judge_enabled: boolean;
+  pii_redaction_enabled: boolean;
+  rate_limit_enabled: boolean;
+  queue_enabled: boolean;
+  check_plugins_count: number;
+  pipeline_version: string;
+}

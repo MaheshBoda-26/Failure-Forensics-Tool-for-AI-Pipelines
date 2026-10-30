@@ -1145,3 +1145,20 @@ def test_analytics_benchmark_endpoint_scores_clean_baselines(
 def cast_int(value: object) -> int:
     assert isinstance(value, int)
     return value
+
+
+def test_runtime_status_endpoint_reports_active_mode_and_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GET /runtime returns active dry_run flag, pipeline_model, and judge_model."""
+    from forensics import api
+    from forensics.config import reset_settings
+
+    monkeypatch.setenv("DRY_RUN", "true")
+    reset_settings()
+
+    body = api.runtime_status()
+    assert body["status"] == "ok"
+    assert body["dry_run"] is True
+    assert isinstance(body["pipeline_model"], str) and body["pipeline_model"]
+    assert isinstance(body["judge_model"], str) and body["judge_model"]

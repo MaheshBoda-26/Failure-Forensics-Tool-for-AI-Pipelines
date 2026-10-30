@@ -1163,15 +1163,26 @@ class NIMClient:
 
         if self.dry_run:
             parsed = self._dry_run_response(response_model, document_id, prompt)
+            raw_json = (
+                parsed.model_dump_json()
+                if isinstance(parsed, BaseModel)
+                else json.dumps(parsed, default=str)
+            )
+            prompt_tokens = max(len(prompt) // 4, 1)
+            completion_tokens = max(len(raw_json) // 4, 1)
             return StructuredResponse(
-                content="",
+                content=raw_json,
                 model=model_config.model_id,
                 provider=model_config.provider,
-                usage=TokenUsage(),
+                usage=TokenUsage(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=prompt_tokens + completion_tokens,
+                ),
                 latency_ms=0,
                 raw_response={},
                 parsed=parsed,
-                cached=True,
+                cached=False,
             )
 
         # Check cache first

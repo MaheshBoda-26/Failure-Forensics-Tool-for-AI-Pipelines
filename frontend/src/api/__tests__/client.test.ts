@@ -207,4 +207,22 @@ describe("api client", () => {
       expect.objectContaining({ method: "POST" })
     );
   });
+
+  it("getRuntimeStatus fetches /runtime", async () => {
+    setApiKey("ffk_test");
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: "ok",
+        dry_run: false,
+        pipeline_model: "minimaxai/minimax-m3.1-flash",
+        pipeline_provider: "nvidia_nim",
+      }),
+    });
+
+    const res = await api.getRuntimeStatus();
+    expect(res.dry_run).toBe(false);
+    expect(res.pipeline_model).toBe("minimaxai/minimax-m3.1-flash");
+    expect(global.fetch).toHaveBeenCalledWith("/runtime", expect.any(Object));
+  });
 });

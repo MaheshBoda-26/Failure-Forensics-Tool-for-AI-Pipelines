@@ -2,18 +2,19 @@
 
 ## Project: Failure Forensics Tool
 
-A 2-day emergency build of a failure forensics tool for multi-step LLM pipelines.
-Current status: **Day 1 complete, Day 2 in progress**.
+A failure forensics tool for multi-step LLM pipelines.
+Current status: **Complete & Demo-Ready** (FastAPI + React 19 UI + 7 deterministic checks + cross-family Judge LLM + OTel + PII redaction + RBAC auth + worker queue + evaluation flywheel).
 
 ## Quick Reference
 
 | Command | Purpose |
 |---|---|
+| `./demo.sh` | One-command launcher (check + seed + FastAPI `:8000` + Vite `:5173`) |
+| `make seed` | Pre-load 5 real NIM traces + 15 dataset traces into SQLite |
 | `make check` | Run ruff + mypy strict + pytest (must pass) |
 | `python -m forensics.cli demo` | Run all 15 docs, print summary |
 | `python -m forensics.cli run <doc>` | Single document pipeline run |
 | `make run-web` | Launch React trace explorer UI |
-| `streamlit run streamlit_app.py` | Launch trace explorer UI (legacy Streamlit) |
 | `python -m forensics.cli eval` | Run eval cases, print table |
 | `python -m forensics.cli analytics` | Print analytics JSON |
 | `python -m forensics.cli benchmark-analyzer` | Run fault injection scorecard |
@@ -24,7 +25,7 @@ Current status: **Day 1 complete, Day 2 in progress**.
 - Each step wrapped with `@traced_step` decorator
 - Produces 4 spans per trace, saved to JSON (`data/traces/`) + SQLite (`data/forensics.db`)
 
-**Analyzer (deterministic v0):** Runs 7 checks per span:
+**Analyzer (deterministic v0):** Runs 7 checks per span (`src/forensics/checks.py` & `src/forensics/analyzer_simple.py`):
 1. **Entity grounding** — extracted entity value must appear in source text
 2. **Label enum** — classification output must be valid `DocumentType`
 3. **Date regex** — date entities must match `YYYY-MM-DD` (flexible formats accepted)
@@ -35,7 +36,7 @@ Current status: **Day 1 complete, Day 2 in progress**.
 
 **Root cause** = first span with ANY failed check.
 
-**Judge LLM (v1):** Cross-family model with structured output for semantic analysis.
+**Judge LLM (v1):** Cross-family model (`meta/llama-3.1-8b-instruct`) with structured output for semantic analysis when deterministic checks pass or require tie-breaking.
 
 ## Key Files
 
@@ -47,13 +48,18 @@ src/forensics/
 ├── pipeline.py        # 4 pipeline steps + chain runner
 ├── tracing.py         # @traced_step, TraceContext, JSON writer, SQLite init
 ├── storage.py         # Unified Storage class (traces, flags, diagnoses, eval)
-├── analyzer_simple.py # 7 deterministic checks + root cause finder
-├── eval_simple.py     # Flag→EvalCase, eval runner
-├── api.py             # FastAPI + /analytics endpoint
-├── cli.py             # Typer CLI (ping, run, demo, validate-dataset, eval, analytics, benchmark-analyzer)
-├── otel_export.py     # OpenTelemetry export
-├── pii.py             # PII redaction
-└── faults.py          # Fault injection for testing
+├── checks.py          # Extensible check plugin registry + 7 built-in checks
+├── analyzer_simple.py # Deterministic analyzer + Judge LLM integration
+├── eval_simple.py     # Flag→EvalCase flywheel, eval runner
+├── api.py             # FastAPI (/runtime, /pipeline/run, /analytics/benchmark, etc.)
+├── cli.py             # Typer CLI (ping, run, demo, seed, eval, analytics, benchmark-analyzer)
+├── auth.py            # Multi-tenant RBAC API key verification
+├── queue.py           # Atomic SQLite job queue
+├── worker.py          # Background pipeline worker
+├── scheduler.py       # Periodic evaluation scheduler + webhook alerts
+├── otel_export.py     # OpenTelemetry span export
+├── pii.py             # Pre-storage regex PII redaction
+└── faults.py          # 7-fault injection harness for benchmarking
 ```
 
 ## Dataset
@@ -65,55 +71,22 @@ src/forensics/
 - `correspondence_001-003.txt`
 - `mixed_001-003.txt`
 
-Ground truth in `dataset/labels.json` — 5 seeded failures (1 per type + 1 mixed).
-
-## Common Tasks
-
-### Add a New Pipeline Step
-1. Add output model to `models.py`
-2. Add step method to `Pipeline` class in `pipeline.py`
-3. Add `@traced_step("step_name")` decorator
-4. Add deterministic check to `analyzer_simple.py` if needed
-5. Update `run()` method to call new step
-
-### Run Tests
-```bash
-make test           # Unit tests only
-make test-live      # With real NIM calls (uses hosted quota)
-```
-
-### Debug a Trace
-```python
-from forensics.storage import Storage
-from forensics.analyzer_simple import analyze_trace
-from pathlib import Path
-
-storage = Storage()
-trace = storage.get_trace("trace_id_here")
-doc_text = Path("dataset/documents/doc_id.txt").read_text()
-diagnosis = analyze_trace(trace, doc_text)
-print(diagnosis.root_cause_step, diagnosis.category, diagnosis.evidence_chain)
-```
-
-## Known Limitations (v0)
-
-1. **No OTel** — Custom tracing only (OTel export implemented in `otel_export.py`)
-2. **No React frontend** — React UI implemented (`make run-web`), Streamlit is legacy
-3. **Judge LLM** — Implemented but requires cross-family model configuration
+Ground truth in `dataset/labels.json` — 5 seeded failures (`contract_001`, `invoice_003`, `report_003`, `correspondence_002`, `mixed_001`).
 
 ## Environment Variables (`.env`)
 
 ```bash
-NVIDIA_API_KEY=...                    # Required for live mode
+NVIDIA_API_KEY=...                    # Required for live mode (DRY_RUN=false)
 PIPELINE_MODEL_ID=minimaxai/minimax-m3.1-flash
 PIPELINE_MODEL_PROVIDER=minimaxai
 PIPELINE_MODEL_FAMILY=minimaxai
-PIPELINE_MODEL_PRICE_IN=0.0
-PIPELINE_MODEL_PRICE_OUT=0.0
-# ... similar for fallback, judge, cheap models
+PIPELINE_MODEL_PRICE_IN=0.20
+PIPELINE_MODEL_PRICE_OUT=0.80
 JUDGE_MODEL_ID=meta/llama-3.1-8b-instruct
 JUDGE_MODEL_PROVIDER=meta
 JUDGE_MODEL_FAMILY=meta
+JUDGE_MODEL_PRICE_IN=0.30
+JUDGE_MODEL_PRICE_OUT=0.90
 JUDGE_FAMILY_SEPARATION_REQUIRED=true
 SPEND_CAP_PER_RUN_USD=0.50
 SPEND_CAP_GLOBAL_USD=20.00
@@ -128,11 +101,3 @@ DRY_RUN=false
 - No `Any` types without justification
 - Pydantic v2 for all data models
 - `pytest` for tests, `@pytest.mark.live` for API tests
-
-## When Making Changes
-
-1. Run `make check` before committing
-2. Keep changes surgical — only touch what's needed
-3. Match existing patterns in the codebase
-4. Add type annotations for all new functions
-5. Write tests for new deterministic checks

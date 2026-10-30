@@ -199,6 +199,7 @@ PROTECTED_ENDPOINTS: list[tuple[str, str, dict[str, object] | None]] = [
     ("GET", "/jobs", None),
     ("GET", "/jobs/j1", None),
     ("GET", "/scheduler/status", None),
+    ("GET", "/runtime", None),
 ]
 
 

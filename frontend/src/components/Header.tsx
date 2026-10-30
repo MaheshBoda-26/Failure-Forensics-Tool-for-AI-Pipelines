@@ -13,8 +13,8 @@ import {
   X,
 } from "lucide-react";
 import { clearApiKey, setApiKey } from "../api/client";
-import type { DocumentType, PipelineRunRequest } from "../api/types";
-import { SpineMark } from "./ui";
+import type { DocumentType, PipelineRunRequest, RuntimeStatus } from "../api/types";
+import { SpineMark, StatusPill } from "./ui";
 
 export type NavTab = "home" | "explorer" | "dag" | "analytics";
 
@@ -22,6 +22,7 @@ interface HeaderProps {
   activeTab: NavTab;
   onTabChange: (tab: NavTab) => void;
   backendOnline: boolean;
+  runtime?: RuntimeStatus | null;
   onRunDemo: () => Promise<void>;
   isRunningDemo: boolean;
   onRunDocument: (payload: PipelineRunRequest) => Promise<void>;
@@ -129,6 +130,7 @@ export const Header: React.FC<HeaderProps> = ({
   activeTab,
   onTabChange,
   backendOnline,
+  runtime,
   onRunDemo,
   isRunningDemo,
   onRunDocument,
@@ -143,6 +145,10 @@ export const Header: React.FC<HeaderProps> = ({
   const [expectedType, setExpectedType] = useState<DocumentType | "">("invoice");
   const [docText, setDocText] = useState(SAMPLE_PRESETS[0].doc_text);
   const [runError, setRunError] = useState<string | null>(null);
+
+  const shortModelName = runtime?.pipeline_model
+    ? runtime.pipeline_model.split("/").pop() ?? runtime.pipeline_model
+    : null;
 
   const docIdInputId = useId();
   const expectedTypeInputId = useId();
@@ -254,6 +260,13 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
           {brand}
           <span className="scope">Local workspace</span>
+          {runtime ? (
+            <StatusPill tone={runtime.dry_run ? "warn" : "pass"}>
+              {runtime.dry_run
+                ? "Offline fixture"
+                : `Live NIM · ${shortModelName ?? runtime.pipeline_provider}`}
+            </StatusPill>
+          ) : null}
         </div>
 
         <div className="topbar__right">
@@ -327,7 +340,10 @@ export const Header: React.FC<HeaderProps> = ({
             )}
             <span>{isRunningDemo ? "Running demo" : "Run 15-doc demo"}</span>
           </button>
-          <p className="sidebar__meta">Pipeline v0.1</p>
+          <p className="sidebar__meta">
+            Pipeline v{runtime?.pipeline_version ?? "0.1"}
+            {shortModelName ? ` · ${shortModelName}` : ""}
+          </p>
         </div>
       </aside>
 
@@ -351,6 +367,16 @@ export const Header: React.FC<HeaderProps> = ({
               <span className="status__dot" aria-hidden="true" />
               <span>{backendOnline ? "API connected" : "API offline"}</span>
             </span>
+
+            {runtime ? (
+              <div>
+                <StatusPill tone={runtime.dry_run ? "warn" : "pass"}>
+                  {runtime.dry_run
+                    ? "Offline fixture"
+                    : `Live NIM · ${shortModelName ?? runtime.pipeline_provider}`}
+                </StatusPill>
+              </div>
+            ) : null}
 
             <ApiKeyForm
               onSaved={async () => {
@@ -382,7 +408,10 @@ export const Header: React.FC<HeaderProps> = ({
               )}
               <span>{isRunningDemo ? "Running demo" : "Run 15-doc demo"}</span>
             </button>
-            <p className="sidebar__meta">Pipeline v0.1</p>
+            <p className="sidebar__meta">
+              Pipeline v{runtime?.pipeline_version ?? "0.1"}
+              {shortModelName ? ` · ${shortModelName}` : ""}
+            </p>
           </div>
         </div>
       ) : null}

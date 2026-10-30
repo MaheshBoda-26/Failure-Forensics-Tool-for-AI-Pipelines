@@ -409,6 +409,30 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/runtime")
+def runtime_status(
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    """Runtime model, mode, and guard configuration for the UI header and sidebar."""
+    get_current_tenant(authorization, scope="read")
+    settings = get_settings()
+    plugins = [p.strip() for p in settings.check_plugins.split(",") if p.strip()]
+    return {
+        "status": "ok",
+        "dry_run": settings.dry_run,
+        "pipeline_model": settings.pipeline_model.model_id,
+        "pipeline_provider": settings.pipeline_model.provider,
+        "judge_model": settings.judge_model.model_id,
+        "judge_provider": settings.judge_model.provider,
+        "judge_enabled": settings.judge_enabled,
+        "pii_redaction_enabled": settings.pii_redaction_enabled,
+        "rate_limit_enabled": settings.rate_limit_enabled,
+        "queue_enabled": settings.queue_enabled,
+        "check_plugins_count": len(plugins),
+        "pipeline_version": settings.pipeline_version,
+    }
+
+
 @app.get("/scheduler/status")
 def scheduler_status(
     authorization: Annotated[str | None, Header()] = None,
