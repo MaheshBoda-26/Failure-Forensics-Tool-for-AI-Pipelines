@@ -23,6 +23,7 @@ from forensics import api
 from forensics import queue as queue_module
 from forensics.cli import app as cli_app
 from forensics.config import reset_settings
+from forensics.documents import store_document
 from forensics.models import DEFAULT_TENANT_ID, Document
 from forensics.queue import Job, JobQueue, JobStatus
 from forensics.storage import Storage
@@ -200,6 +201,91 @@ def test_api_rejects_an_empty_document(queue: JobQueue, queue_env: None) -> None
     assert response.status_code == 422
 
 
+# ─── Criterion 2b: queue payload modes ──────────────────────────────────────
+
+
+@pytest.fixture
+def reference_queue_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Queue on, payload mode = reference."""
+    monkeypatch.setenv("QUEUE_ENABLED", "true")
+    monkeypatch.setenv("QUEUE_PAYLOAD_MODE", "reference")
+    monkeypatch.setenv("QUEUE_POLL_INTERVAL", "0.01")
+    monkeypatch.setenv("QUEUE_WORKER_CONCURRENCY", "2")
+    reset_settings()
+    yield
+    reset_settings()
+
+
+def test_reference_mode_enqueues_without_document_text(
+    api_state: Storage, queue: JobQueue, reference_queue_env: None
+) -> None:
+    """The job row carries only {doc_id, expected_type}: no doc_text at rest."""
+    response = TestClient(api.app).post(
+        "/pipeline/run",
+        json={"doc_id": "invoice_001", "doc_text": DOC_TEXT, "expected_type": "invoice"},
+    )
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+    job = queue.get_job(job_id)
+    assert job is not None
+    assert job.payload == {"doc_id": "invoice_001", "expected_type": "invoice"}
+    assert "doc_text" not in job.payload
+
+    # The raw SQLite row, too: no document text at rest in the queue.
+    conn = sqlite3.connect(queue.db_path)
+    try:
+        row = conn.execute("SELECT payload FROM job_queue WHERE job_id = ?", (job_id,)).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    stored = json.loads(row[0])
+    assert stored == {"doc_id": "invoice_001", "expected_type": "invoice"}
+    assert "doc_text" not in stored
+
+
+def test_worker_processes_reference_mode_job(
+    storage: Storage, queue: JobQueue, reference_queue_env: None
+) -> None:
+    """The worker resolves doc_id via read_document and processes end to end."""
+    store_document("doc_001", DOC_TEXT, tenant_id="acme")
+    job = queue.enqueue("acme", {"doc_id": "doc_001", "expected_type": "invoice"})
+    pipeline = FakePipeline()
+    worker = PipelineWorker(storage, queue, pipeline=pipeline, worker_id="w1")
+
+    processed = asyncio.run(worker.run_once(pipeline))
+
+    assert processed == 1
+    completed = queue.get_job(job.job_id)
+    assert completed is not None
+    assert completed.status is JobStatus.COMPLETED
+    assert completed.error is None
+    assert completed.payload == {}
+    # The worker resolved the same text the caller persisted.
+    assert pipeline.calls == [DOC_TEXT]
+
+
+def test_reference_mode_missing_document_fails_terminally(
+    storage: Storage, queue: JobQueue, reference_queue_env: None
+) -> None:
+    """A document that cannot be resolved fails the job with an actionable error."""
+    job = queue.enqueue(
+        "acme",
+        {"doc_id": "does_not_exist_001", "expected_type": "invoice"},
+        max_attempts=1,
+    )
+    pipeline = FakePipeline()
+    worker = PipelineWorker(storage, queue, pipeline=pipeline, worker_id="w1")
+    asyncio.run(worker.run_once(pipeline))
+
+    failed = queue.get_job(job.job_id)
+    assert failed is not None
+    assert failed.status is JobStatus.DEAD
+    assert failed.error is not None
+    assert "not resolvable" in failed.error
+    assert "doc_001" not in failed.error  # it failed on the missing doc
+    assert failed.payload == {}
+
+
 # ─── Criterion 3: the worker processes a job end to end ─────────────────────
 
 
@@ -362,10 +448,10 @@ def test_failure_is_retried_until_max_attempts_then_fails(
         assert len(claimed) == 1
         statuses.append(queue.fail(job.job_id, "boom").value)
 
-    assert statuses == ["pending", "pending", "failed"]
+    assert statuses == ["pending", "pending", "dead"]
     final = queue.get_job(job.job_id)
     assert final is not None
-    assert final.status is JobStatus.FAILED
+    assert final.status is JobStatus.DEAD
     assert final.error == "boom"
     assert final.attempts == 3
     assert final.completed_at is not None
@@ -384,9 +470,95 @@ def test_retry_keeps_the_payload_but_a_terminal_failure_does_not(
     job = queue.enqueue("acme", _payload(), max_attempts=1)
     queue.dequeue("w1", 1)
 
-    assert queue.fail(job.job_id, "boom") is JobStatus.FAILED
+    assert queue.fail(job.job_id, "boom") is JobStatus.DEAD
 
     assert queue.get_job(job.job_id).payload == {}  # type: ignore[union-attr]
+
+
+# ─── Queue fairness: per-tenant inflight cap ────────────────────────────────
+
+
+def test_tenant_at_inflight_cap_does_not_starve_other_tenant(
+    storage: Storage, queue: JobQueue, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With QUEUE_MAX_INFLIGHT_PER_TENANT=2, tenant A at cap cannot block tenant B."""
+    monkeypatch.setenv("QUEUE_MAX_INFLIGHT_PER_TENANT", "2")
+    reset_settings()
+
+    # Tenant A has two pending jobs (at its cap of 2).
+    queue.enqueue("tenant-a", _payload("doc-a1"))
+    queue.enqueue("tenant-a", _payload("doc-a2"))
+    # Tenant B has one pending job (under its cap of 2).
+    queue.enqueue("tenant-b", _payload("doc-b"))
+
+    # Claiming should return tenant B's job first (tenant A is at cap).
+    claimed = queue.dequeue("w1", concurrency=1)
+    assert len(claimed) == 1
+    assert claimed[0].tenant_id == "tenant-b"
+    assert claimed[0].payload["doc_id"] == "doc-b"
+
+    # Claim again: tenant B's job is now running (count=1 < 2, but no more
+    # pending), tenant A still at cap (2 pending >= 2) -> nothing claimable.
+    claimed = queue.dequeue("w1", concurrency=1)
+    assert claimed == []
+
+
+def test_inflight_cap_zero_is_unlimited(storage: Storage, queue: JobQueue) -> None:
+    """QUEUE_MAX_INFLIGHT_PER_TENANT=0 (default) means unlimited: no cap."""
+    queue.enqueue("tenant-a", _payload("doc-a"))
+    queue.enqueue("tenant-a", _payload("doc-a2"))
+    queue.enqueue("tenant-b", _payload("doc-b"))
+
+    claimed = queue.dequeue("w1", concurrency=5)
+    assert len(claimed) == 3
+
+
+# ─── Dead letter: jobs that exhaust max_attempts ────────────────────────────
+
+
+def test_job_exhausting_attempts_is_dead_lettered(storage: Storage, queue: JobQueue) -> None:
+    """A job that fails max_attempts times transitions to 'dead', not 'failed'."""
+    job = queue.enqueue("acme", _payload("doc-x"), max_attempts=1)
+    queue.dequeue("w1", 1)
+
+    status = queue.fail(job.job_id, "boom")
+    assert status is JobStatus.DEAD
+
+    reloaded = queue.get_job(job.job_id)
+    assert reloaded is not None
+    assert reloaded.status is JobStatus.DEAD
+    assert reloaded.error == "boom"
+    assert reloaded.payload == {}  # cleared at terminal state
+
+    # A dead job is not claimable again.
+    assert queue.dequeue("w1", 1) == []
+
+
+def test_job_exhausting_attempts_is_failed_when_dead_letter_disabled(
+    storage: Storage, queue: JobQueue, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """QUEUE_DEAD_LETTER_ENABLED=false keeps the historical 'failed' state."""
+    monkeypatch.setenv("QUEUE_DEAD_LETTER_ENABLED", "false")
+    reset_settings()
+
+    job = queue.enqueue("acme", _payload("doc-x"), max_attempts=1)
+    queue.dequeue("w1", 1)
+
+    status = queue.fail(job.job_id, "boom")
+    assert status is JobStatus.FAILED
+
+
+def test_stats_counts_match_inserts(storage: Storage, queue: JobQueue) -> None:
+    """Queue.stats() reports counts matching what was enqueued."""
+    queue.enqueue("acme", _payload("doc-a"))
+    queue.enqueue("acme", _payload("doc-b"))
+    queue.enqueue("beta", _payload("doc-c"))
+
+    stats = queue.stats()
+    assert stats["by_status"]["pending"] == 3
+    assert stats["oldest_pending_age_s"] is not None
+    assert stats["oldest_pending_age_s"] >= 0
+    assert stats["inflight_per_tenant"] == {"acme": 2, "beta": 1}
 
 
 def test_a_failing_job_does_not_stop_the_worker(storage: Storage, queue: JobQueue) -> None:
@@ -398,7 +570,7 @@ def test_a_failing_job_does_not_stop_the_worker(storage: Storage, queue: JobQueu
     processed = asyncio.run(worker.run_once(FakePipeline()))
 
     assert processed == 2
-    assert queue.get_job(broken.job_id).status is JobStatus.FAILED  # type: ignore[union-attr]
+    assert queue.get_job(broken.job_id).status is JobStatus.DEAD  # type: ignore[union-attr]
     error = queue.get_job(broken.job_id).error  # type: ignore[union-attr]
     assert error is not None and "KeyError" in error
     assert queue.get_job(good.job_id).status is JobStatus.COMPLETED  # type: ignore[union-attr]
@@ -416,7 +588,7 @@ def test_a_broken_worker_pipeline_records_the_failure(storage: Storage, queue: J
 
     failed = queue.get_job(job.job_id)
     assert failed is not None
-    assert failed.status is JobStatus.FAILED
+    assert failed.status is JobStatus.DEAD
     assert failed.error is not None and "RuntimeError" in failed.error
 
 
@@ -689,7 +861,13 @@ def test_counts_reports_every_status(queue: JobQueue) -> None:
 
     counts = queue.counts()
 
-    assert counts == {"pending": 1, "running": 0, "completed": 1, "failed": 0}
+    assert counts == {
+        "pending": 1,
+        "running": 0,
+        "completed": 1,
+        "failed": 0,
+        "dead": 0,
+    }
 
 
 # ─── CLI ───────────────────────────────────────────────────────────────────
@@ -805,5 +983,6 @@ def test_job_model_lists_every_status() -> None:
         "running",
         "completed",
         "failed",
+        "dead",
     ]
     assert "status" in Job.model_fields

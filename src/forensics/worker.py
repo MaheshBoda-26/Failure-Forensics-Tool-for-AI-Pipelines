@@ -26,7 +26,8 @@ import uuid
 from typing import Any
 
 from forensics.analyzer_simple import analyze_trace
-from forensics.documents import has_dataset_document, store_document
+from forensics.config import get_settings
+from forensics.documents import has_dataset_document, read_document, store_document
 from forensics.llm import using_llm_client
 from forensics.models import DEFAULT_TENANT_ID, Document
 from forensics.pii import create_redactor_from_settings
@@ -181,11 +182,30 @@ class PipelineWorker:
         heartbeat_task = asyncio.create_task(self._heartbeat_loop(job.job_id))
         try:
             try:
+                doc_id = job.payload["doc_id"]
+
+                if get_settings().queue_payload_mode == "reference":
+                    # Reference mode: the job carries only {doc_id, expected_type}.
+                    # Resolve the source text from storage so the pipeline sees the
+                    # same document the caller submitted. A missing document is a
+                    # configuration error, not a transient one: fail the job with a
+                    # clear, actionable message.
+                    doc_text = job.payload.get("doc_text")
+                    if doc_text is None:
+                        doc_text = read_document(doc_id, job.tenant_id)
+                        if doc_text is None:
+                            raise ValueError(
+                                f"Document {doc_id!r} is not resolvable in reference "
+                                f"payload mode: it is not in the dataset and was not "
+                                f"persisted as an upload for tenant {job.tenant_id}."
+                            )
+                else:
+                    doc_text = job.payload["doc_text"]
                 result = await process_document(
                     pipeline,
                     self.storage,
-                    doc_id=job.payload["doc_id"],
-                    doc_text=job.payload["doc_text"],
+                    doc_id=doc_id,
+                    doc_text=doc_text,
                     expected_type=job.payload.get("expected_type"),
                     tenant_id=job.tenant_id,
                 )
