@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from starlette.responses import Response
 
 from forensics.analyzer_simple import (
     aggregate_checks,
@@ -592,7 +593,7 @@ def test_flag_and_confirm_roundtrip_through_the_api(
     flag = api.create_flag("t1", api.FlagRequest(note="smoke"))
     assert flag.trace_id == "t1"
 
-    diagnosis = api.diagnose_trace("t1")
+    diagnosis = api.diagnose_trace("t1", response=Response())
     updated = api.confirm_diagnosis(
         diagnosis.diagnosis_id,
         api.ConfirmDiagnosisRequest(
@@ -757,7 +758,7 @@ def test_confirm_diagnosis_twice_creates_one_eval_case(
     monkeypatch.setattr(api, "_storage", st)
     st.save_trace(_failing_trace())
 
-    diagnosis = api.diagnose_trace("t1")
+    diagnosis = api.diagnose_trace("t1", response=Response())
     request = api.ConfirmDiagnosisRequest(confirmed=True)
     api.confirm_diagnosis(diagnosis.diagnosis_id, request)
     api.confirm_diagnosis(diagnosis.diagnosis_id, request)
@@ -1162,3 +1163,9 @@ def test_runtime_status_endpoint_reports_active_mode_and_models(
     assert body["dry_run"] is True
     assert isinstance(body["pipeline_model"], str) and body["pipeline_model"]
     assert isinstance(body["judge_model"], str) and body["judge_model"]
+    assert "prices_configured" in body
+    assert body["auth_enabled"] is False
+    assert body["tenant_isolation"] == "disabled"
+    assert isinstance(body["spend_caps_usd"], dict)
+    assert "per_run" in body["spend_caps_usd"]
+    assert "global" in body["spend_caps_usd"]

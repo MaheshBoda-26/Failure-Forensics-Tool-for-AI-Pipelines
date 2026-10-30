@@ -23,7 +23,7 @@ import forensics.storage
 from forensics import api
 from forensics.auth import AuthManager
 from forensics.cli import app as cli_app
-from forensics.config import reset_settings
+from forensics.config import reset_settings, validate_startup
 from forensics.models import (
     API_KEY_SCOPES,
     DEFAULT_TENANT_ID,
@@ -31,6 +31,7 @@ from forensics.models import (
     FailureCategory,
     Flag,
     Span,
+    Tenant,
     Trace,
 )
 from forensics.storage import Storage, reset_storage
@@ -175,6 +176,50 @@ def test_dev_mode_stamps_new_records_with_the_default_tenant(
     assert response.status_code == 200
     assert response.json()["tenant_id"] == DEFAULT_TENANT_ID
     assert storage.list_flags_for_trace("t_dev")[0].tenant_id == DEFAULT_TENANT_ID
+
+
+# ─── Criterion 1b: auth off on a multi-tenant database announces itself ───────
+
+
+def _two_tenants(storage: Storage) -> None:
+    storage.create_tenant(Tenant(tenant_id="tenant-a", name="Tenant A"))
+    storage.create_tenant(Tenant(tenant_id="tenant-b", name="Tenant B"))
+
+
+def test_auth_off_multi_tenant_warns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AUTH_ENABLED=false with 2+ tenants emits a startup warning (default policy)."""
+    monkeypatch.setenv("AUTH_ENABLED", "false")
+    reset_settings()
+    storage = Storage()
+    _two_tenants(storage)
+
+    with pytest.warns(RuntimeWarning, match=r"tenants: the API serves"):
+        validate_startup()
+    reset_settings()
+
+
+def test_auth_off_multi_tenant_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AUTH_OFF_MULTI_TENANT_POLICY=refuse fails startup on a multi-tenant db."""
+    monkeypatch.setenv("AUTH_ENABLED", "false")
+    monkeypatch.setenv("AUTH_OFF_MULTI_TENANT_POLICY", "refuse")
+    reset_settings()
+    storage = Storage()
+    _two_tenants(storage)
+
+    with pytest.raises(ValueError, match=r"tenants: the API serves"):
+        validate_startup()
+    reset_settings()
+
+
+def test_auth_off_single_tenant_starts_cleanly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AUTH_ENABLED=false with one tenant starts without a tenant warning."""
+    monkeypatch.setenv("AUTH_ENABLED", "false")
+    reset_settings()
+    storage = Storage()
+    storage.create_tenant(Tenant(tenant_id="tenant-a", name="Tenant A"))
+
+    validate_startup()  # must not raise or warn about tenants
+    reset_settings()
 
 
 # ─── Criterion 2: AUTH_ENABLED=true requires a bearer key ────────────────────
