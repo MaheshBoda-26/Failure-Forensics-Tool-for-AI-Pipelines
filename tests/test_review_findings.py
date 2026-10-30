@@ -11,7 +11,7 @@ import sqlite3
 import uuid
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 from pydantic import ValidationError
 
 from forensics import api
@@ -141,7 +141,7 @@ def test_diagnose_never_reads_outside_the_documents_directory(
     storage.save_trace(trace)
 
     with pytest.raises(HTTPException) as excinfo:
-        api.diagnose_trace(trace.trace_id)
+        api.diagnose_trace(trace.trace_id, response=Response())
     assert excinfo.value.status_code == 404
 
 
@@ -163,7 +163,7 @@ def test_diagnose_resolves_a_document_uploaded_through_the_api(
     trace = _trace(document_id="custom_doc_1")
     storage.save_trace(trace)
 
-    diagnosis = api.diagnose_trace(trace.trace_id)
+    diagnosis = api.diagnose_trace(trace.trace_id, response=Response())
     assert diagnosis.trace_id == trace.trace_id
 
 

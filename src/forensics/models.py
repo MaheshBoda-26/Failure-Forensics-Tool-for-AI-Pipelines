@@ -192,6 +192,12 @@ class Span(VersionedModel, TenantScoped):
     model_id: str = Field(..., description="Exact model slug used (e.g., openai/gpt-4o-mini)")
     provider: str = Field(..., description="Pinned provider (e.g., openai)")
     prompt: str = Field(..., description="Full prompt sent to LLM")
+    #: The archived prompt-template name that produced this span's prompt, so a
+    #: trace can be replayed against the template revision that ran rather than
+    #: only against the code in the tree.
+    prompt_template: str = Field(
+        default="", description="Prompt template name (e.g. extraction-v1)"
+    )
     raw_response: str = Field(..., description="Raw LLM response")
 
     # Metrics
@@ -249,6 +255,22 @@ class Trace(VersionedModel, TenantScoped):
     )
 
 
+class PromptTemplate(VersionedModel, TenantScoped):
+    """An archived prompt template, one row per version.
+
+    The template text is static (never contains secrets or per-run data) and is
+    keyed by name + content hash so the same template revision is never stored
+    twice. A trace records only the template *name* on its spans; the full text
+    is retrieved from this table.
+    """
+
+    name: str = Field(..., description="Template name (e.g. extraction-v1)")
+    #: SHA-256 of `template_text`, so the same content reuses one row.
+    version: str = Field(..., description="Content hash of template_text")
+    template_text: str = Field(..., description="The full prompt text")
+    created_at: datetime = Field(default_factory=_utc_now)
+
+
 class StepScore(BaseModel):
     """Quality score for a single step from the analyzer."""
 
@@ -283,6 +305,13 @@ class Diagnosis(VersionedModel, TenantScoped):
         description="Human-supplied root-cause step, overriding the analyzer's",
     )
     override_reason: str | None = None
+    #: Set when a diagnosis was recomputed against redacted spans, so the UI can
+    #: show a banner that the verdict is degraded evidence rather than a fresh,
+    #: grounded analysis. `None` on the normal (unredacted or stored) path.
+    degraded_reason: str | None = Field(
+        default=None,
+        description="Why this diagnosis was computed against redacted spans",
+    )
     # Judge LLM analysis (optional, populated when judge runs)
     judge_analysis: "JudgeAnalysis | None" = None
     analyzer_fallback: bool = Field(
@@ -481,6 +510,7 @@ __all__ = [
     "JudgeAnalysis",
     "JudgeVerdict",
     "PipelineOutput",
+    "PromptTemplate",
     "Span",
     "StepJudgeScore",
     "StepScore",

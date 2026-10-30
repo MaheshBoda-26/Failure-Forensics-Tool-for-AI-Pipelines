@@ -278,14 +278,34 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
       </div>
 
       <div className="detail__body">
-        <TraceSpine
-          trace={trace}
-          diagnosis={diagnosis}
-          selectedStep={selectedStep}
-          onSelectStep={setSelectedStep}
-        />
+        {trace.spans?.length === 0 ? (
+          <Empty
+            action={
+              <button
+                className="btn btn--primary btn--sm"
+                onClick={onBack}
+                disabled={!onBack}
+              >
+                <ArrowLeft size={13} />
+                {onBack ? "Back to traces" : "Traces"}
+              </button>
+            }
+          >
+            <p>This trace has no spans (fixture row).</p>
+            <p className="faint">
+              Trace <code>{trace.trace_id}</code> · document <code>{trace.document_id}</code>
+            </p>
+          </Empty>
+        ) : (
+          <>
+            <TraceSpine
+              trace={trace}
+              diagnosis={diagnosis}
+              selectedStep={selectedStep}
+              onSelectStep={setSelectedStep}
+            />
 
-        <div className="stack">
+            <div className="stack">
           <section className="panel">
             <div className="panel__head">
               <div>
@@ -335,6 +355,12 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                     </div>
                   </dl>
                 </div>
+
+                {diagnosis.degraded_reason ? (
+                  <div className="notice is-warn" role="status" style={{ margin: "8px 0" }}>
+                    Diagnosis computed on redacted spans: {diagnosis.degraded_reason}
+                  </div>
+                ) : null}
 
                 {diagnosis.evidence_chain?.length ? (
                   <div className={`evidence${hasRootCause ? " is-fail" : ""}`}>
@@ -510,7 +536,9 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
             </div>
           </section>
         </div>
-      </div>
+      </>
+    )}
     </div>
+  </div>
   );
 };
