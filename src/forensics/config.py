@@ -282,6 +282,14 @@ class Settings(BaseSettings):
         ge=0,
         description="Default TTL for new API keys in days (0 = no expiry) (AUTH_KEY_TTL_DAYS)",
     )
+    auth_off_multi_tenant_policy: Literal["warn", "refuse"] = Field(
+        default="warn",
+        description=(
+            "With AUTH_ENABLED=false the API serves every tenant's data. "
+            "'warn' logs a startup warning when more than one tenant exists; "
+            "'refuse' fails startup instead (AUTH_OFF_MULTI_TENANT_POLICY)"
+        ),
+    )
 
     # --- Scheduled eval and alerting (spec 06) ---
     eval_schedule: str = Field(
@@ -330,6 +338,45 @@ class Settings(BaseSettings):
         ge=10,
         description="Seconds before a running job is considered stalled and reclaimed",
     )
+    queue_payload_mode: Literal["inline", "reference"] = Field(
+        default="inline",
+        description=(
+            "How a queued job carries its document text. 'inline' stores doc_text "
+            "in the job payload (current behaviour); 'reference' stores only "
+            "{doc_id, expected_type} and the worker resolves the text from storage "
+            "at claim time."
+        ),
+    )
+    queue_max_inflight_per_tenant: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Max pending/running jobs per tenant a worker may claim. 0 = unlimited "
+            "(current behaviour). A tenant at its cap is skipped so other tenants "
+            "are not starved (QUEUE_MAX_INFLIGHT_PER_TENANT)"
+        ),
+    )
+    queue_max_attempts: int = Field(
+        default=3,
+        ge=1,
+        description="Max attempts before a job is dead-lettered (QUEUE_MAX_ATTEMPTS)",
+    )
+    queue_dead_letter_enabled: bool = Field(
+        default=True,
+        description=(
+            "Move jobs that exhaust max_attempts to 'dead' status (QUEUE_DEAD_LETTER_ENABLED)"
+        ),
+    )
+    pg_pool_min: int = Field(
+        default=1,
+        ge=0,
+        description="PostgreSQL connection pool minimum size (PG_POOL_MIN)",
+    )
+    pg_pool_max: int = Field(
+        default=10,
+        ge=1,
+        description="PostgreSQL connection pool maximum size (PG_POOL_MAX)",
+    )
 
     # --- Rate limiting ---
     rate_limit_enabled: bool = Field(
@@ -353,6 +400,25 @@ class Settings(BaseSettings):
     pipeline_fallback_model: ModelConfig = Field(default=None, exclude=True)  # type: ignore[assignment]
     judge_model: ModelConfig = Field(default=None, exclude=True)  # type: ignore[assignment]
     cheap_model: ModelConfig = Field(default=None, exclude=True)  # type: ignore[assignment]
+
+    @property
+    def prices_configured(self) -> bool:
+        """True when every active model has a non-zero input or output price.
+
+        Hosted prices change and inventing them is worse than leaving them blank,
+        so `.env.example` ships the price block at `0.0` with a banner. This
+        property lets startup, `/runtime`, and `validate-config` announce a
+        misconfigured deployment instead of quietly reporting `$0.0000`.
+        """
+        for model in (
+            self.pipeline_model,
+            self.pipeline_fallback_model,
+            self.judge_model,
+            self.cheap_model,
+        ):
+            if model.price_in_per_1m == 0.0 and model.price_out_per_1m == 0.0:
+                return False
+        return True
 
     @field_validator("api_key")
     @classmethod
@@ -758,6 +824,44 @@ def validate_startup() -> None:
 
     _validate_pii_custom_patterns(settings)
     _validate_alert_webhook(settings)
+
+    # A misconfigured deployment must announce itself instead of quietly
+    # reporting `$0.0000` for cost, spend caps, and per-step attribution.
+    if not settings.dry_run and not settings.prices_configured:
+        warnings.warn(
+            "Cost and spend caps will read $0.00: set *MODEL_PRICE_IN / "
+            "*MODEL_PRICE_OUT for every active model before running for real.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+    # With auth disabled, every tenant's data is readable through the API.
+    # That is deliberate ("works as before"), but a database that already holds
+    # several tenants' data is re-exposed when auth is switched off. Announce it.
+    if not settings.auth_enabled:
+        from forensics.auth import AuthManager
+        from forensics.storage import get_storage
+
+        try:
+            storage = get_storage()
+            manager = AuthManager(
+                storage,
+                prefix=settings.auth_api_key_prefix,
+                rounds=settings.auth_bcrypt_rounds,
+            )
+            tenant_count = len(manager.list_tenants())
+        except Exception:
+            # Storage not yet initialised or unreadable: do not fail startup on
+            # an instrumentation check. Tenant counting is best-effort here.
+            tenant_count = 0
+        if tenant_count > 1:
+            message = (
+                f"AUTH_ENABLED=false with {tenant_count} tenants: the API serves "
+                f"every tenant's data. Set AUTH_ENABLED=true to enforce isolation."
+            )
+            if settings.auth_off_multi_tenant_policy == "refuse":
+                raise ValueError(message)
+            warnings.warn(message, RuntimeWarning, stacklevel=2)
 
     # A wildcard origin with credentialed CORS lets any page an operator visits
     # drive the API with their key. `config.py` documented "never '*'" but

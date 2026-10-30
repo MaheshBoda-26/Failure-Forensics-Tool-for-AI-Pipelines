@@ -457,3 +457,116 @@ def test_judge_may_share_a_slug_when_separation_is_disabled(monkeypatch):
         settings = Settings(_env_file=None)  # type: ignore[call-arg]
 
     assert settings.judge_model.model_id == settings.pipeline_model.model_id
+
+
+# ─── Price awareness ────────────────────────────────────────────────────────
+#
+# `.env.example` ships every *MODEL_PRICE_* at 0.0 with a VERIFY banner, so a
+# misconfigured deployment must announce itself instead of reporting $0.0000.
+
+
+def test_prices_configured_false_when_all_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    env = _make_env(
+        {
+            "PIPELINE_MODEL_PRICE_IN": "0.0",
+            "PIPELINE_MODEL_PRICE_OUT": "0.0",
+            "JUDGE_MODEL_PRICE_IN": "0.0",
+            "JUDGE_MODEL_PRICE_OUT": "0.0",
+            "CHEAP_MODEL_PRICE_IN": "0.0",
+            "CHEAP_MODEL_PRICE_OUT": "0.0",
+        }
+    )
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    reset_settings()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.prices_configured is False
+
+
+def test_prices_configured_true_when_one_price_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    env = _make_env({"PIPELINE_MODEL_PRICE_IN": "0.20"})
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    reset_settings()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.prices_configured is True
+
+
+def test_prices_configured_false_when_any_model_all_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = _make_env({"CHEAP_MODEL_PRICE_IN": "0.0", "CHEAP_MODEL_PRICE_OUT": "0.0"})
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    reset_settings()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.prices_configured is False
+
+
+def test_validate_startup_warns_when_prices_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Non-dry-run with zero prices emits a RuntimeWarning (not a failure)."""
+    env = _make_env(
+        {
+            "PIPELINE_MODEL_PRICE_IN": "0.0",
+            "PIPELINE_MODEL_PRICE_OUT": "0.0",
+            "JUDGE_MODEL_PRICE_IN": "0.0",
+            "JUDGE_MODEL_PRICE_OUT": "0.0",
+            "CHEAP_MODEL_PRICE_IN": "0.0",
+            "CHEAP_MODEL_PRICE_OUT": "0.0",
+        }
+    )
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    reset_settings()
+    with pytest.warns(RuntimeWarning, match=r"will read \$0\.00"):
+        validate_startup()
+    reset_settings()
+
+
+def test_validate_startup_silent_when_prices_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Non-dry-run with prices set emits no price warning."""
+    import warnings
+
+    env = _make_env({"PIPELINE_MODEL_PRICE_IN": "0.20"})
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    reset_settings()
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        validate_startup()
+    price_warnings = [w for w in record if "read $0.00" in str(w.message)]
+    assert not price_warnings, f"unexpected warnings: {[str(w.message) for w in price_warnings]}"
+    reset_settings()
+
+
+def test_prices_configured_does_not_change_default_behaviour(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`DRY_RUN=true` and all-zero prices still start (offline demo unchanged)."""
+    env = _make_env(
+        {
+            "DRY_RUN": "true",
+            "PIPELINE_MODEL_PRICE_IN": "0.0",
+            "PIPELINE_MODEL_PRICE_OUT": "0.0",
+            "JUDGE_MODEL_PRICE_IN": "0.0",
+            "JUDGE_MODEL_PRICE_OUT": "0.0",
+            "CHEAP_MODEL_PRICE_IN": "0.0",
+            "CHEAP_MODEL_PRICE_OUT": "0.0",
+        }
+    )
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    reset_settings()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.dry_run is True
+    assert settings.prices_configured is False

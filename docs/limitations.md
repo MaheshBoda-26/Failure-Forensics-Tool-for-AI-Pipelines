@@ -119,9 +119,22 @@ several tenants' data can read all of it. Records are still *written* under a
 concrete tenant (`default` in dev mode), so the separation is intact if auth is
 turned back on.
 
-**Mitigation**: treat `AUTH_ENABLED` as a deployment-wide switch, not a per-user
-preference. The value is logged at startup through the resolved settings, and
-`/scheduler/status` and `/jobs` are authenticated in both modes.
+**Knob**: `AUTH_OFF_MULTI_TENANT_POLICY` (`warn`|`refuse`, default `warn`). At
+startup, with `AUTH_ENABLED=false`, the tool counts tenants via `AuthManager`;
+when more than one exists it either warns (`warn`) or fails startup (`refuse`).
+A single tenant starts cleanly either way, so tests and the public demo are
+unaffected.
+
+**Mitigation / audit**: treat `AUTH_ENABLED` as a deployment-wide switch, not a
+per-user preference. Audit tenants on any database before switching auth off:
+
+```bash
+forensics auth list-tenants
+```
+
+The value is logged at startup through the resolved settings, and
+`/scheduler/status` and `/jobs` are authenticated in both modes. `GET /runtime`
+exposes `auth_enabled` and `tenant_isolation` (`"enforced"`|`"disabled"`).
 
 ---
 
@@ -136,10 +149,23 @@ model sees.
 same SQLite file as the (redacted) traces. A finished job's payload is cleared to
 `{}`, so the exposure window is the job's lifetime, not the retention window.
 
-**Mitigation**: this is why payloads are cleared on `completed`/`failed` and why
+**Knob**: `QUEUE_PAYLOAD_MODE` (`inline`|`reference`, default `inline`).
+
+* `inline` (default): `doc_text` is stored in the job payload, exactly as before,
+  and cleared when the job reaches a terminal state.
+* `reference`: `POST /pipeline/run` stores only `{doc_id, expected_type}` — no
+  `doc_text`. The worker resolves the text via `read_document` at claim time, so
+  the document must already be in the dataset or persisted as an upload. The
+  endpoint fails synchronously at enqueue time when the document cannot be
+  resolved, so the caller learns immediately instead of when a worker claims the
+  job.
+
+**Mitigation**: payloads are cleared on `completed`/`failed` and
 `QUEUE_JOB_TTL` (default 24h) only ever deletes terminal rows. A deployment that
-cannot accept even a short-lived plaintext window should reference documents by
-path (`doc_id`) instead of inlining `doc_text`.
+cannot accept even a short-lived plaintext window should use `reference` mode (or
+reference documents by id) instead of inlining `doc_text`. Neither mode is secure
+erasure: SQLite retains WAL and freelist pages, so a determined reader could
+recover plaintext from the file.
 
 ---
 
@@ -205,7 +231,7 @@ version did (which reported 3/15 and reproduced none of the five failures).
 
 ---
 
-## 7b. Re-diagnosing a persisted trace under PII redaction sees redacted spans
+## 7b. Re-diagnosing a persisted trace under PII redaction — **MITIGATED**
 
 **Limitation**: the write path analyzes the *unredacted* trace and redacts on
 disk. `POST /traces/{trace_id}/diagnose` instead loads the persisted trace, which
@@ -213,12 +239,23 @@ is redacted by design, so with `PII_REDACTION_ENABLED=true` an extracted email,
 phone, or IP is `█` in the span while `doc_text` is not — and `entity_grounding`
 flags the correctly extracted entity as a hallucination.
 
-**Impact**: re-diagnosis of an old trace is unreliable when redaction is on. The
-original analysis, produced at write time, is correct and already stored.
+**Resolution**: the endpoint now follows a 409/override contract:
 
-**Mitigation**: read the stored diagnosis rather than re-deriving it, or run with
-redaction off if re-diagnosis of historical traces is required. The alternative —
-persisting the unredacted trace — would reopen the leak spec 03 closes.
+* If redaction is on **and** a stored diagnosis exists → return the stored
+  diagnosis (200) with `X-Diagnosis-Source: stored`. The write-time verdict is
+  trustworthy because it was produced against the unredacted trace.
+* If redaction is on, no stored diagnosis exists, and the caller does not opt in
+  → `409` naming the cause and the two ways forward (confirm the stored
+  diagnosis, or re-run with `?allow_redacted=true`).
+* `?allow_redacted=true` (write scope) forces a fresh analysis, sets
+  `X-Diagnosis-Source: redacted-recompute`, and populates `Diagnosis.degraded_reason`
+  so the UI can show a banner ("diagnosis computed on redacted spans").
+* Redaction off → unchanged fresh analysis.
+
+The alternative — persisting the unredacted trace — would reopen the leak spec 03
+closes, so it was rejected.
+
+**Impact**: re-diagnosis never fabricates a hallucination under redaction.
 
 ---
 
@@ -243,17 +280,24 @@ nothing, while an overshoot is already billed. The heuristic chars-per-token
 constant is a fixed 4; a very terse or non-Latin prompt could be under-counted,
 so the post-hoc check remains the backstop.
 
-## 9. Prompt templates are not stored with traces
+## 9. Prompt templates are not stored with traces — **MITIGATED**
 
 **Limitation**: `prompt_version` records a version identifier, and the span holds
 the full rendered prompt, but the *template* that produced it is not archived.
 
-**Impact**: a trace can be replayed and diffed against the code in the tree, but
-not against the template revision that was live when it ran.
+**Resolution**: the five prompt builders were extracted from `llm.py` into
+`src/forensics/prompts.py` without changing a character of prompt text
+(byte-equality pinned by test). Each `Span` now records `prompt_template` (the
+template name, e.g. `extraction-v1`), and `save_trace` upserts one
+`PromptTemplate` row per (name, content-hash version) in both SQLite and
+PostgreSQL. `GET /prompt-templates` and `GET /prompt-templates/{name}/{version}`
+expose the archive, plus `forensics prompts list` / `forensics prompts show`.
 
-**Mitigation**: `prompt_version` is on every `VersionedModel`, and the prompt text
-itself is in the span, so the evidence for "what the model actually saw" is
-complete. Template archiving is a storage feature, not a forensics one.
+**Impact**: a trace can now be replayed against the exact template revision that
+produced it, not just the code in the tree.
+
+**Mitigation**: `prompt_version` remains on every `VersionedModel`; the template
+text itself is in the span and now also in the `prompt_templates` table.
 
 ---
 
@@ -275,18 +319,29 @@ rather than falling back to an invented per-token table.
 
 ---
 
-## 11. The propagation check is a heuristic, not a dataflow analysis
+## 11. The propagation check is a heuristic, not a dataflow analysis — **MITIGATED (cascade suppression)**
 
 **Limitation**: `propagation` detects the common case — terminology that appears
 in one step's output and goes missing downstream. It does not build a dependency
 graph of the pipeline's data flow.
 
-**Impact**: a cascading failure can be reported at several steps rather than as
-one root cause. Local fidelity and global fidelity coincide for most steps.
+**Resolution**: two changes reduce false cascade blame:
+
+* `find_root_cause` still returns the *earliest* failing step as root cause, and
+  now lists any later `propagation` failures as evidence "downstream of <root
+  step>", so a cascade is named without blaming the wrong step.
+* `check_propagation` skips (reports pass with an evidence note) when the
+  upstream classification output carries no salient definitional terminology,
+  mirroring how `context_loss` is unscoreable without salient entities. This
+  prevents a false propagation failure when there is nothing to propagate.
+
+**Impact**: a cascading failure is attributed to its earliest failing step, with
+later propagation failures recorded as downstream evidence rather than
+independent root causes.
 
 **Mitigation**: the evidence chain cites the upstream span, so a human can follow
-the cascade. The check is cheap, deterministic, and explainable, which is the
-property that made it worth shipping over a graph analysis.
+the cascade. The check remains cheap, deterministic, and explainable — still not
+a dataflow graph.
 
 ---
 
@@ -371,15 +426,22 @@ injector derives arbitrarily many labelled failures from a single clean trace.
 
 ---
 
-## 16. Live-model behaviour is not exercised in CI
+## 16. Live-model behaviour is not exercised in CI — **MITIGATED (weekly smoke)**
 
-**Limitation**: the automated suite never calls a model. `httpx.MockTransport`,
-`DRY_RUN`, and recorded fixtures stand in. Tests that would call NIM are marked
-`live` and deselected by default.
+**Limitation**: the automated suite never calls a model on `push` or
+`pull_request`. `httpx.MockTransport`, `DRY_RUN`, and recorded fixtures stand in.
+Tests that would call NIM are marked `live` and deselected by default.
+
+**Resolution**: a weekly scheduled CI job (`schedule: cron "0 6 * * 1"`, Monday
+06:00 UTC) plus `workflow_dispatch` runs one document (`invoice_001`) against the
+real model with bounded spend (`SPEND_CAP_PER_RUN_USD=0.05`,
+`SPEND_CAP_GLOBAL_USD=0.20`), skips-with-success on quota `429`, uploads the
+trace JSON as a workflow artifact, and writes a job summary (model, tokens, cost,
+root cause). PRs never spend quota, and a live run is not required to merge.
 
 **Impact**: real hallucination patterns, refusal styles, structured-output
-compliance, and retry behaviour under 429/5xx are validated manually, not on every
-change. Cost accounting is validated against mock token counts.
+compliance, and retry behaviour under 429/5xx now get recurring evidence instead
+of only manual validation.
 
 **Mitigation**: the client's three structured-output tiers, repair round-trip, and
 retry ladder are unit-tested against realistic response shapes; `pytest -m live`
@@ -387,18 +449,32 @@ runs the real path when a key is available.
 
 ---
 
-## 17. Multi-worker operation has no orchestrator or fairness
+## 17. Multi-worker operation has no orchestrator or fairness — **MITIGATED (coarse cap + dead-letter)**
 
 **Limitation**: any number of `forensics worker start` processes can share the
 queue safely (claims are atomic), but there is no autoscaling, no health
-supervision, no dead-letter queue, and no per-tenant fairness — a tenant that
-enqueues 10,000 jobs at priority 10 delays everyone else.
+supervision, and no dead-letter queue — a poison job that crashes every attempt
+is retried up to `QUEUE_MAX_ATTEMPTS` and then left `failed`.
 
-**Impact**: fine for one process and a demo; a burst needs manual capacity.
+**Resolution**: two opt-in knobs (ADR 0017):
+
+* `QUEUE_MAX_INFLIGHT_PER_TENANT` (default `0` = unlimited): `Queue.dequeue`
+  excludes tenants whose `pending`+`running` count is `>= cap` from the atomic
+  claim, so one tenant cannot starve the queue. No broker, no weighted fair
+  queueing.
+* `QUEUE_DEAD_LETTER_ENABLED` (default `true`): `Queue.fail` marks a job
+  `dead` instead of `failed` once it exhausts `QUEUE_MAX_ATTEMPTS`, so a poison
+  job stops retrying forever. `Queue.stats()` reports counts by status, oldest
+  pending age, and per-tenant in-flight; exposed via `GET /queue/stats`, `forensics
+  queue stats`, and `forensics queue requeue --dead`.
+
+**Impact**: starvation is test-proven prevented, poison jobs terminate, and the
+queue has an operator-facing stats view. Still no autoscaling, health supervision,
+or broker (§17 remains "no orchestrator" in that narrower sense).
 
 **Mitigation**: `QUEUE_WORKER_CONCURRENCY`, `QUEUE_JOB_TTL` and the `priority`
-column are the levers available today, and `forensics queue list --status pending`
-is the queue-depth view.
+column remain the other levers, and `forensics queue list --status pending` is
+the queue-depth view.
 
 ---
 
@@ -425,9 +501,13 @@ what found the three defects above; all are fixed.
 table and column by column on every run, so drift is caught even where no
 PostgreSQL server exists (CI).
 
-**Impact**: the backend is no longer unproven. What remains unverified is
-*operational*: connection-pool sizing under real load, failover, and behaviour
-during a `pg_ctl` restart are not exercised by a test suite.
+**Impact**: the backend is no longer unproven. `tests/test_postgres_ops.py` adds
+operational coverage against a live server: connection-pool sizing under load
+(`PG_POOL_MIN`/`PG_POOL_MAX`), recovery from a `pg_terminate_backend` kill,
+idempotent `close()` and rebuild-after-close, and that a long-running
+transaction does not permanently wedge the pool. What remains unverified is
+failover and behaviour during a `pg_ctl` restart of a managed instance — those
+are out of scope for a single-service demo.
 
 ## Summary
 
@@ -436,22 +516,22 @@ during a `pg_ctl` restart are not exercised by a test suite.
 | 1 | ~~Bundled UI cannot send an API key~~ — **RESOLVED** | ~~Medium~~ | Key entry in the header; `Authorization: Bearer` on every request |
 | 2 | ~~No reaper for jobs whose worker died~~ — **RESOLVED** | ~~Medium~~ | `QUEUE_STALL_TIMEOUT` + heartbeat + periodic reaper + CLI command |
 | 3 | ~~Scheduled eval is instance-wide~~ — **RESOLVED** | ~~Low~~ | One run per active tenant, compared against that tenant's own history |
-| 4 | Auth off = all tenants visible | Medium | Deployment-wide switch; writes still stamp a tenant |
-| 5 | In-flight job payload holds raw text | Medium | Cleared at terminal state; reference documents by id if unacceptable |
+| 4 | Auth off = all tenants visible | Medium | `AUTH_OFF_MULTI_TENANT_POLICY` warn/refuse; deployment-wide switch; writes still stamp a tenant |
+| 5 | In-flight job payload holds raw text | Medium | `QUEUE_PAYLOAD_MODE=reference` stores only `{doc_id, expected_type}`; fails at enqueue if unresolved; cleared at terminal state |
 | 6 | ~~`context_loss` fault needs entities~~ — **RESOLVED** | ~~Low~~ | Unscoreable faults are reported as `n/a`, not as misses; score against a real trace to exercise it |
 | 7 | DRY_RUN's canned output is a fixture, not model behaviour | Low | Reproduces all 15 labels; still needs a real key for accuracy |
-| 7b | Re-diagnosing a persisted trace sees redacted spans | Low | Read the stored diagnosis, or run with redaction off |
+| 7b | Re-diagnosing a persisted trace sees redacted spans | Low | 409/override contract: stored diagnosis returned with `X-Diagnosis-Source: stored`; `?allow_redacted=true` sets `degraded_reason` |
 | 8 | ~~No pre-flight cost check~~ — **RESOLVED** | ~~Low~~ | Worst-case estimate refused before the call; `SPEND_PREFLIGHT_ENABLED` to disable |
-| 9 | Prompt templates not archived | Low | `prompt_version` + full prompt text per span |
-| 10 | Prices default to 0.0 | Medium | Set real prices in `.env` |
+| 9 | Prompt templates not archived | Low | Templates archived in `prompt_templates` (one row per name/version); `Span.prompt_template` recorded; `GET /prompt-templates`, `forensics prompts list/show` |
+| 10 | Prices default to 0.0 | Medium | `prices_configured` announced at startup, `/runtime`, and `validate-config --strict-prices`; set real prices in `.env` |
 | 11 | Single-writer SQLite | Low | WAL + `busy_timeout`; `db_path` is substitutable |
-| 12 | Propagation check is a heuristic | Low | Evidence chain cites the upstream span |
+| 12 | Propagation check is a heuristic | Low | Cascade suppression: earliest failing step is root cause, later `propagation` failures listed as downstream evidence; skipped (pass-with-note) when upstream has no salient terminology |
 | 13 | ~~Keys never expire, no scopes~~ — **RESOLVED** | ~~Medium~~ | `--ttl` + `AUTH_KEY_TTL_DAYS` for expiry; `--scope read` for a read-only key, enforced per route |
 | 14 | ~~No rate limiting~~ — **RESOLVED** | ~~Low~~ | Per-tenant token bucket in SQLite with `RATE_LIMIT_ENABLED`, `RATE_LIMIT_REQUESTS_PER_MINUTE`, `RATE_LIMIT_BURST` |
 | 15 | Small demo dataset (15 documents) | Low | `generate-dataset` is seeded and reproducible; `dataset_large/` ships 150 documents / 43 seeded failures |
-| 16 | Live model calls not in CI | Medium | `pytest -m live`; mock-transport coverage of the ladders |
-| 17 | No orchestrator or tenant fairness | Low | Atomic claims, concurrency/priority levers |
-| 18 | ~~PostgreSQL backend unexercised~~ — **RESOLVED** | ~~High~~ | 12 live-server tests + schema-parity test on every run |
+| 16 | Live model calls not in CI | Medium | Weekly scheduled live smoke job (`cron "0 6 * * 1"` + `workflow_dispatch`), one document, spend caps, artifact + job summary |
+| 17 | No orchestrator or tenant fairness | Low | `QUEUE_MAX_INFLIGHT_PER_TENANT` coarse per-tenant cap; `QUEUE_DEAD_LETTER_ENABLED` dead-letter; `queue stats` + `GET /queue/stats` |
+| 18 | ~~PostgreSQL backend unexercised~~ — **RESOLVED** | ~~High~~ | 12 live-server tests + schema-parity test; `test_postgres_ops.py` covers pool sizing, connection kill, close idempotency, long-running transaction |
 
 ---
 

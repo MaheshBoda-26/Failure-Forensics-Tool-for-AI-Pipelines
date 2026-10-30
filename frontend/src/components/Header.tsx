@@ -282,6 +282,12 @@ export const Header: React.FC<HeaderProps> = ({
             <span className="status__text">{backendOnline ? "API connected" : "API offline"}</span>
           </span>
 
+          {runtime && !runtime.prices_configured ? (
+            <span className="notice is-error" style={{ fontSize: 12, marginRight: 8 }}>
+              Prices unset — spend reads $0.00
+            </span>
+          ) : null}
+
           <button
             className="btn btn--ghost btn--sm"
             onClick={() => setRunModalOpen(true)}

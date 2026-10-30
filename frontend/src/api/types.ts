@@ -48,6 +48,8 @@ export interface Span {
   prompt_version: string;
   schema_version: number;
   tenant_id: string;
+  /** Prompt template name that produced this span's prompt (e.g. extraction-v1). */
+  prompt_template: string;
 }
 
 export interface Trace {
@@ -130,6 +132,8 @@ export interface Diagnosis {
   judge_analysis: JudgeAnalysis | null;
   /** True when the judge overrode the deterministic verdict. */
   analyzer_fallback: boolean;
+  /** Present when a diagnosis was recomputed against redacted spans. */
+  degraded_reason: string | null;
 }
 
 /** Per-model rollup produced by `get_analytics`. */
@@ -257,6 +261,15 @@ export interface FaultBenchmarkSummary {
   results: FaultBenchmarkRow[];
 }
 
+/** One archived prompt template, keyed by name + content hash. */
+export interface PromptTemplate {
+  name: string;
+  version: string;
+  template_text: string;
+  created_at: string;
+  tenant_id: string;
+}
+
 export interface RuntimeStatus {
   status: string;
   dry_run: boolean;
@@ -268,6 +281,10 @@ export interface RuntimeStatus {
   pii_redaction_enabled: boolean;
   rate_limit_enabled: boolean;
   queue_enabled: boolean;
+  auth_enabled: boolean;
+  tenant_isolation: "enforced" | "disabled";
+  prices_configured: boolean;
+  spend_caps_usd: { per_run: number; global: number };
   check_plugins_count: number;
   pipeline_version: string;
 }

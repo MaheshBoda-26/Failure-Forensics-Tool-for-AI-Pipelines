@@ -10,7 +10,7 @@ import json
 import sys
 import threading
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import typer
 
@@ -686,9 +686,29 @@ def _aggregate_fault_scorecards(scorecards: list[dict[str, Any]]) -> dict[str, A
 
 
 @app.command()
-def validate_config() -> None:
-    """Validate configuration without running anything."""
+def validate_config(
+    strict_prices: bool = typer.Option(
+        False,
+        "--strict-prices",
+        help="Exit 2 when model prices are unset instead of warning only.",
+    ),
+) -> None:
+    """Validate configuration without running anything.
+
+    With `--strict-prices`, exits 2 when any active model has a zero price, so
+    CI can gate deployments that have not verified their per-1M pricing. The
+    default (no flag) keeps exit 0 plus a warning so the offline demo is
+    unchanged.
+    """
     _setup()
+    settings = get_settings()
+    if strict_prices and not settings.prices_configured:
+        typer.secho(
+            "Configuration invalid: model prices are unset; cost and spend caps will read $0.00",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
     typer.secho("Configuration valid", fg=typer.colors.GREEN)
 
 
@@ -917,6 +937,41 @@ def scheduler_status() -> None:
         typer.secho("\n  No eval runs yet.", fg=typer.colors.YELLOW)
 
 
+# ─── prompts (spec 09) ────────────────────────────────────────────────────────
+
+prompts_app = typer.Typer(help="Archived prompt templates (spec 09)", no_args_is_help=True)
+app.add_typer(prompts_app, name="prompts")
+
+
+@prompts_app.command("list")
+def prompts_list() -> None:
+    """List every archived prompt template."""
+    storage = get_storage()
+    templates = storage.list_prompt_templates()
+    if not templates:
+        typer.secho("No prompt templates archived yet.", fg=typer.colors.YELLOW, err=True)
+        return
+    typer.secho(f"{'name':<24} {'version':<16} {'chars':<7} created", bold=True)
+    for t in templates:
+        typer.echo(
+            f"{t.name:<24} {t.version:<16} {len(t.template_text):<7} {t.created_at.isoformat()}"
+        )
+
+
+@prompts_app.command("show")
+def prompts_show(
+    name: str = typer.Argument(..., help="Template name (e.g. extraction-v1)"),
+    version: str = typer.Argument(..., help="Template version (content hash)"),
+) -> None:
+    """Show one prompt template by name and content hash."""
+    storage = get_storage()
+    template = storage.get_prompt_template(name, version)
+    if not template:
+        typer.secho(f"Prompt template not found: {name}/{version}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    typer.echo(template.template_text)
+
+
 # ─── worker + queue (spec 07) ───────────────────────────────────────────────
 
 worker_app = typer.Typer(help="Pipeline worker (spec 07)", no_args_is_help=True)
@@ -1091,6 +1146,89 @@ def queue_reaper(
 
     reclaimed = get_queue().reclaim_stalled_jobs(stall_timeout=stall_timeout)
     typer.secho(f"Reclaimed {reclaimed} stalled jobs", fg=typer.colors.GREEN)
+
+
+@queue_app.command("stats")
+def queue_stats() -> None:
+    """Show queue statistics: counts by status, oldest pending age, per-tenant in-flight."""
+    from forensics.queue import get_queue
+
+    stats = get_queue().stats()
+    typer.secho("Queue statistics", fg=typer.colors.BLUE, bold=True)
+    typer.echo("By status:")
+    for name in sorted(stats["by_status"]):
+        typer.echo(f"  {name:<12} {stats['by_status'][name]}")
+    oldest = stats["oldest_pending_age_s"]
+    typer.echo(
+        f"  Oldest pending age: {oldest:.0f}s"
+        if oldest is not None
+        else "  Oldest pending age: none"
+    )
+    typer.echo("In-flight (pending+running) per tenant:")
+    if stats["inflight_per_tenant"]:
+        for tenant_id, count in sorted(stats["inflight_per_tenant"].items()):
+            typer.echo(f"  {tenant_id:<24} {count}")
+    else:
+        typer.echo("  (none)")
+
+
+@queue_app.command("requeue")
+def queue_requeue(
+    dead: bool = typer.Option(
+        False,
+        "--dead",
+        help="Requeue dead-lettered jobs (exhausted max_attempts) back to pending",
+    ),
+) -> None:
+    """Requeue jobs, optionally dead-lettered ones.
+
+    Without `--dead`, this is a no-op placeholder; requeuing arbitrary failed jobs
+    is unsafe because they may be poison pills. Use `--dead` to bulk-requeue jobs
+    that were dead-lettered after exhausting `QUEUE_MAX_ATTEMPTS`, e.g. after a
+    transient outage has been resolved.
+    """
+    from forensics.queue import JobStatus, get_queue
+
+    if not dead:
+        typer.secho(
+            "No-op: pass --dead to requeue dead-lettered jobs.", fg=typer.colors.YELLOW, err=True
+        )
+        return
+
+    queue = get_queue()
+    if queue._use_postgres:
+        from forensics.storage import get_storage
+
+        storage = cast(Any, get_storage())
+
+        async def _pg() -> int:
+            async with storage._conn() as conn:
+                res = await conn.execute(
+                    """
+                    UPDATE job_queue
+                    SET status = $1, worker_id = NULL, claim_expires_at = NULL,
+                        attempts = 0, error = NULL
+                    WHERE status = $2
+                    """,
+                    JobStatus.PENDING.value,
+                    JobStatus.DEAD.value,
+                )
+                return int(str(res).split()[-1])
+
+        requeued = storage._run_coro(_pg())
+    else:
+        with queue._conn() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE job_queue
+                SET status = ?, worker_id = NULL, claim_expires_at = NULL,
+                    attempts = 0, error = NULL
+                WHERE status = ?
+                """,
+                (JobStatus.PENDING.value, JobStatus.DEAD.value),
+            )
+            requeued = cursor.rowcount
+    typer.secho(f"Requeued {requeued} dead-lettered jobs", fg=typer.colors.GREEN)
 
 
 def main() -> None:

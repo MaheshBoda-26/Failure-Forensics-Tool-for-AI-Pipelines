@@ -22,7 +22,13 @@ from pydantic import BaseModel, Field
 from forensics.analyzer_simple import analyze_trace
 from forensics.auth import AuthManager
 from forensics.config import get_settings
-from forensics.documents import DOC_ID_REGEX, read_document, resolve_document_text
+from forensics.documents import (
+    DOC_ID_REGEX,
+    has_dataset_document,
+    read_document,
+    resolve_document_text,
+    store_document,
+)
 from forensics.models import (
     DEFAULT_TENANT_ID,
     AnalyticsSnapshot,
@@ -34,6 +40,7 @@ from forensics.models import (
     EvalRun,
     FailureCategory,
     Flag,
+    PromptTemplate,
     Tenant,
     Trace,
     TraceStatus,
@@ -428,6 +435,13 @@ def runtime_status(
         "pii_redaction_enabled": settings.pii_redaction_enabled,
         "rate_limit_enabled": settings.rate_limit_enabled,
         "queue_enabled": settings.queue_enabled,
+        "auth_enabled": settings.auth_enabled,
+        "tenant_isolation": "enforced" if settings.auth_enabled else "disabled",
+        "prices_configured": settings.prices_configured,
+        "spend_caps_usd": {
+            "per_run": settings.spend_cap_per_run_usd,
+            "global": settings.spend_cap_global_usd,
+        },
         "check_plugins_count": len(plugins),
         "pipeline_version": settings.pipeline_version,
     }
@@ -447,6 +461,29 @@ def scheduler_status(
 
     status = get_scheduler(get_storage()).describe()
     return {key: value for key, value in status.items() if key != "job_store"}
+
+
+@app.get("/prompt-templates", response_model=list[PromptTemplate])
+def list_prompt_templates(
+    authorization: Annotated[str | None, Header()] = None,
+) -> list[PromptTemplate]:
+    """List every archived prompt template."""
+    get_current_tenant(authorization, scope="read")
+    return get_storage().list_prompt_templates()
+
+
+@app.get("/prompt-templates/{name}/{version}", response_model=PromptTemplate)
+def get_prompt_template(
+    name: str,
+    version: str,
+    authorization: Annotated[str | None, Header()] = None,
+) -> PromptTemplate:
+    """Get one prompt template by name and content hash."""
+    get_current_tenant(authorization, scope="read")
+    template = get_storage().get_prompt_template(name, version)
+    if not template:
+        raise HTTPException(status_code=404, detail="Prompt template not found")
+    return template
 
 
 def _resolve_expected_type(trace: Trace) -> DocumentType | None:
@@ -534,18 +571,44 @@ def create_flag(
 
 @app.post("/traces/{trace_id}/diagnose", response_model=Diagnosis)
 def diagnose_trace(
-    trace_id: str, authorization: Annotated[str | None, Header()] = None
+    trace_id: str,
+    response: Response,
+    allow_redacted: Annotated[bool, Query()] = False,
+    authorization: Annotated[str | None, Header()] = None,
 ) -> Diagnosis:
     tenant = get_current_tenant(authorization, scope="write")
     trace = get_storage().get_trace(trace_id, tenant_id=tenant_scope(tenant))
     if not trace:
         raise HTTPException(status_code=404, detail="Trace not found")
 
-    # Resolve the source text without ever building a path from an unvalidated
-    # id: `read_document` applies an allowlist and a resolve-and-contain check,
-    # so `doc_id="../../some_file"` can no longer read the host filesystem.
-    # Uploads live outside the dataset, and a trace whose file is gone can still
-    # be analyzed from its own intake span.
+    settings = get_settings()
+
+    def _set_header(source: str) -> None:
+        if response is not None:
+            response.headers["X-Diagnosis-Source"] = source
+
+    # With PII redaction on, the persisted trace spans are redacted by design, so
+    # re-running the analyzer against them would flag every real entity as a
+    # hallucination (limitation 7b). The trustworthy verdict is the one produced
+    # at write time against the unredacted trace and already stored.
+    if settings.pii_redaction_enabled:
+        stored = get_storage().get_diagnosis_for_trace(trace_id, tenant_id=tenant_scope(tenant))
+        if stored is not None:
+            _set_header("stored")
+            return stored
+        # No stored diagnosis: re-diagnosing would be degraded evidence. Refuse
+        # unless the caller explicitly opts in with ?allow_redacted=true.
+        if not allow_redacted:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Trace was redacted at write time and no diagnosis is stored. "
+                    "Re-diagnosing against redacted spans would flag real entities "
+                    "as hallucinations. Either confirm the existing diagnosis, or "
+                    "re-run with ?allow_redacted=true to accept degraded evidence."
+                ),
+            )
+
     doc_text = resolve_document_text(trace)
     if not doc_text:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -557,6 +620,17 @@ def diagnose_trace(
     # `analyze_trace` cannot know who called it; the tenant is assigned by the
     # layer that does.
     diagnosis.tenant_id = tenant.tenant_id
+
+    if settings.pii_redaction_enabled and allow_redacted:
+        # Forced fresh analysis against redacted spans: degraded evidence, and
+        # the UI should surface a banner so no one mistakes it for grounded.
+        diagnosis.degraded_reason = (
+            "diagnosis recomputed against redacted spans; real entities may be "
+            "flagged as hallucinations"
+        )
+        _set_header("redacted-recompute")
+    elif settings.pii_redaction_enabled:
+        _set_header("stored")
 
     # Save diagnosis
     get_storage().create_diagnosis(diagnosis)
@@ -805,13 +879,33 @@ async def run_pipeline(
     expected_type = request.expected_type.value if request.expected_type else None
 
     if get_settings().queue_enabled:
-        job = get_queue().enqueue(
-            tenant.tenant_id,
-            {
+        if get_settings().queue_payload_mode == "reference":
+            # Reference mode: the job carries only {doc_id, expected_type}. The
+            # worker resolves the text via read_document at claim time, so the
+            # document must already be resolvable. Persist an upload so it is,
+            # then fail synchronously at enqueue time if nothing resolves — the
+            # caller learns immediately instead of when a worker claims the job.
+            if not has_dataset_document(request.doc_id):
+                store_document(request.doc_id, request.doc_text, tenant.tenant_id)
+            if not read_document(request.doc_id, tenant.tenant_id):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Document {request.doc_id!r} is not resolvable: it is not "
+                        f"in the dataset and could not be persisted. Queue payload "
+                        f"mode is 'reference', so the worker cannot reconstruct it."
+                    ),
+                )
+            payload = {"doc_id": request.doc_id, "expected_type": expected_type}
+        else:
+            payload = {
                 "doc_id": request.doc_id,
                 "doc_text": request.doc_text,
                 "expected_type": expected_type,
-            },
+            }
+        job = get_queue().enqueue(
+            tenant.tenant_id,
+            payload,
             priority=request.priority,
         )
         response.status_code = 202
@@ -857,6 +951,15 @@ def get_job(job_id: str, authorization: Annotated[str | None, Header()] = None) 
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+
+@app.get("/queue/stats")
+def queue_stats(
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    """Queue statistics: counts by status, oldest pending age, per-tenant in-flight."""
+    get_current_tenant(authorization, scope="read")
+    return get_queue().stats()
 
 
 @app.get("/analytics")
