@@ -58,6 +58,21 @@ STATUS=$("${CURL[@]}" "${BASE_URL}/health" | field "['status']")
 [[ "$STATUS" == "ok" ]] || die "/health returned status=${STATUS}"
 ok "service is up"
 
+# ── runtime ─────────────────────────────────────────────────────────────────
+step "runtime"
+RUNTIME=$("${CURL[@]}" "${BASE_URL}/runtime")
+printf '%s' "$RUNTIME" | python3 -c '
+import json, sys
+body = json.load(sys.stdin)
+for field in ("prices_configured", "auth_enabled", "tenant_isolation",
+              "pii_redaction_enabled", "queue_enabled"):
+    assert field in body, f"missing field {field} from /runtime"
+print(body.get("prices_configured"))
+' >/dev/null || die "/runtime missing required fields"
+ok "/runtime reports guard configuration"
+PRICES_CONFIGURED=$(printf '%s' "$RUNTIME" | field "['prices_configured']")
+ok "prices_configured=${PRICES_CONFIGURED}"
+
 # ── bundled UI ──────────────────────────────────────────────────────────────
 step "ui"
 # The failure this catches: a deploy builds the SPA but cannot serve it, so
