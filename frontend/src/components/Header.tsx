@@ -47,14 +47,14 @@ const SAMPLE_PRESETS: Array<{
 }> = [
   {
     label: "Invoice (clean)",
-    doc_id: "invoice_001",
+    doc_id: "invoice_002",
     expected_type: "invoice",
     doc_text:
       "INVOICE #INV-2026-0412\nDate: 2026-10-15\nVendor: Northwind Cloud Systems LLC\nBill To: Apex Manufacturing Corp\n\nLine Items:\n1. Enterprise Pipeline Audit License — $4,200.00\n2. Dedicated Worker Node Support — $800.00\n\nSubtotal: $5,000.00\nTax (8%): $400.00\nTotal Due: $5,400.00\nPayment Terms: Net 30 days.",
   },
   {
     label: "Invoice (hallucination fault)",
-    doc_id: "invoice_003",
+    doc_id: "invoice_001",
     expected_type: "invoice",
     doc_text:
       "INVOICE #INV-2026-0889\nDate: 2026-10-18\nFrom: Meridian Data Services\nTo: Horizon Logistics Ltd\n\nDescription: Quarterly data ingestion & archival tier\nSubtotal: $2,500.00\nTax: $200.00\nTotal Due: $2,700.00\nDue Date: 2026-11-18",
@@ -67,8 +67,8 @@ const SAMPLE_PRESETS: Array<{
       "MASTER SERVICES AGREEMENT\nEffective Date: 2026-10-01\nBetween: Sterling Legal Partners LLP (\"Provider\") and Vanguard Biotech Inc. (\"Client\").\n\n1. Scope of Services: Provider shall deliver regulatory compliance advisory services.\n2. Term and Termination: This Agreement remains in force until 2027-10-01 unless terminated with 30 days written notice.\n3. Indemnification: Each party agrees to indemnify and hold harmless the other party from third-party claims.",
   },
   {
-    label: "Report (context loss fault)",
-    doc_id: "report_003",
+    label: "Report (prompt failure fault)",
+    doc_id: "report_001",
     expected_type: "report",
     doc_text:
       "Q3 INCIDENT & RELIABILITY REPORT\nDate: 2026-10-20\nPrepared by: Site Reliability Engineering, Helios AI\n\nExecutive Summary & Findings:\nAcross 42,000 production pipeline runs in Q3, mean latency dropped by 18% to 640ms while schema validation catches improved to 99.4%.\n\nMethodology:\nEvery span was evaluated by seven deterministic checks before release.\n\nRecommendations:\n1. Pin cross-family judge models.\n2. Enforce per-tenant token bucket limits.",

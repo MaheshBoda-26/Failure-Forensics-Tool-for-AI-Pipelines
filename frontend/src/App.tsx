@@ -13,7 +13,6 @@ import { GraphPage } from "./components/GraphPage";
 import { Header, NavTab } from "./components/Header";
 import { Overview } from "./components/Overview";
 import { TraceExplorer } from "./components/TraceExplorer";
-import { Empty, StatusPill } from "./components/ui";
 import { X } from "lucide-react";
 import { isFailedTrace } from "./lib/trace";
 
@@ -210,13 +209,31 @@ export const App: React.FC = () => {
     try {
       setIsRunningDocument(true);
       const res = await api.runPipeline(payload);
-      if (res.trace_id) {
-        selectedIdRef.current = res.trace_id;
-        setSelectedTraceId(res.trace_id);
+      let resolvedTraceId = res.trace_id ?? null;
+      if (!resolvedTraceId && res.status === "queued" && res.job_id) {
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 500));
+          try {
+            const job = await api.getJob(res.job_id);
+            if (job.status === "completed") {
+              resolvedTraceId = job.result?.trace_id ?? null;
+              break;
+            }
+            if (job.status === "failed" || job.status === "dead") {
+              break;
+            }
+          } catch {
+            break;
+          }
+        }
+      }
+      if (resolvedTraceId) {
+        selectedIdRef.current = resolvedTraceId;
+        setSelectedTraceId(resolvedTraceId);
       }
       await loadData();
-      if (res.trace_id) {
-        handleInspect(res.trace_id);
+      if (resolvedTraceId) {
+        handleInspect(resolvedTraceId);
       } else {
         setActiveTab("explorer");
       }

@@ -9,6 +9,7 @@ import {
   EvalResult,
   PipelineRunRequest,
   PipelineRunResponse,
+  JobStatusResponse,
   FaultBenchmarkSummary,
   RuntimeStatus,
 } from "./types";
@@ -150,6 +151,11 @@ export const api = {
       body: JSON.stringify(payload),
     });
     return handleResponse<PipelineRunResponse>(res);
+  },
+
+  async getJob(jobId: string): Promise<JobStatusResponse> {
+    const res = await apiFetch(`${API_BASE}/jobs/${encodeURIComponent(jobId)}`);
+    return handleResponse<JobStatusResponse>(res);
   },
 
   async runDemoPipeline(): Promise<{ status: string; traces_saved: number }> {

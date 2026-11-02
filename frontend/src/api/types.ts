@@ -15,14 +15,6 @@ export type FailureCategory =
   | "context_loss"
   | "unknown";
 
-export interface CheckResult {
-  check_name: string;
-  passed: boolean;
-  score: number;
-  threshold: number;
-  detail: string;
-}
-
 export interface Span {
   span_id: string;
   trace_id: string;
@@ -261,13 +253,17 @@ export interface FaultBenchmarkSummary {
   results: FaultBenchmarkRow[];
 }
 
-/** One archived prompt template, keyed by name + content hash. */
-export interface PromptTemplate {
-  name: string;
-  version: string;
-  template_text: string;
-  created_at: string;
+export interface JobStatusResponse {
+  job_id: string;
   tenant_id: string;
+  status: "pending" | "running" | "completed" | "failed" | "dead" | string;
+  result?: {
+    trace_id?: string;
+    diagnosis_id?: string;
+    root_cause_step?: string;
+    status?: string;
+  } | null;
+  error?: string | null;
 }
 
 export interface RuntimeStatus {

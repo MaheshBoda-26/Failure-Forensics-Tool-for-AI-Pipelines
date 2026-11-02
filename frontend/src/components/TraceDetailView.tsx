@@ -64,6 +64,12 @@ function renderSpanJson(raw: string | undefined, fallback: unknown): string {
   return JSON.stringify(parsed.ok ? parsed.value : parsed.raw, null, 2);
 }
 
+function formatRawOrJson(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const parsed = parseSpanJson(raw);
+  return parsed.ok ? JSON.stringify(parsed.value, null, 2) : raw;
+}
+
 export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
   trace,
   diagnosis,
@@ -71,11 +77,10 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
   onBack,
 }) => {
   const [selectedStep, setSelectedStep] = useState<string>("intake");
+  const [overrideStep, setOverrideStep] = useState<string>("intake");
   const [isConfirming, setIsConfirming] = useState(false);
   const [isDiagnosing, setIsDiagnosing] = useState(false);
   const [showOverrideMenu, setShowOverrideMenu] = useState(false);
-  const [overrideCategory, setOverrideCategory] =
-    useState<FailureCategory>("extraction_hallucination");
   const [message, setMessage] = useState<string | null>(null);
   const [messageError, setMessageError] = useState(false);
 
@@ -90,10 +95,14 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
   useEffect(() => {
     const root = effectiveRootStep;
     if (root && root !== "none") {
-      setSelectedStep(root.toLowerCase());
+      const normalized = root.toLowerCase();
+      setSelectedStep(normalized);
+      setOverrideStep(normalized);
       return;
     }
-    setSelectedStep((trace.spans?.[0]?.step_name ?? "intake").toLowerCase());
+    const fallbackStep = (trace.spans?.[0]?.step_name ?? "intake").toLowerCase();
+    setSelectedStep(fallbackStep);
+    setOverrideStep(fallbackStep);
   }, [trace.trace_id, effectiveRootStep, trace.spans]);
 
   const notify = (text: string, error = false) => {
@@ -165,6 +174,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
 
   const handleOverride = async (next: FailureCategory) => {
     if (!diagnosis) return;
+    const targetStep = overrideStep || selectedStep;
     try {
       setIsConfirming(true);
       await api.confirmDiagnosis(
@@ -172,10 +182,10 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
         true,
         next,
         "Manual override from the trace inspector",
-        selectedStep,
+        targetStep,
       );
       setShowOverrideMenu(false);
-      notify(`Override saved: ${humanize(next)}.`);
+      notify(`Override saved: ${humanize(next)} at ${stepLabel(targetStep)}.`);
       await onRefreshTrace();
     } catch (err: unknown) {
       notify(`Could not override: ${(err as Error).message}`, true);
@@ -436,7 +446,14 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                   <div className="menu-anchor">
                     <button
                       className="btn btn--sm"
-                      onClick={() => setShowOverrideMenu((open) => !open)}
+                      onClick={() => {
+                        setOverrideStep(
+                          effectiveRootStep && effectiveRootStep !== "none"
+                            ? effectiveRootStep.toLowerCase()
+                            : selectedStep,
+                        );
+                        setShowOverrideMenu((open) => !open);
+                      }}
                       aria-haspopup="menu"
                       aria-expanded={showOverrideMenu}
                       disabled={isConfirming}
@@ -452,6 +469,27 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                           aria-hidden="true"
                         />
                         <div className="popover popover--menu" role="menu" aria-label="Override category">
+                          <div style={{ padding: "6px 10px", borderBottom: "1px solid var(--border, #e5e7eb)" }}>
+                            <label
+                              htmlFor="override-step-select"
+                              style={{ display: "block", fontSize: 11, marginBottom: 4, opacity: 0.75 }}
+                            >
+                              Failing stage
+                            </label>
+                            <select
+                              id="override-step-select"
+                              className="input"
+                              style={{ width: "100%", fontSize: 12, padding: "4px 6px" }}
+                              value={overrideStep}
+                              onChange={(e) => setOverrideStep(e.target.value)}
+                            >
+                              {steps.map((st) => (
+                                <option key={st} value={st}>
+                                  {stepLabel(st)}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
                           {CATEGORIES.map((option) => (
                             <button
                               className="menu-item"
@@ -521,7 +559,7 @@ export const TraceDetailView: React.FC<TraceDetailViewProps> = ({
                   <div>
                     <p className={`payload__label${isFailingStep ? " is-fail" : ""}`}>Output</p>
                     <pre className={`code${isFailingStep ? " is-fail" : ""}`}>
-                      {currentSpan.raw_response ||
+                      {formatRawOrJson(currentSpan.raw_response) ||
                         renderSpanJson(currentSpan.output_json, {
                           document_id: trace.document_id,
                           step: selectedStep,

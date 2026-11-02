@@ -19,7 +19,7 @@ const ROWS = [
   {
     capability: "Eval gate",
     guarantee: "Golden suites compare baseline and release",
-    limit: "SQLite storage only in v0",
+    limit: "Requires human-confirmed failure flags to seed cases",
   },
 ];
 
