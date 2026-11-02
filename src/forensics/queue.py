@@ -65,21 +65,37 @@ _SCHEMA = (
 )
 
 
-def _parse_iso_dt(value: Any) -> datetime | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-    dt = datetime.fromisoformat(str(value))
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
-
-
 def _format_iso_dt(value: Any) -> str | None:
     if value is None:
         return None
     if isinstance(value, datetime):
         return value.isoformat()
     return str(value)
+
+
+def _preserve_doc_reference(tenant_id: str, raw_payload: Any) -> str | None:
+    """Persist uploaded doc_text (if any) and return a reference JSON for dead-letter requeue."""
+    try:
+        payload = json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    doc_id = payload.get("doc_id")
+    if not isinstance(doc_id, str) or not doc_id:
+        return None
+    doc_text = payload.get("doc_text")
+    if isinstance(doc_text, str) and doc_text:
+        from forensics.documents import has_dataset_document, store_document
+        from forensics.pii import create_redactor_from_settings
+
+        if not has_dataset_document(doc_id):
+            persisted_text = doc_text
+            redactor = create_redactor_from_settings()
+            if redactor.enabled:
+                persisted_text, _ = redactor.redact(persisted_text)
+            store_document(doc_id, persisted_text, tenant_id=tenant_id)
+    return json.dumps({"doc_id": doc_id, "expected_type": payload.get("expected_type")})
 
 
 class JobStatus(StrEnum):
@@ -464,7 +480,8 @@ class JobQueue:
             async def _pg_fail() -> JobStatus:
                 async with storage._conn() as conn:
                     row = await conn.fetchrow(
-                        "SELECT attempts, max_attempts FROM job_queue WHERE job_id = $1",
+                        "SELECT attempts, max_attempts, tenant_id, payload "
+                        "FROM job_queue WHERE job_id = $1",
                         job_id,
                     )
                     if row is None:
@@ -481,17 +498,23 @@ class JobQueue:
                         return JobStatus.PENDING
 
                     terminal = JobStatus.DEAD.value if dead_letter else JobStatus.FAILED.value
+                    preserved_ref = (
+                        _preserve_doc_reference(str(row["tenant_id"]), row["payload"])
+                        if dead_letter
+                        else None
+                    )
                     await conn.execute(
                         """
                         UPDATE job_queue
                         SET status = $1, completed_at = $2, error = $3, worker_id = NULL,
-                            payload = $4, claim_expires_at = NULL
-                        WHERE job_id = $5
+                            payload = $4, result = COALESCE(result, $5), claim_expires_at = NULL
+                        WHERE job_id = $6
                         """,
                         terminal,
                         now_dt,
                         error,
                         _CLEARED_PAYLOAD,
+                        preserved_ref,
                         job_id,
                     )
                     return JobStatus(terminal)
@@ -500,7 +523,8 @@ class JobQueue:
 
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT attempts, max_attempts FROM job_queue WHERE job_id = ?", (job_id,)
+                "SELECT attempts, max_attempts, tenant_id, payload FROM job_queue WHERE job_id = ?",
+                (job_id,),
             ).fetchone()
             if row is None:
                 raise KeyError(f"Unknown job: {job_id}")
@@ -515,11 +539,12 @@ class JobQueue:
                 return JobStatus.PENDING
 
             terminal = JobStatus.DEAD.value if dead_letter else JobStatus.FAILED.value
+            preserved_ref = _preserve_doc_reference(str(row[2]), row[3]) if dead_letter else None
             conn.execute(
                 """
                 UPDATE job_queue
                 SET status = ?, completed_at = ?, error = ?, worker_id = NULL, payload = ?,
-                    claim_expires_at = NULL
+                    result = COALESCE(result, ?), claim_expires_at = NULL
                 WHERE job_id = ?
                 """,
                 (
@@ -527,10 +552,65 @@ class JobQueue:
                     now_dt.isoformat(),
                     error,
                     _CLEARED_PAYLOAD,
+                    preserved_ref,
                     job_id,
                 ),
             )
             return JobStatus(terminal)
+
+    def requeue_dead(self) -> int:
+        """Requeue dead-lettered jobs back to pending, restoring preserved doc references."""
+        if self._use_postgres:
+            from forensics.storage import get_storage
+
+            storage: Any = get_storage()
+
+            async def _pg_requeue_dead() -> int:
+                async with storage._conn() as conn:
+                    res = await conn.execute(
+                        """
+                        UPDATE job_queue
+                        SET status = $1,
+                            payload = CASE
+                                WHEN payload = $2 AND result IS NOT NULL THEN result
+                                ELSE payload
+                            END,
+                            result = NULL,
+                            worker_id = NULL,
+                            claim_expires_at = NULL,
+                            completed_at = NULL,
+                            attempts = 0,
+                            error = NULL
+                        WHERE status = $3
+                        """,
+                        JobStatus.PENDING.value,
+                        _CLEARED_PAYLOAD,
+                        JobStatus.DEAD.value,
+                    )
+                    return int(str(res).split()[-1])
+
+            return int(storage._run_coro(_pg_requeue_dead()))
+
+        with self._conn() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE job_queue
+                SET status = ?,
+                    payload = CASE
+                        WHEN payload = ? AND result IS NOT NULL THEN result
+                        ELSE payload
+                    END,
+                    result = NULL,
+                    worker_id = NULL,
+                    claim_expires_at = NULL,
+                    completed_at = NULL,
+                    attempts = 0,
+                    error = NULL
+                WHERE status = ?
+                """,
+                (JobStatus.PENDING.value, _CLEARED_PAYLOAD, JobStatus.DEAD.value),
+            )
+            return cursor.rowcount
 
     # --- readers ---
 
@@ -618,7 +698,7 @@ class JobQueue:
             cols = [d[0] for d in cursor.description]
             return [self._row_to_job(row, cols) for row in cursor.fetchall()]
 
-    def counts(self) -> dict[str, int]:
+    def counts(self, tenant_id: str | None = None) -> dict[str, int]:
         """Job count per status — what an operator dashboard wants."""
         totals = {status.value: 0 for status in JobStatus}
         if self._use_postgres:
@@ -628,9 +708,16 @@ class JobQueue:
 
             async def _pg_counts() -> dict[str, int]:
                 async with storage._conn() as conn:
-                    rows = await conn.fetch(
-                        "SELECT status, COUNT(*) AS cnt FROM job_queue GROUP BY status"
-                    )
+                    if tenant_id is not None:
+                        rows = await conn.fetch(
+                            "SELECT status, COUNT(*) AS cnt FROM job_queue "
+                            "WHERE tenant_id = $1 GROUP BY status",
+                            tenant_id,
+                        )
+                    else:
+                        rows = await conn.fetch(
+                            "SELECT status, COUNT(*) AS cnt FROM job_queue GROUP BY status"
+                        )
                     for row in rows:
                         totals[str(row["status"])] = int(row["cnt"])
                 return totals
@@ -638,12 +725,20 @@ class JobQueue:
             return dict(storage._run_coro(_pg_counts()))
 
         with self._conn() as conn:
-            rows = conn.execute("SELECT status, COUNT(*) FROM job_queue GROUP BY status").fetchall()
+            if tenant_id is not None:
+                rows = conn.execute(
+                    "SELECT status, COUNT(*) FROM job_queue WHERE tenant_id = ? GROUP BY status",
+                    (tenant_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT status, COUNT(*) FROM job_queue GROUP BY status"
+                ).fetchall()
         for status, count in rows:
             totals[str(status)] = int(count)
         return totals
 
-    def stats(self) -> dict[str, Any]:
+    def stats(self, tenant_id: str | None = None) -> dict[str, Any]:
         """Queue statistics for an operator dashboard.
 
         Returns counts by status, the age (in seconds) of the oldest pending job,
@@ -662,25 +757,50 @@ class JobQueue:
 
             async def _pg_stats() -> dict[str, Any]:
                 async with storage._conn() as conn:
-                    rows = await conn.fetch(
-                        "SELECT status, COUNT(*) AS cnt FROM job_queue GROUP BY status"
-                    )
-                    for row in rows:
-                        stats["by_status"][str(row["status"])] = int(row["cnt"])
-                    oldest = await conn.fetchval(
-                        "SELECT MAX(EXTRACT(EPOCH FROM ($1::timestamptz - created_at))) "
-                        "FROM job_queue WHERE status = $2",
-                        now_dt,
-                        JobStatus.PENDING.value,
-                    )
-                    if oldest is not None:
-                        stats["oldest_pending_age_s"] = float(oldest)
-                    rows = await conn.fetch(
-                        "SELECT tenant_id, COUNT(*) AS cnt FROM job_queue "
-                        "WHERE status IN ($1, $2) GROUP BY tenant_id",
-                        JobStatus.PENDING.value,
-                        JobStatus.RUNNING.value,
-                    )
+                    if tenant_id is not None:
+                        rows = await conn.fetch(
+                            "SELECT status, COUNT(*) AS cnt FROM job_queue "
+                            "WHERE tenant_id = $1 GROUP BY status",
+                            tenant_id,
+                        )
+                        for row in rows:
+                            stats["by_status"][str(row["status"])] = int(row["cnt"])
+                        oldest = await conn.fetchval(
+                            "SELECT MAX(EXTRACT(EPOCH FROM ($1::timestamptz - created_at))) "
+                            "FROM job_queue WHERE status = $2 AND tenant_id = $3",
+                            now_dt,
+                            JobStatus.PENDING.value,
+                            tenant_id,
+                        )
+                        if oldest is not None:
+                            stats["oldest_pending_age_s"] = float(oldest)
+                        rows = await conn.fetch(
+                            "SELECT tenant_id, COUNT(*) AS cnt FROM job_queue "
+                            "WHERE status IN ($1, $2) AND tenant_id = $3 GROUP BY tenant_id",
+                            JobStatus.PENDING.value,
+                            JobStatus.RUNNING.value,
+                            tenant_id,
+                        )
+                    else:
+                        rows = await conn.fetch(
+                            "SELECT status, COUNT(*) AS cnt FROM job_queue GROUP BY status"
+                        )
+                        for row in rows:
+                            stats["by_status"][str(row["status"])] = int(row["cnt"])
+                        oldest = await conn.fetchval(
+                            "SELECT MAX(EXTRACT(EPOCH FROM ($1::timestamptz - created_at))) "
+                            "FROM job_queue WHERE status = $2",
+                            now_dt,
+                            JobStatus.PENDING.value,
+                        )
+                        if oldest is not None:
+                            stats["oldest_pending_age_s"] = float(oldest)
+                        rows = await conn.fetch(
+                            "SELECT tenant_id, COUNT(*) AS cnt FROM job_queue "
+                            "WHERE status IN ($1, $2) GROUP BY tenant_id",
+                            JobStatus.PENDING.value,
+                            JobStatus.RUNNING.value,
+                        )
                     for row in rows:
                         stats["inflight_per_tenant"][row["tenant_id"]] = int(row["cnt"])
                 return stats
@@ -688,23 +808,45 @@ class JobQueue:
             return cast(dict[str, Any], storage._run_coro(_pg_stats()))
 
         with self._conn() as conn:
-            rows = conn.execute("SELECT status, COUNT(*) FROM job_queue GROUP BY status").fetchall()
-            for status, count in rows:
-                stats["by_status"][str(status)] = int(count)
-            oldest = conn.execute(
-                "SELECT MAX(strftime('%s', ?) - strftime('%s', created_at)) "
-                "FROM job_queue WHERE status = ?",
-                (now_dt.isoformat(), JobStatus.PENDING.value),
-            ).fetchone()
-            if oldest and oldest[0] is not None:
-                stats["oldest_pending_age_s"] = float(oldest[0])
-            rows = conn.execute(
-                "SELECT tenant_id, COUNT(*) FROM job_queue WHERE status IN (?, ?) "
-                "GROUP BY tenant_id",
-                (JobStatus.PENDING.value, JobStatus.RUNNING.value),
-            ).fetchall()
-            for tenant_id, count in rows:
-                stats["inflight_per_tenant"][tenant_id] = int(count)
+            if tenant_id is not None:
+                rows = conn.execute(
+                    "SELECT status, COUNT(*) FROM job_queue WHERE tenant_id = ? GROUP BY status",
+                    (tenant_id,),
+                ).fetchall()
+                for status, count in rows:
+                    stats["by_status"][str(status)] = int(count)
+                oldest = conn.execute(
+                    "SELECT MAX(strftime('%s', ?) - strftime('%s', created_at)) "
+                    "FROM job_queue WHERE status = ? AND tenant_id = ?",
+                    (now_dt.isoformat(), JobStatus.PENDING.value, tenant_id),
+                ).fetchone()
+                if oldest and oldest[0] is not None:
+                    stats["oldest_pending_age_s"] = float(oldest[0])
+                rows = conn.execute(
+                    "SELECT tenant_id, COUNT(*) FROM job_queue WHERE status IN (?, ?) "
+                    "AND tenant_id = ? GROUP BY tenant_id",
+                    (JobStatus.PENDING.value, JobStatus.RUNNING.value, tenant_id),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT status, COUNT(*) FROM job_queue GROUP BY status"
+                ).fetchall()
+                for status, count in rows:
+                    stats["by_status"][str(status)] = int(count)
+                oldest = conn.execute(
+                    "SELECT MAX(strftime('%s', ?) - strftime('%s', created_at)) "
+                    "FROM job_queue WHERE status = ?",
+                    (now_dt.isoformat(), JobStatus.PENDING.value),
+                ).fetchone()
+                if oldest and oldest[0] is not None:
+                    stats["oldest_pending_age_s"] = float(oldest[0])
+                rows = conn.execute(
+                    "SELECT tenant_id, COUNT(*) FROM job_queue WHERE status IN (?, ?) "
+                    "GROUP BY tenant_id",
+                    (JobStatus.PENDING.value, JobStatus.RUNNING.value),
+                ).fetchall()
+            for t_id, count in rows:
+                stats["inflight_per_tenant"][t_id] = int(count)
         return stats
 
     # --- housekeeping ---
@@ -724,10 +866,11 @@ class JobQueue:
             async def _pg_cleanup() -> int:
                 async with storage._conn() as conn:
                     res = await conn.execute(
-                        "DELETE FROM job_queue WHERE status IN ($1, $2) "
-                        "AND completed_at IS NOT NULL AND completed_at < $3",
+                        "DELETE FROM job_queue WHERE status IN ($1, $2, $3) "
+                        "AND completed_at IS NOT NULL AND completed_at < $4",
                         JobStatus.COMPLETED.value,
                         JobStatus.FAILED.value,
+                        JobStatus.DEAD.value,
                         cutoff_dt,
                     )
                     return int(str(res).split()[-1])
@@ -737,9 +880,9 @@ class JobQueue:
         cutoff = cutoff_dt.isoformat()
         with self._conn() as conn:
             cursor = conn.execute(
-                "DELETE FROM job_queue WHERE status IN (?, ?) AND completed_at IS NOT NULL "
+                "DELETE FROM job_queue WHERE status IN (?, ?, ?) AND completed_at IS NOT NULL "
                 "AND completed_at < ?",
-                (JobStatus.COMPLETED.value, JobStatus.FAILED.value, cutoff),
+                (JobStatus.COMPLETED.value, JobStatus.FAILED.value, JobStatus.DEAD.value, cutoff),
             )
             return cursor.rowcount
 

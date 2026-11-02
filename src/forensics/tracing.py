@@ -146,7 +146,6 @@ class TraceContext:
         self.traces_dir.mkdir(parents=True, exist_ok=True)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._trace: Trace | None = None
-        self._spans: list[Span] = []
         self._start_time = time.perf_counter()
 
     def __enter__(self) -> "TraceContext":

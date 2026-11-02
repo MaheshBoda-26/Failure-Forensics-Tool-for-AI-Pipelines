@@ -468,8 +468,8 @@ def list_prompt_templates(
     authorization: Annotated[str | None, Header()] = None,
 ) -> list[PromptTemplate]:
     """List every archived prompt template."""
-    get_current_tenant(authorization, scope="read")
-    return get_storage().list_prompt_templates()
+    tenant = get_current_tenant(authorization, scope="read")
+    return get_storage().list_prompt_templates(tenant_id=tenant_scope(tenant))
 
 
 @app.get("/prompt-templates/{name}/{version}", response_model=PromptTemplate)
@@ -479,8 +479,8 @@ def get_prompt_template(
     authorization: Annotated[str | None, Header()] = None,
 ) -> PromptTemplate:
     """Get one prompt template by name and content hash."""
-    get_current_tenant(authorization, scope="read")
-    template = get_storage().get_prompt_template(name, version)
+    tenant = get_current_tenant(authorization, scope="read")
+    template = get_storage().get_prompt_template(name, version, tenant_id=tenant_scope(tenant))
     if not template:
         raise HTTPException(status_code=404, detail="Prompt template not found")
     return template
@@ -886,7 +886,13 @@ async def run_pipeline(
             # then fail synchronously at enqueue time if nothing resolves — the
             # caller learns immediately instead of when a worker claims the job.
             if not has_dataset_document(request.doc_id):
-                store_document(request.doc_id, request.doc_text, tenant.tenant_id)
+                from forensics.pii import create_redactor_from_settings
+
+                persisted_text = request.doc_text
+                redactor = create_redactor_from_settings()
+                if redactor.enabled:
+                    persisted_text, _ = redactor.redact(persisted_text)
+                store_document(request.doc_id, persisted_text, tenant.tenant_id)
             if not read_document(request.doc_id, tenant.tenant_id):
                 raise HTTPException(
                     status_code=422,
@@ -958,8 +964,8 @@ def queue_stats(
     authorization: Annotated[str | None, Header()] = None,
 ) -> dict[str, object]:
     """Queue statistics: counts by status, oldest pending age, per-tenant in-flight."""
-    get_current_tenant(authorization, scope="read")
-    return get_queue().stats()
+    tenant = get_current_tenant(authorization, scope="read")
+    return get_queue().stats(tenant_id=tenant_scope(tenant))
 
 
 @app.get("/analytics")
@@ -972,12 +978,20 @@ def get_analytics_endpoint(
 
 
 @app.get("/analytics/benchmark")
-@app.post("/analytics/benchmark")
 def get_benchmark_endpoint(
     authorization: Annotated[str | None, Header()] = None,
 ) -> dict[str, object]:
     """Run the fault-injection benchmark across eligible clean traces for this tenant."""
-    tenant = get_current_tenant(authorization)
+    tenant = get_current_tenant(authorization, scope="read")
+    return get_fault_benchmark(tenant_scope(tenant))
+
+
+@app.post("/analytics/benchmark")
+def run_benchmark_endpoint(
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, object]:
+    """Trigger the fault-injection benchmark across eligible clean traces for this tenant."""
+    tenant = get_current_tenant(authorization, scope="write")
     return get_fault_benchmark(tenant_scope(tenant))
 
 
@@ -1095,9 +1109,14 @@ def get_analytics(tenant_id: str | None = None) -> AnalyticsSnapshot:
 
     for trace in traces:
         diagnosis = storage.get_diagnosis_for_trace(trace.trace_id, tenant_id=tenant_id)
+        effective_root = (
+            (diagnosis.override_step or diagnosis.root_cause_step)
+            if diagnosis is not None
+            else None
+        )
         root_cause_step = (
-            diagnosis.root_cause_step
-            if diagnosis is not None and diagnosis.root_cause_step not in ("", "none")
+            effective_root
+            if effective_root is not None and effective_root not in ("", "none")
             else None
         )
         has_semantic_failure = root_cause_step is not None

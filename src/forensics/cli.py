@@ -10,7 +10,7 @@ import json
 import sys
 import threading
 from pathlib import Path
-from typing import Annotated, Any, cast
+from typing import Annotated, Any
 
 import typer
 
@@ -1187,7 +1187,7 @@ def queue_requeue(
     that were dead-lettered after exhausting `QUEUE_MAX_ATTEMPTS`, e.g. after a
     transient outage has been resolved.
     """
-    from forensics.queue import JobStatus, get_queue
+    from forensics.queue import get_queue
 
     if not dead:
         typer.secho(
@@ -1195,39 +1195,7 @@ def queue_requeue(
         )
         return
 
-    queue = get_queue()
-    if queue._use_postgres:
-        from forensics.storage import get_storage
-
-        storage = cast(Any, get_storage())
-
-        async def _pg() -> int:
-            async with storage._conn() as conn:
-                res = await conn.execute(
-                    """
-                    UPDATE job_queue
-                    SET status = $1, worker_id = NULL, claim_expires_at = NULL,
-                        attempts = 0, error = NULL
-                    WHERE status = $2
-                    """,
-                    JobStatus.PENDING.value,
-                    JobStatus.DEAD.value,
-                )
-                return int(str(res).split()[-1])
-
-        requeued = storage._run_coro(_pg())
-    else:
-        with queue._conn() as conn:
-            cursor = conn.execute(
-                """
-                UPDATE job_queue
-                SET status = ?, worker_id = NULL, claim_expires_at = NULL,
-                    attempts = 0, error = NULL
-                WHERE status = ?
-                """,
-                (JobStatus.PENDING.value, JobStatus.DEAD.value),
-            )
-            requeued = cursor.rowcount
+    requeued = get_queue().requeue_dead()
     typer.secho(f"Requeued {requeued} dead-lettered jobs", fg=typer.colors.GREEN)
 
 

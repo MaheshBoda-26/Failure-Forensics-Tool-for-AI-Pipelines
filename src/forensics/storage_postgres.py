@@ -526,9 +526,9 @@ class PostgresStorage(StorageBase):
         """
         from forensics.tracing import finalize_trace
 
-        async with self._conn() as conn:
+        async with self._conn() as conn, conn.transaction():
             existing = await conn.fetchrow(
-                "SELECT tenant_id FROM traces WHERE trace_id = $1", trace.trace_id
+                "SELECT tenant_id FROM traces WHERE trace_id = $1 FOR UPDATE", trace.trace_id
             )
             if existing is not None and existing["tenant_id"] != trace.tenant_id:
                 raise ValueError(f"trace_id {trace.trace_id!r} already belongs to another tenant")
@@ -558,6 +558,7 @@ class PostgresStorage(StorageBase):
                     pipeline_version = EXCLUDED.pipeline_version,
                     schema_version = EXCLUDED.schema_version,
                     tenant_id = EXCLUDED.tenant_id
+                WHERE traces.tenant_id = EXCLUDED.tenant_id
                 """,
                 trace.trace_id,
                 trace.document_id,
@@ -625,6 +626,7 @@ class PostgresStorage(StorageBase):
                     ON CONFLICT (name, version) DO UPDATE SET
                         template_text = EXCLUDED.template_text,
                         created_at = EXCLUDED.created_at
+                    WHERE prompt_templates.tenant_id = EXCLUDED.tenant_id
                     """,
                     name,
                     version,
@@ -706,8 +708,9 @@ class PostgresStorage(StorageBase):
         param_offset = len(trace_ids) + 1
 
         sql = (
-            f"SELECT trace_id, root_cause_step, created_at FROM diagnoses "
-            f"WHERE trace_id IN ({placeholders})"
+            "SELECT trace_id, "
+            "COALESCE(NULLIF(override_step, ''), root_cause_step) AS root_cause_step, "
+            f"created_at FROM diagnoses WHERE trace_id IN ({placeholders})"
         )
         if tenant_id is not None:
             sql += f" AND tenant_id = ${param_offset}"
@@ -908,6 +911,13 @@ class PostgresStorage(StorageBase):
 
     async def _async_save_prompt_template(self, template: PromptTemplate) -> None:
         """Insert or update a prompt template by (name, version)."""
+        from forensics.pii import create_redactor_from_settings
+
+        text = template.template_text
+        redactor = create_redactor_from_settings()
+        if redactor.enabled and text:
+            text, _ = redactor.redact(text)
+
         async with self._conn() as conn:
             await conn.execute(
                 """
@@ -917,10 +927,11 @@ class PostgresStorage(StorageBase):
                 ON CONFLICT (name, version) DO UPDATE SET
                     template_text = EXCLUDED.template_text,
                     created_at = EXCLUDED.created_at
+                WHERE prompt_templates.tenant_id = EXCLUDED.tenant_id
                 """,
                 template.name,
                 template.version,
-                template.template_text,
+                text,
                 template.created_at,
                 template.tenant_id,
             )

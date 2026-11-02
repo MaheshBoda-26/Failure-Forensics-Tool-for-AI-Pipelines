@@ -384,15 +384,22 @@ class EvalScheduler:
 
         # Disable redirects (`follow_redirects=False`) so a public webhook
         # cannot 302-redirect the POST to a loopback or link-local metadata IP,
-        # and re-verify DNS resolution immediately after connecting when using
-        # the live network transport to close the DNS-rebinding TOCTOU window.
-        async with httpx.AsyncClient(
-            timeout=10, transport=self.transport, follow_redirects=False
-        ) as client:
+        # and re-verify DNS resolution via an httpx request hook immediately
+        # before dispatching on the live network transport.
+        async def _verify_request_target(request: httpx.Request) -> None:
             if self.transport is None and not self.settings.dry_run:
-                after_ips = validate_webhook_url(url, dry_run=False, require_resolution=True)
+                after_ips = validate_webhook_url(
+                    str(request.url), dry_run=False, require_resolution=True
+                )
                 if validated_ips and after_ips and not (set(validated_ips) & set(after_ips)):
                     raise ValueError("DNS rebinding detected on ALERT_WEBHOOK_URL")
+
+        async with httpx.AsyncClient(
+            timeout=10,
+            transport=self.transport,
+            follow_redirects=False,
+            event_hooks={"request": [_verify_request_target]},
+        ) as client:
             response = await client.post(url, content=body, headers=headers)
             response.raise_for_status()
         return True

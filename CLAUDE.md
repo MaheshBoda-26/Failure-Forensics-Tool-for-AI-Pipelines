@@ -71,7 +71,7 @@ src/forensics/
 - `correspondence_001-003.txt`
 - `mixed_001-003.txt`
 
-Ground truth in `dataset/labels.json` — 5 seeded failures (`contract_001`, `invoice_003`, `report_003`, `correspondence_002`, `mixed_001`).
+Ground truth in `dataset/labels.json` — 5 seeded failures (`contract_001`, `invoice_001`, `report_001`, `correspondence_001`, `mixed_001`).
 
 ## Environment Variables (`.env`)
 

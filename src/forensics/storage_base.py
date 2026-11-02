@@ -134,12 +134,14 @@ class StorageBase(ABC):
         ...
 
     @abstractmethod
-    def get_prompt_template(self, name: str, version: str) -> PromptTemplate | None:
+    def get_prompt_template(
+        self, name: str, version: str, tenant_id: str | None = None
+    ) -> PromptTemplate | None:
         """Get one prompt template by name and content hash."""
         ...
 
     @abstractmethod
-    def list_prompt_templates(self) -> list[PromptTemplate]:
+    def list_prompt_templates(self, tenant_id: str | None = None) -> list[PromptTemplate]:
         """List every archived prompt template."""
         ...
 

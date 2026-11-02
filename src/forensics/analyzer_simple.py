@@ -33,7 +33,6 @@ from forensics.models import (
     StepScore,
     Trace,
 )
-from forensics.storage import get_storage
 
 DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -125,58 +124,23 @@ def is_salient_entity_type(entity_type: str) -> bool:
 
 
 # Definitional vocabulary per document type, used by `check_propagation`.
-# Each entry is `(pattern, conclusive)`: a conclusive marker stands on its own,
-# weaker ones must appear at least twice before they count. Whole-word matching
-# matters — `\bbill\b` does not fire on "billing", and `\breport\b` does not
-# fire on "reported".
-TYPE_MARKERS: dict[str, tuple[tuple[re.Pattern[str], bool], ...]] = {
-    "contract": tuple(
-        (re.compile(pattern, re.IGNORECASE), conclusive)
-        for pattern, conclusive in (
-            (r"\bcontracts?\b", True),
-            (r"\bagreements?\b", True),
-            (r"\bclauses?\b", False),
-            (r"\bhereto\b", False),
-            (r"\bherein\b", False),
-            (r"\bindemnif\w*\b", False),
-            (r"\btermination\b", False),
-        )
+# Whole-word matching matters — `\breport\b` does not fire on "reported".
+TYPE_MARKERS: dict[str, tuple[re.Pattern[str], ...]] = {
+    "contract": (
+        re.compile(r"\bcontracts?\b", re.IGNORECASE),
+        re.compile(r"\bagreements?\b", re.IGNORECASE),
     ),
-    "invoice": tuple(
-        (re.compile(pattern, re.IGNORECASE), conclusive)
-        for pattern, conclusive in (
-            (r"\binvoices?\b", True),
-            (r"\breceipts?\b", True),
-            (r"\bremittance\b", False),
-            (r"\bsubtotal\b", False),
-            (r"\bamount\s+due\b", False),
-            (r"\bpayment\s+terms\b", False),
-        )
+    "invoice": (
+        re.compile(r"\binvoices?\b", re.IGNORECASE),
+        re.compile(r"\breceipts?\b", re.IGNORECASE),
     ),
-    "report": tuple(
-        (re.compile(pattern, re.IGNORECASE), conclusive)
-        for pattern, conclusive in (
-            (r"\breports?\b", True),
-            (r"\bfindings\b", False),
-            (r"\bmethodology\b", False),
-            (r"\bexecutive\s+summary\b", False),
-        )
+    "report": (re.compile(r"\breports?\b", re.IGNORECASE),),
+    "correspondence": (
+        re.compile(r"\bletters?\b", re.IGNORECASE),
+        re.compile(r"\bemails?\b", re.IGNORECASE),
+        re.compile(r"\bmemo(?:randum)?s?\b", re.IGNORECASE),
     ),
-    "correspondence": tuple(
-        (re.compile(pattern, re.IGNORECASE), conclusive)
-        for pattern, conclusive in (
-            (r"\bletters?\b", True),
-            (r"\bemails?\b", True),
-            (r"\bmemo(?:randum)?s?\b", True),
-            (r"\bdear\b", False),
-            (r"\bsincerely\b", False),
-            (r"\bregards\b", False),
-        )
-    ),
-    # A `mixed` document legitimately mentions several shapes, so it is exempt
-    # from single-type exclusivity; these markers exist only for the weak-signal
-    # check on a document that was classified as `mixed`.
-    "mixed": ((re.compile(r"\bmixed\b", re.IGNORECASE), False),),
+    "mixed": (),
 }
 
 # Built-in checks are registered by `forensics.checks` when it is first
@@ -655,9 +619,7 @@ def check_propagation(span: Span, trace: Trace) -> list[CheckResult]:
     for candidate, markers in TYPE_MARKERS.items():
         if candidate == "mixed":
             continue
-        for pattern, is_conclusive in markers:
-            if not is_conclusive:
-                continue
+        for pattern in markers:
             match = pattern.search(opening)
             if match and match.start() < leading_position:
                 leading_position = match.start()
@@ -793,7 +755,7 @@ def run_deterministic_checks(
 
 
 def build_step_scores(
-    trace: Trace, check_results: dict[str, list[CheckResult]], document_text: str
+    trace: Trace, check_results: dict[str, list[CheckResult]], document_text: str = ""
 ) -> list[StepScore]:
     """Build StepScore objects from check results.
 
@@ -1130,12 +1092,3 @@ def analyze_trace(trace: Trace, document_text: str, expected_type: str | None = 
     )
 
     return diagnosis
-
-
-def analyze_trace_from_storage(trace_id: str, document_text: str) -> Diagnosis | None:
-    """Analyze a trace loaded from storage."""
-    storage = get_storage()
-    trace = storage.get_trace(trace_id)
-    if not trace:
-        return None
-    return analyze_trace(trace, document_text)

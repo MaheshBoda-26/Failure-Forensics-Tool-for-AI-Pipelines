@@ -122,8 +122,6 @@ class PipelineWorker:
         pipeline: Pipeline | None = None,
         worker_id: str | None = None,
     ) -> None:
-        from forensics.config import get_settings
-
         settings = get_settings()
         self.storage = storage
         self.queue = queue
@@ -184,23 +182,17 @@ class PipelineWorker:
             try:
                 doc_id = job.payload["doc_id"]
 
-                if get_settings().queue_payload_mode == "reference":
-                    # Reference mode: the job carries only {doc_id, expected_type}.
-                    # Resolve the source text from storage so the pipeline sees the
-                    # same document the caller submitted. A missing document is a
-                    # configuration error, not a transient one: fail the job with a
-                    # clear, actionable message.
-                    doc_text = job.payload.get("doc_text")
+                doc_text = job.payload.get("doc_text")
+                if doc_text is None:
+                    doc_text = read_document(doc_id, job.tenant_id)
                     if doc_text is None:
-                        doc_text = read_document(doc_id, job.tenant_id)
-                        if doc_text is None:
+                        if get_settings().queue_payload_mode == "reference":
                             raise ValueError(
                                 f"Document {doc_id!r} is not resolvable in reference "
                                 f"payload mode: it is not in the dataset and was not "
                                 f"persisted as an upload for tenant {job.tenant_id}."
                             )
-                else:
-                    doc_text = job.payload["doc_text"]
+                        doc_text = job.payload["doc_text"]
                 result = await process_document(
                     pipeline,
                     self.storage,

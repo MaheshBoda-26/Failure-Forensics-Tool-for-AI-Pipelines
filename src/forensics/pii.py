@@ -224,6 +224,14 @@ def parse_custom_patterns(raw: str) -> list[dict[str, str]]:
             raise ValueError(f"PII_CUSTOM_PATTERNS[{index}] is missing a non-empty 'name'")
         if not isinstance(pattern, str) or not pattern.strip():
             raise ValueError(f"PII_CUSTOM_PATTERNS[{index}] is missing a non-empty 'pattern'")
+        if len(pattern) > 500:
+            raise ValueError(
+                f"PII_CUSTOM_PATTERNS[{index}] ('{name}') exceeds maximum pattern length (500)"
+            )
+        if re.search(r"\([^)]*[+*][^)]*\)[+*?{]", pattern):
+            raise ValueError(
+                f"PII_CUSTOM_PATTERNS[{index}] ('{name}') contains nested quantifiers (ReDoS risk)"
+            )
         try:
             re.compile(pattern)
         except re.error as exc:

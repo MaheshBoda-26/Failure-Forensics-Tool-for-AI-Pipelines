@@ -190,16 +190,6 @@ def get_span_badge(span_status: str) -> tuple[str, str, str]:
     return STATUS_COLOR_MAP.get(span_status, ("❓", "#6c757d", "span-warning"))
 
 
-def get_span_status_text(checks: dict) -> str:
-    """Get human-readable status for span based on check results."""
-    if not checks:
-        return "⚠️ No checks"
-    if all(checks.values()):
-        return "✅ All checks pass"
-    failed = [k for k, v in checks.items() if not v]
-    return f"❌ Failed: {', '.join(failed)}"
-
-
 def get_category_display(category: str) -> str:
     """Format failure category for display."""
     icon = CATEGORY_ICONS.get(category, "❓")
@@ -337,74 +327,24 @@ def build_pipeline_graph(trace: Trace) -> go.Figure:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Diff Utilities
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-def diff_strings(expected: str, actual: str) -> list[tuple[str, str]]:
-    """Return list of (type, text) where type is 'equal', 'added', 'removed'."""
-    import difflib
-
-    diff = difflib.unified_diff(
-        expected.splitlines(keepends=True),
-        actual.splitlines(keepends=True),
-        lineterm="",
-    )
-    result = []
-    for line in diff:
-        if line.startswith("+"):
-            result.append(("added", line[1:]))
-        elif line.startswith("-"):
-            result.append(("removed", line[1:]))
-        elif not line.startswith("@@"):
-            result.append(("equal", line))
-    return result
-
-
-def render_diff(expected: Any, actual: Any) -> None:
-    """Render side-by-side diff with color coding."""
-    exp_str = json.dumps(expected, indent=2, default=str)
-    act_str = json.dumps(actual, indent=2, default=str)
-
-    diffs = diff_strings(exp_str, act_str)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("**Expected**")
-        for typ, text in diffs:
-            if typ == "removed":
-                # `text` is document/model output. Escaped before interpolation:
-                # `unsafe_allow_html` makes an unescaped value script execution
-                # in the viewer's browser.
-                st.markdown(
-                    f"<span class='diff-removed'>{html.escape(text)}</span>",
-                    unsafe_allow_html=True,
-                )
-            elif typ == "equal":
-                st.text(text)
-    with col2:
-        st.markdown("**Actual**")
-        for typ, text in diffs:
-            if typ == "added":
-                st.markdown(
-                    f"<span class='diff-added'>{html.escape(text)}</span>",
-                    unsafe_allow_html=True,
-                )
-            elif typ == "equal":
-                st.text(text)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
 # Span Detail Rendering
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def render_span_detail(span, step_scores: list, doc_text: str) -> None:
+def render_span_detail(
+    span, step_scores: list, doc_text: str, span_index: int | None = None
+) -> None:
     """Render a detailed span view with all available data."""
-    score = next((s for s in step_scores if s.step_name == span.step_name), None)
+    if (
+        span_index is not None
+        and span_index < len(step_scores)
+        and step_scores[span_index].step_name == span.step_name
+    ):
+        score = step_scores[span_index]
+    else:
+        score = next((s for s in step_scores if s.step_name == span.step_name), None)
     checks = score.deterministic_checks if score else {}
     icon, _, css_class = get_span_badge(status_str(span.status))
-    _ = get_span_status_text(checks)  # for side effect if any
 
     # Header
     col1, col2, col3 = st.columns([4, 1, 1])
@@ -848,13 +788,13 @@ def main() -> None:
     st.divider()
     st.subheader("📍 Pipeline Spans")
 
-    for span in selected_trace.spans:
+    for idx, span in enumerate(selected_trace.spans):
         badge = get_span_badge(status_str(span.status))[0]
         label = (
             f"{badge} {span.step_name.title()} — {status_str(span.status)} — {span.latency_ms}ms"
         )
         with st.expander(label, expanded=False):
-            render_span_detail(span, diagnosis.step_scores, doc_text)
+            render_span_detail(span, diagnosis.step_scores, doc_text, span_index=idx)
 
     # ─── Diff View ────────────────────────────────────────────────────────────
     st.divider()

@@ -417,7 +417,9 @@ class Storage(StorageBase):
 
         placeholders = ",".join("?" for _ in trace_ids)
         sql = (
-            "SELECT trace_id, root_cause_step, created_at FROM diagnoses "
+            "SELECT trace_id, "
+            "COALESCE(NULLIF(override_step, ''), root_cause_step) AS root_cause_step, "
+            "created_at FROM diagnoses "
             f"WHERE trace_id IN ({placeholders})"
         )
         params: list[Any] = list(trace_ids)
@@ -651,6 +653,13 @@ class Storage(StorageBase):
 
         Idempotent: re-saving the same name + version is a no-op.
         """
+        from forensics.pii import create_redactor_from_settings
+
+        text_to_save = template.template_text
+        redactor = create_redactor_from_settings()
+        if redactor.enabled and text_to_save:
+            text_to_save, _ = redactor.redact(text_to_save)
+
         with self._conn() as conn:
             conn.execute(
                 """
@@ -660,11 +669,12 @@ class Storage(StorageBase):
                 ON CONFLICT(name, version) DO UPDATE SET
                     template_text = excluded.template_text,
                     created_at = excluded.created_at
+                WHERE prompt_templates.tenant_id = excluded.tenant_id
                 """,
                 (
                     template.name,
                     template.version,
-                    template.template_text,
+                    text_to_save,
                     template.created_at.isoformat(),
                     template.tenant_id,
                 ),

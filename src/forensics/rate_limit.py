@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
-from forensics.config import get_operational_settings
+from forensics.config import get_operational_settings, get_settings
 from forensics.storage import _should_use_postgres, get_storage
 
 _SCHEMA = (
@@ -36,13 +36,20 @@ _SCHEMA = (
 )
 
 
+def _active_settings() -> Any:
+    try:
+        return get_settings()
+    except Exception:
+        return get_operational_settings()
+
+
 class RateLimiter:
     """Token bucket rate limiter per tenant."""
 
     def __init__(self, db_path: Path | None = None) -> None:
         self._use_postgres = db_path is None and _should_use_postgres()
         if db_path is None:
-            db_path = get_operational_settings().db_path
+            db_path = _active_settings().db_path
         self.db_path = Path(db_path)
         self._lock = threading.Lock()
         if not self._use_postgres:
@@ -74,7 +81,7 @@ class RateLimiter:
 
     def _get_bucket(self, tenant_id: str) -> tuple[float, float]:
         """Get current tokens and last_refill for a tenant."""
-        settings = get_operational_settings()
+        settings = _active_settings()
         capacity = float(settings.rate_limit_burst + settings.rate_limit_requests_per_minute)
         if self._use_postgres:
             storage: Any = get_storage()
@@ -106,48 +113,12 @@ class RateLimiter:
                 return capacity, time.time()
             return float(row[0]), float(row[1])
 
-    def _update_bucket(self, tenant_id: str, tokens: float, last_refill: float) -> None:
-        """Update bucket state."""
-        if self._use_postgres:
-            storage: Any = get_storage()
-
-            async def _pg_update() -> None:
-                refill_dt = datetime.fromtimestamp(last_refill, tz=UTC)
-                async with storage._conn() as conn:
-                    await conn.execute(
-                        """
-                        INSERT INTO rate_limit_buckets (tenant_id, tokens, last_refill)
-                        VALUES ($1, $2, $3)
-                        ON CONFLICT(tenant_id) DO UPDATE SET
-                            tokens = EXCLUDED.tokens,
-                            last_refill = EXCLUDED.last_refill
-                        """,
-                        tenant_id,
-                        tokens,
-                        refill_dt,
-                    )
-
-            storage._run_coro(_pg_update())
-            return
-
-        with self._lock, self._conn() as conn:
-            conn.execute(
-                """
-                INSERT INTO rate_limit_buckets (tenant_id, tokens, last_refill)
-                VALUES (?, ?, ?)
-                ON CONFLICT(tenant_id) DO UPDATE SET
-                    tokens = excluded.tokens,
-                    last_refill = excluded.last_refill
-                """,
-                (tenant_id, tokens, last_refill),
-            )
-
     def try_consume(self, tenant_id: str, tokens: int = 1) -> tuple[bool, float]:
         """Try to consume tokens from the bucket atomically.
 
         Returns (success, retry_after_seconds).
         """
-        settings = get_operational_settings()
+        settings = _active_settings()
         capacity = float(settings.rate_limit_burst + settings.rate_limit_requests_per_minute)
         refill_rate = settings.rate_limit_requests_per_minute / 60.0
 
@@ -232,7 +203,7 @@ class RateLimiter:
 
     def get_bucket_state(self, tenant_id: str) -> dict[str, str | float]:
         """Get current bucket state for debugging/monitoring."""
-        settings = get_operational_settings()
+        settings = _active_settings()
         capacity = float(settings.rate_limit_burst + settings.rate_limit_requests_per_minute)
         current_tokens, last_refill = self._get_bucket(tenant_id)
         now = time.time()

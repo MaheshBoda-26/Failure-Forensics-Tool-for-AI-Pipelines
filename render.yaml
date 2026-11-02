@@ -94,11 +94,11 @@ services:
       - key: PIPELINE_MODEL_PRICE_OUT
         value: "0.0"
 
-      # Deliberate, and identical to `.env.example`: the pipeline and its
-      # fallback share the one slug verified against NIM, and this switch also
-      # gates the duplicate-model-id guard, so `true` would abort startup.
+      # Cross-family judge guard (meta vs minimaxai). `pipeline` and
+      # `pipeline_fallback` are allowed to share a slug while keeping
+      # cross-family judge separation enforced.
       - key: JUDGE_FAMILY_SEPARATION_REQUIRED
-        value: "false"
+        value: "true"
 
       # Defaults on purpose. Auth off keeps the public demo open and the queue off
       # keeps runs inline — a queued job needs a worker service to consume it.

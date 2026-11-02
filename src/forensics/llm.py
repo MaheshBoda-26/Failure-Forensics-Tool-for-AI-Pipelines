@@ -37,10 +37,12 @@ from forensics.models import (
     SummaryOutput,
 )
 from forensics.prompts import (
-    build_classification_prompt,
-    build_extraction_prompt,
+    DOCUMENT_CLOSE,
+    DOCUMENT_OPEN,
+    STEP_PROMPT_BUILDERS,
+    _defuse_fence,
+    _fence_document,
     build_judge_prompt,
-    build_summarization_prompt,
 )
 
 T = TypeVar("T", bound=BaseModel)
@@ -111,15 +113,6 @@ def _sanitize_node(node: Any) -> Any:
 
 
 NIM_DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
-
-# Prompt-injection hygiene (PROMPT.md known_weaknesses #8): document text is
-# untrusted data. It is fenced and explicitly labelled so the model does not
-# treat instructions inside a document as instructions.
-DOCUMENT_OPEN = "<document_text>"
-DOCUMENT_CLOSE = "</document_text>"
-#: Any spelling of the fence tag, so `</DOCUMENT_TEXT >` cannot close the block
-#: either. `_defuse_fence` replaces the angle brackets, never the text.
-_FENCE_TAG = re.compile(r"<\s*/?\s*document_text\s*>", re.IGNORECASE)
 
 
 def _strip_code_fence(content: str) -> str:
@@ -254,11 +247,6 @@ class TokenUsage:
     completion_tokens: int = 0
     reasoning_tokens: int = 0
     total_tokens: int = 0
-
-    @property
-    def billable_tokens(self) -> int:
-        """Tokens that count toward cost (prompt + completion + reasoning)."""
-        return self.prompt_tokens + self.completion_tokens + self.reasoning_tokens
 
 
 @dataclass
@@ -466,10 +454,6 @@ class SpendTracker:
         """Restore the previous run counter (nested runs stay independent)."""
         self._run_spend.reset(token)
 
-    def reset_run(self) -> None:
-        """Reset per-run spend counter."""
-        self._run_spend.set(0.0)
-
     @property
     def run_spend_usd(self) -> float:
         return self._run_spend.get()
@@ -674,12 +658,7 @@ class NIMClient:
             f"Output ONLY the JSON object, no extra text."
         )
 
-    @staticmethod
-    def _fence_document(text: str, limit: int = 8000) -> str:
-        """Wrap untrusted document text in delimiters for prompt-injection hygiene."""
-        if len(text) > limit:
-            text = text[:limit] + f"\n[truncated: {len(text)} chars total]"
-        return f"{DOCUMENT_OPEN}\n{_defuse_fence(text)}\n{DOCUMENT_CLOSE}"
+    _fence_document = staticmethod(_fence_document)
 
     @staticmethod
     def _extract_content(response: dict[str, Any]) -> tuple[str, str, int]:
@@ -1100,7 +1079,7 @@ class NIMClient:
                     entities=[
                         Entity(
                             value=grounded,
-                            entity_type="key_fact",
+                            entity_type="organization",
                             start_offset=0,
                             end_offset=len(grounded),
                         )
@@ -1263,39 +1242,6 @@ class NIMClient:
             cause=last_error,
         )
 
-    async def chat_completion(
-        self,
-        model_config: ModelConfig,
-        messages: list[dict[str, str]],
-        max_tokens: int | None = None,
-        temperature: float = 0.0,
-    ) -> LLMResponse:
-        """Simple chat completion without structured output."""
-        if self.dry_run:
-            return LLMResponse(
-                content="{}",
-                model=model_config.model_id,
-                provider=model_config.provider,
-                usage=TokenUsage(),
-                latency_ms=0,
-                raw_response={},
-                cached=True,
-            )
-
-        data = await self._make_request(
-            model_config, messages, max_tokens=max_tokens, temperature=temperature
-        )
-
-        content, _reasoning, reasoning_tokens = self._extract_content(data)
-        return LLMResponse(
-            content=content,
-            model=model_config.model_id,
-            provider=model_config.provider,
-            usage=self._usage_from(data, reasoning_tokens),
-            latency_ms=data.get("_latency_ms", 0),
-            raw_response=data,
-        )
-
     async def run_with_fallback(
         self,
         primary: ModelConfig,
@@ -1362,20 +1308,6 @@ def _publish_telemetry(response: StructuredResponse, prompt: str) -> None:
     )
 
 
-def _defuse_fence(text: str) -> str:
-    """Neutralize the document fence markers inside untrusted text.
-
-    A document is attacker-controlled. If it contains `</document_text>` it can
-    end the fenced block early and everything after it reads as instructions
-    rather than data. The markers are escaped as HTML entities, which preserves
-    the text's meaning while making the tag unformable.
-    """
-    return _FENCE_TAG.sub(
-        lambda match: match.group(0).replace("<", "&lt;").replace(">", "&gt;"),
-        text,
-    )
-
-
 class LLMClient:
     """High-level LLM client for the pipeline steps."""
 
@@ -1412,14 +1344,10 @@ class LLMClient:
         it was before the move — `prompt_version` and the recorded `prompt` are
         identity material, and fixtures key on them.
         """
-        if step == "extraction":
-            return build_extraction_prompt(input_data)
-        if step == "classification":
-            return build_classification_prompt(input_data)
-        if step == "summarization":
-            return build_summarization_prompt(input_data)
-        default = ("Process the input below.", "You are a helpful assistant.")
-        return default
+        builder = STEP_PROMPT_BUILDERS.get(step)
+        if builder is not None:
+            return cast(tuple[str, str | None], builder(input_data))
+        return ("Process the input below.", "You are a helpful assistant.")
 
     @staticmethod
     async def intake(document_text: str) -> IntakeOutput:
