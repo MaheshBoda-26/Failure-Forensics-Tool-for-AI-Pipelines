@@ -266,6 +266,7 @@ where an API key can be stored in the browser for authenticated deployments.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/health` | Liveness |
+| `GET` | `/runtime` | Runtime model, mode, and guard configuration for the UI header and sidebar |
 | `POST` | `/pipeline/run` | Run one document inline, or queue it when `QUEUE_ENABLED=true` (202 + `job_id`) |
 | `POST` | `/pipeline/run-demo` | Run and diagnose all 15 dataset documents |
 | `GET` | `/traces?limit=` | List traces (newest first) |
@@ -468,7 +469,7 @@ Core behaviour: `test_tracing_phase2.py`, `test_analyzer_phase3.py`,
 API_KEY=ffk_... ./scripts/smoke.sh https://<your-service>.onrender.com
 ```
 
-`scripts/smoke.sh` walks `health → UI → seed → flag → diagnose → confirm →
+`scripts/smoke.sh` walks `health → runtime → UI → seed → flag → diagnose → confirm →
 analytics` and exits non-zero on the first failure, so it doubles as a deploy
 gate.
 
