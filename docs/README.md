@@ -14,7 +14,7 @@ in `tasks/todo.md` (Phase 7).
 | How do the pieces fit? | [`architecture.md`](architecture.md) |
 | Why is it built this way? | [`adr/`](adr) |
 | What was each feature supposed to do? | [`specs/`](specs) |
-| What is left to do? | [`../plan/forensics-fix-and-finish.md`](../plan/forensics-fix-and-finish.md), [`../tasks/todo.md`](../tasks/todo.md) |
+| What is left to do? | [`../plan/failure-forensics-remaining-work.md`](../plan/failure-forensics-remaining-work.md), [`../tasks/todo.md`](../tasks/todo.md) |
 
 ## Specs
 
@@ -61,6 +61,10 @@ consequences, and the tests that verify it.
 | [0014](adr/0014-scheduled-eval-alerts.md) | Scheduled eval with webhook regression alerts |
 | [0015](adr/0015-worker-queue.md) | SQLite worker queue for pipeline runs |
 | [0016](adr/0016-dry-run-fixture-and-analysis-order.md) | Document-keyed DRY_RUN fixture; analyze before redaction |
+| [0017](adr/0017-queue-fairness.md) | Per-tenant queue fairness and dead-lettering |
+| [0018](adr/0018-prompt-archive.md) | Archive prompt templates by content hash |
+| [0019](adr/0019-diagnosis-redaction-policy.md) | Re-diagnosis under PII redaction is stored-or-explicit |
+| [0020](adr/0020-payload-reference-mode.md) | Queue payload reference mode |
 
 ## Other documents
 
@@ -75,7 +79,7 @@ consequences, and the tests that verify it.
 ## Verifying claims in these docs
 
 ```bash
-make check                    # ruff + mypy strict + 455 tests, hermetic
+make check                    # ruff + mypy strict + 626 tests, hermetic
 scripts/smoke.sh http://127.0.0.1:8000     # the whole loop over HTTP against a running server
 pytest -m live                # the paths that need a real model (uses quota)
 forensics benchmark-analyzer  # fault-injection scorecard for the analyzer

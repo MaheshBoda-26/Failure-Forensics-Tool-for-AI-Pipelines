@@ -5,8 +5,9 @@ is a scope decision or a known gap with its impact and mitigation stated. Nothin
 here is presented as a bug.
 
 Last verified against the working tree with `make check` (ruff, mypy strict, and
-the test suite: 496 passing, 13 skipped, `-m "not live"`). The thirteen skipped are
-the live-PostgreSQL tests, which run with `make test-postgres`; the always-on
+the test suite: 607 passing, 18 skipped, `-m "not live"`). The skipped tests are
+the live-PostgreSQL and PostgreSQL-operations tests, which run with
+`make test-postgres` and `make test-postgres-ops`; the always-on
 `tests/test_schema_parity.py` still compares the two schemas without a server.
 The count is stated as the current suite size rather than a commit-pinned one,
 because the previous revision's "344 tests at `cb373e9`" drifted two layers behind

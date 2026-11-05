@@ -195,7 +195,7 @@ $EDITOR .env                 # set NVIDIA_API_KEY + model slugs; for offline mod
 make check                   # ruff + mypy strict + pytest
 ```
 
-`make check` is green from a clean checkout: **566 tests**, no network, no API
+`make check` is green from a clean checkout: **626 tests**, no network, no API
 key required.
 
 ### Demo — no API key needed
@@ -492,7 +492,7 @@ the disk and env).
 
 ```
 src/forensics/          Python package (see the component table above)
-tests/                  566 hermetic tests
+tests/                  626 hermetic tests
 frontend/               React 19 + Vite + TypeScript explorer
 dataset/
   documents/            15 synthetic documents, 3 per type
@@ -546,7 +546,7 @@ gaps, all documented in [`docs/limitations.md`](docs/limitations.md):
 | What does it not do? | [`docs/limitations.md`](docs/limitations.md) |
 | Why is it built this way? | [`docs/adr/`](docs/adr) |
 | What was each feature supposed to do? | [`docs/specs/`](docs/specs) |
-| What is left to do? | [`plan/forensics-fix-and-finish.md`](plan/forensics-fix-and-finish.md) |
+| What is left to do? | [`plan/failure-forensics-remaining-work.md`](plan/failure-forensics-remaining-work.md) |
 
 ## License
 

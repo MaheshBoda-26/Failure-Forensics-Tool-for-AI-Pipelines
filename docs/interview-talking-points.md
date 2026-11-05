@@ -99,7 +99,7 @@ We deliberately **do not** persist an unredacted second copy anywhere — that w
 
 | Metric | Value |
 |---|---|
-| **Automated Test Suite** | **626 passing tests** (`607` backend `pytest` + `19` frontend `vitest`), `0` errors in `ruff` & `mypy --strict` |
+| **Automated Test Suite** | **640 passing tests** (`626` backend `pytest` + `14` frontend `vitest`), `0` errors in `ruff` & `mypy --strict` |
 | **Pipeline Architecture** | 4 traced steps (`Intake → Extraction → Classification → Summarization`) |
 | **Document Types** | 5 (`contract`, `invoice`, `report`, `correspondence`, `mixed`) |
 | **Failure Categories** | 5 (`extraction_hallucination`, `misclassification`, `propagation_error`, `prompt_failure`, `context_loss`) + `unknown` |
